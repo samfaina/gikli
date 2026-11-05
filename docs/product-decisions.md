@@ -55,6 +55,30 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 | Shelve base revisions | on |
 | Add new files to git | never |
 
+## Roadmap
+
+gikli ships in the four scope tiers of the [product reference](reference/jetbrains-git.md). A tier starts when the previous one meets "Done means" from the kickoff brief: every feature behaves as its row says, the repository conditions hold, and Appendix B holds for every failure the tier can reach.
+
+| Tier | Contents | Spec |
+| --- | --- | --- |
+| 1 | MVP | [#2](https://github.com/samfaina/gikli/issues/2) |
+| 2 | Complete daily use | not started |
+| 3 | Advanced | not started |
+| 4 | Optional | not started |
+
+### Starting a tier
+
+1. **Grill.** Run `grill-with-docs` over the reference rows marked with the tier and the Deferred decisions below that belong to it. Record new terms in the glossary and new architecture in ADRs, and move settled items from Deferred to Settled.
+2. **Spec.** Run `to-spec` and publish the spec with `ready-for-agent`. Add its number to the table above.
+3. **Tickets.** Run `to-tickets` and publish the tickets as sub-issues of the spec. The last ticket verifies the repository conditions and Appendix B for the tier.
+
+### Known inputs per tier
+
+- **Tier 2:** Update Project's branch coverage. Saved local changes default to Shelve once the Shelf ships. The rest of Smart Checkout and the merge dialog build on the Tier 1 save, switch and restore (see the Further Notes of [#2](https://github.com/samfaina/gikli/issues/2)).
+- **Tier 3:** adding and removing submodules. The choice between classic rebase and fast rewrite for history editing. Protected branch rules per Repository and from GitHub.
+- **Tier 4:** JetBrains internal actions. GitHub and GitLab integration.
+- **Before the first public release, whatever the tier:** code signing on Windows and macOS, installers and the updater, and the `LICENSE` file.
+
 ## Deferred
 
 Settled when the feature's scope tier comes up.
