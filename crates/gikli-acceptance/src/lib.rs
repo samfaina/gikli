@@ -345,6 +345,22 @@ impl TestRepository {
         .collect()
     }
 
+    /// Adds a linked worktree of this repository in the sibling folder `name`, on a new branch of
+    /// that name, with `git worktree add`. Its git directory lives inside this repository's.
+    pub fn linked_worktree(&self, name: &str) -> TestRepository {
+        let root = self
+            .root
+            .parent()
+            .expect("repository has a parent")
+            .join(name);
+        let path = root.to_string_lossy().into_owned();
+        self.git(&["worktree", "add", "--quiet", "-b", name, &path]);
+        TestRepository {
+            root: dunce::canonicalize(root).expect("canonicalize worktree folder"),
+            env: self.env.clone(),
+        }
+    }
+
     /// Stages everything and commits it with plain git.
     pub fn commit_all(&self, message: &str) {
         self.git(&["add", "--all"]);

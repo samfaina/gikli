@@ -14,7 +14,27 @@ export const en = {
   statusModified: "Modified",
   statusAdded: "Added",
   statusDeleted: "Deleted",
+  statusRenamed: "Renamed",
+  statusCopied: "Copied",
   statusUntracked: "Untracked",
+  statusIgnored: "Ignored",
+  statusConflicted: "Conflicted",
+  renamedFrom: "from {path}",
+  copiedFrom: "copy of {path}",
+  conflictBothModified: "changed on both sides",
+  conflictBothAdded: "added on both sides",
+  conflictBothDeleted: "deleted on both sides",
+  conflictAddedByUs: "added here only",
+  conflictAddedByThem: "added on the other side only",
+  conflictDeletedByUs: "deleted here, changed on the other side",
+  conflictDeletedByThem: "changed here, deleted on the other side",
+  submodule: "submodule",
+  submoduleWithState: "submodule: {state}",
+  submoduleCommitChanged: "other commit checked out",
+  submoduleTrackedChanges: "changed files",
+  submoduleUntrackedFiles: "new files",
+  groupByFolder: "Group by folder",
+  showIgnoredFiles: "Show ignored files",
   gitReady: "git {version}",
   gitReadyWsl: "git {version} (WSL)",
   gitTooOld:
@@ -47,6 +67,8 @@ export const en = {
   failureNotInRepository: "{folder} is not inside a git repository.",
   failureChangesUnreadable:
     "git could not read the changes in {folder}. Check that it is still a git repository, then refresh.",
+  failureChangesNotWatched:
+    "gikli cannot watch {folder} for changes made outside it ({message}). Use Refresh to see them.",
   unexpectedError: "Something went wrong: {message}",
 } as const;
 

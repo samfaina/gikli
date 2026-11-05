@@ -10,6 +10,7 @@ mod host;
 mod settings;
 mod status;
 mod version;
+mod watch;
 mod wsl;
 
 use std::collections::HashMap;
@@ -23,11 +24,14 @@ pub use capability::{Capability, CapabilityState};
 pub use events::{Event, OperationLogEntry};
 pub use host::HostEnvironment;
 pub use settings::Settings;
-pub use status::{Change, ChangeSet, ChangeStatus};
+pub use status::{
+    Change, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, ConflictKind, SubmoduleState,
+};
 pub use version::GitVersion;
 
 use events::EventBus;
 use git::{GitProgram, GitRunner};
+use watch::ChangesWatcher;
 use wsl::WslShare;
 
 /// The application interface of gikli's core.
@@ -39,6 +43,8 @@ pub struct Gikli {
     git: Mutex<Option<GitCheck>>,
     /// The git of each WSL distribution that holds a folder gikli opened, once gikli has looked.
     wsl_git: Mutex<HashMap<WslShare, GitCheck>>,
+    /// The watcher of each Repository whose changes gikli watches, by root.
+    watchers: Mutex<HashMap<PathBuf, ChangesWatcher>>,
     events: Arc<EventBus>,
 }
 
@@ -139,6 +145,13 @@ pub enum Failure {
     ChangesUnreadable {
         folder: PathBuf,
     },
+    /// gikli could not watch the Repository at `folder` for changes made outside it. Its changes
+    /// still refresh on request.
+    #[serde(rename_all = "camelCase")]
+    ChangesNotWatched {
+        folder: PathBuf,
+        message: String,
+    },
 }
 
 impl Gikli {
@@ -150,6 +163,7 @@ impl Gikli {
             settings_file,
             git: Mutex::default(),
             wsl_git: Mutex::default(),
+            watchers: Mutex::default(),
             events: Arc::default(),
         }
     }
@@ -172,24 +186,39 @@ impl Gikli {
 
     /// Sets the path to git, or clears it so gikli looks for git itself, and looks for git again.
     pub fn set_git_path(&self, path: Option<PathBuf>) -> Result<GitCheck, Failure> {
-        {
-            let mut settings = lock(&self.settings);
-            let mut changed = settings.clone();
-            changed.git_path = path;
-            changed
-                .save(&self.settings_file)
-                .map_err(|error| Failure::SettingsNotSaved {
-                    message: error.to_string(),
-                })?;
-            *settings = changed;
-        }
+        self.change_settings(|settings| settings.git_path = path)?;
         lock(&self.git).take();
         Ok(self.check_git())
+    }
+
+    /// Turns the listing of ignored files in the changes view on or off.
+    pub fn set_show_ignored_files(&self, show: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.show_ignored_files = show)
+    }
+
+    /// Groups the changes view by folder or shows it as a flat list.
+    pub fn set_change_grouping(&self, grouping: ChangeGrouping) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.change_grouping = grouping)
     }
 
     /// The application settings.
     pub fn settings(&self) -> Settings {
         lock(&self.settings).clone()
+    }
+
+    /// Applies `change` to the settings and saves them. When they cannot be saved, nothing
+    /// changes.
+    fn change_settings(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, Failure> {
+        let mut settings = lock(&self.settings);
+        let mut changed = settings.clone();
+        change(&mut changed);
+        changed
+            .save(&self.settings_file)
+            .map_err(|error| Failure::SettingsNotSaved {
+                message: error.to_string(),
+            })?;
+        *settings = changed.clone();
+        Ok(changed)
     }
 
     /// Checks the git at `executable` without using it: the test button of the git path setting.
@@ -224,18 +253,52 @@ impl Gikli {
     /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
     pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
         let runner = self.runner(&repository.root)?;
+        let settings = self.settings();
         let invocation = runner
-            .run(&repository.root, status::STATUS_ARGS)
+            .run(
+                &repository.root,
+                &status::status_args(settings.show_ignored_files),
+            )
             .map_err(git_failed_to_start)?;
         if !invocation.success {
             return Err(Failure::ChangesUnreadable {
                 folder: repository.root.clone(),
             });
         }
-        Ok(ChangeSet {
-            repository: repository.clone(),
-            changes: status::parse(&invocation.stdout),
-        })
+        Ok(ChangeSet::new(
+            repository.clone(),
+            status::parse(&invocation.stdout),
+            settings.change_grouping,
+        ))
+    }
+
+    /// Starts watching `repository` for changes made outside gikli: after each burst of changes
+    /// to its working tree or its git directory, gikli sends [`Event::FilesChanged`]. Watching
+    /// it again changes nothing.
+    pub fn watch_changes(&self, repository: &Repository) -> Result<(), Failure> {
+        if lock(&self.watchers).contains_key(&repository.root) {
+            return Ok(());
+        }
+        let git_dir = self
+            .runner(&repository.root)?
+            .git_dir(&repository.root)
+            .map_err(git_failed_to_start)?
+            .map(|git_dir| canonicalize(&git_dir).unwrap_or(git_dir));
+        let watcher = ChangesWatcher::start(repository.clone(), git_dir, self.events.clone())
+            .map_err(|error| Failure::ChangesNotWatched {
+                folder: repository.root.clone(),
+                message: error.to_string(),
+            })?;
+        // Two calls at once may both start a watcher; the first one kept wins.
+        lock(&self.watchers)
+            .entry(repository.root.clone())
+            .or_insert(watcher);
+        Ok(())
+    }
+
+    /// Stops watching `repository` for changes made outside gikli, when gikli watches it.
+    pub fn unwatch_changes(&self, repository: &Repository) {
+        lock(&self.watchers).remove(&repository.root);
     }
 
     /// What the git that runs in `repository` can do beyond the minimum gikli needs. A feature

@@ -9,6 +9,16 @@
   --warning-background: #fff8c5;
   --warning-text: #7d4e00;
   --accent: #2f6f5e;
+  /* File status colors: each status has its own, in light and in dark. */
+  --status-modified: #1f5fbf;
+  --status-added: #2a7a2a;
+  --status-deleted: #9b3d6b;
+  --status-renamed: #00788a;
+  --status-copied: #7a4fb5;
+  --status-untracked: #b35c00;
+  --status-ignored: #6f7a2a;
+  --status-conflicted: #c4262e;
+  --folder-with-changes: #1f5fbf;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   font-size: 14px;
 }
@@ -23,6 +33,15 @@
     --warning-background: #3d3214;
     --warning-text: #f2cc60;
     --accent: #5fb89f;
+    --status-modified: #6ea8ff;
+    --status-added: #6cc66c;
+    --status-deleted: #e07fb0;
+    --status-renamed: #4fc6d6;
+    --status-copied: #b996ea;
+    --status-untracked: #f0a050;
+    --status-ignored: #b5c06a;
+    --status-conflicted: #ff7b72;
+    --folder-with-changes: #6ea8ff;
   }
 }
 
@@ -161,10 +180,76 @@ button:disabled {
   padding: 0;
 }
 
-.changes li {
+.changes .changes {
+  padding-left: 1.2em;
+}
+
+.changes li.change {
   display: flex;
   gap: 12px;
   padding: 2px 0;
+}
+
+.change-folder > .folder-name {
+  display: block;
+  padding: 2px 0;
+  color: var(--muted);
+}
+
+.change-folder.has-changes > .folder-name {
+  color: var(--folder-with-changes);
+  font-weight: 600;
+}
+
+.change[data-status="modified"] .change-path {
+  color: var(--status-modified);
+}
+
+.change[data-status="added"] .change-path {
+  color: var(--status-added);
+}
+
+.change[data-status="deleted"] .change-path {
+  color: var(--status-deleted);
+  text-decoration: line-through;
+}
+
+.change[data-status="renamed"] .change-path {
+  color: var(--status-renamed);
+}
+
+.change[data-status="copied"] .change-path {
+  color: var(--status-copied);
+}
+
+.change[data-status="untracked"] .change-path {
+  color: var(--status-untracked);
+}
+
+.change[data-status="ignored"] .change-path {
+  color: var(--status-ignored);
+}
+
+.change[data-status="conflicted"] .change-path {
+  color: var(--status-conflicted);
+  font-weight: 600;
+}
+
+.change-detail {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.view-options {
+  display: flex;
+  gap: 16px;
+  margin: 6px 0;
+}
+
+.view-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .change-status {

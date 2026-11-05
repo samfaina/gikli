@@ -10,8 +10,8 @@
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment, Project, Repository,
-    Settings,
+    CapabilityState, ChangeGrouping, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment, Project,
+    Repository, Settings,
 };
 use tauri::{Emitter, Manager, State};
 
@@ -52,6 +52,19 @@ fn settings(gikli: State<'_, Gikli>) -> Settings {
     gikli.settings()
 }
 
+#[tauri::command]
+fn set_show_ignored_files(gikli: State<'_, Gikli>, show: bool) -> Result<Settings, Failure> {
+    gikli.set_show_ignored_files(show)
+}
+
+#[tauri::command]
+fn set_change_grouping(
+    gikli: State<'_, Gikli>,
+    grouping: ChangeGrouping,
+) -> Result<Settings, Failure> {
+    gikli.set_change_grouping(grouping)
+}
+
 #[tauri::command(async)]
 fn capabilities(
     gikli: State<'_, Gikli>,
@@ -68,6 +81,16 @@ fn open_project(gikli: State<'_, Gikli>, folder: PathBuf) -> Result<Project, Fai
 #[tauri::command(async)]
 fn read_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<ChangeSet, Failure> {
     gikli.read_changes(&repository)
+}
+
+#[tauri::command(async)]
+fn watch_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
+    gikli.watch_changes(&repository)
+}
+
+#[tauri::command]
+fn unwatch_changes(gikli: State<'_, Gikli>, repository: Repository) {
+    gikli.unwatch_changes(&repository);
 }
 
 #[tauri::command]
@@ -98,9 +121,13 @@ fn main() {
             test_git,
             set_git_path,
             settings,
+            set_show_ignored_files,
+            set_change_grouping,
             capabilities,
             open_project,
             read_changes,
+            watch_changes,
+            unwatch_changes,
             startup_folder
         ])
         .run(tauri::generate_context!())

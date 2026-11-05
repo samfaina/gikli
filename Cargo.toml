@@ -13,4 +13,5 @@ gikli-core = { path = "crates/gikli-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dunce = "1"
+notify = "8"
 tempfile = "3"

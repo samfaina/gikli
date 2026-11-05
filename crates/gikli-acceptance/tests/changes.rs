@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{Change, ChangeSet, ChangeStatus, Failure, Gikli};
+use gikli_core::{Change, ChangeSet, ChangeStatus, ConflictKind, Failure, Gikli, SubmoduleState};
 
 /// Opens the repository's folder as a Project and reads the changes of its Repository.
 fn read_changes(gikli: &Gikli, repository: &TestRepository) -> ChangeSet {
@@ -17,6 +17,16 @@ fn change(path: &str, status: ChangeStatus) -> Change {
     Change {
         path: PathBuf::from(path),
         status,
+        original_path: None,
+        conflict: None,
+        submodule: None,
+    }
+}
+
+fn renamed(path: &str, original_path: &str) -> Change {
+    Change {
+        original_path: Some(PathBuf::from(original_path)),
+        ..change(path, ChangeStatus::Renamed)
     }
 }
 
@@ -233,13 +243,15 @@ fn reading_the_changes_again_refreshes_them() {
     );
 }
 
-/// Renames get their own status with #7. Until then, the move shows as its two halves, so no
-/// file goes missing from the list.
 #[test]
-fn a_file_moved_with_git_mv_appears_deleted_at_its_old_path_and_added_at_its_new_one() {
+fn a_file_moved_with_git_mv_appears_as_renamed_with_its_original_path() {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("app");
-    repository.write("old name.md", "hello\n");
+    repository.write(
+        "old name.md",
+        "hello
+",
+    );
     repository.commit_all("Initial commit");
     repository.git(&["mv", "old name.md", "new name.md"]);
 
@@ -247,15 +259,409 @@ fn a_file_moved_with_git_mv_appears_deleted_at_its_old_path_and_added_at_its_new
 
     assert_eq!(
         change_set.changes,
+        vec![renamed("new name.md", "old name.md")]
+    );
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--find-renames"]),
+        "R  new name.md old name.md "
+    );
+}
+
+/// The move is the change that matters: a file edited after it was moved is still a rename.
+#[test]
+fn a_file_moved_with_git_mv_and_then_edited_appears_as_renamed() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("old.md", "one\ntwo\nthree\nfour\n");
+    repository.commit_all("Initial commit");
+    repository.git(&["mv", "old.md", "new.md"]);
+    repository.write("new.md", "one\ntwo\nthree\nfour\nfive\n");
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(change_set.changes, vec![renamed("new.md", "old.md")]);
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--find-renames"]),
+        "RM new.md\0old.md\0"
+    );
+}
+
+/// Moved and then removed from disk: in neither the working tree nor under its new path, the
+/// file is gone from where the last commit had it.
+#[test]
+fn a_file_moved_with_git_mv_and_then_removed_from_disk_appears_deleted_at_its_original_path() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("old.md", "hello\n");
+    repository.commit_all("Initial commit");
+    repository.git(&["mv", "old.md", "new.md"]);
+    repository.delete("new.md");
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![change("old.md", ChangeStatus::Deleted)]
+    );
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--find-renames"]),
+        "RD new.md\0old.md\0"
+    );
+}
+
+/// git looks for copies only when the user's `status.renames` asks for them, and gikli keeps
+/// that setting.
+#[test]
+fn a_copied_file_appears_as_copied_with_its_original_path_when_git_looks_for_copies() {
+    let sandbox = Sandbox::new();
+    sandbox.configure(
+        "[status]
+	renames = copies
+",
+    );
+    let repository = sandbox.repository("app");
+    repository.write(
+        "lines.txt",
+        "one
+two
+three
+four
+five
+",
+    );
+    repository.commit_all("Initial commit");
+    repository.write(
+        "copy.txt",
+        "one
+two
+three
+four
+five
+",
+    );
+    repository.write(
+        "lines.txt",
+        "one
+two
+three
+four
+five
+six
+",
+    );
+    repository.git(&["add", "--all"]);
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
         vec![
-            change("new name.md", ChangeStatus::Added),
-            change("old name.md", ChangeStatus::Deleted),
+            Change {
+                original_path: Some(PathBuf::from("lines.txt")),
+                ..change("copy.txt", ChangeStatus::Copied)
+            },
+            change("lines.txt", ChangeStatus::Modified),
         ]
     );
     assert_eq!(
-        repository.status_by_git(),
-        vec!["A  new name.md", "D  old name.md"]
+        repository.git(&["status", "--porcelain", "-z"]),
+        "C  copy.txt lines.txt M  lines.txt "
     );
+}
+
+/// A repository that ignores `*.log` and the `target` folder, with a new file of each kind and
+/// one untracked file.
+fn repository_with_ignored_files(sandbox: &Sandbox) -> TestRepository {
+    let repository = sandbox.repository("app");
+    repository.write(
+        ".gitignore",
+        "*.log
+target/
+",
+    );
+    repository.commit_all("Initial commit");
+    repository.write(
+        "build.log",
+        "log
+",
+    );
+    repository.write(
+        "target/debug/app",
+        "binary
+",
+    );
+    repository.write(
+        "target/release/app",
+        "binary
+",
+    );
+    repository.write(
+        "TODO.md", "todo
+",
+    );
+    repository
+}
+
+#[test]
+fn ignored_files_do_not_appear_by_default() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_ignored_files(&sandbox);
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![change("TODO.md", ChangeStatus::Untracked)]
+    );
+    assert!(!sandbox.gikli().settings().show_ignored_files);
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--ignored"]),
+        "?? TODO.md\0!! build.log\0!! target/\0"
+    );
+}
+
+/// An ignored folder appears once, as git reports it, not file by file.
+#[test]
+fn ignored_files_appear_when_the_user_turns_them_on_and_stay_on() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_ignored_files(&sandbox);
+
+    let settings = sandbox
+        .gikli()
+        .set_show_ignored_files(true)
+        .expect("turn on ignored files");
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert!(settings.show_ignored_files);
+    assert_eq!(
+        change_set.changes,
+        vec![
+            change("TODO.md", ChangeStatus::Untracked),
+            change("build.log", ChangeStatus::Ignored),
+            change("target/", ChangeStatus::Ignored),
+        ]
+    );
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--ignored"]),
+        "?? TODO.md !! build.log !! target/ "
+    );
+}
+
+/// A repository on `main` with the repository `library` added as the submodule `lib`.
+fn repository_with_a_submodule(sandbox: &Sandbox) -> TestRepository {
+    // Local paths are not allowed as submodule URLs by default since git 2.38.1.
+    sandbox.configure(
+        "[protocol \"file\"]
+	allow = always
+",
+    );
+    let library = sandbox.repository("library");
+    library.write(
+        "lib.rs",
+        "pub fn a() {}
+",
+    );
+    library.commit_all("Library");
+    let repository = sandbox.repository("app");
+    repository.write(
+        "README.md",
+        "hello
+",
+    );
+    repository.commit_all("Initial commit");
+    let url = library.root().to_string_lossy().into_owned();
+    repository.git(&["submodule", "--quiet", "add", &url, "lib"]);
+    repository
+}
+
+fn submodule(path: &str, status: ChangeStatus, state: SubmoduleState) -> Change {
+    Change {
+        submodule: Some(state),
+        ..change(path, status)
+    }
+}
+
+#[test]
+fn a_new_submodule_appears_as_added_with_its_state() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_submodule(&sandbox);
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![
+            change(".gitmodules", ChangeStatus::Added),
+            submodule(
+                "lib",
+                ChangeStatus::Added,
+                SubmoduleState {
+                    commit_changed: false,
+                    has_tracked_changes: false,
+                    has_untracked_files: false,
+                }
+            ),
+        ]
+    );
+    assert_eq!(repository.status_by_git(), vec!["A  .gitmodules", "A  lib"]);
+}
+
+#[test]
+fn a_submodule_with_a_new_commit_and_changes_inside_appears_as_modified_with_its_state() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_submodule(&sandbox);
+    repository.commit_all("Add the library");
+    repository.write(
+        "lib/lib.rs",
+        "pub fn b() {}
+",
+    );
+    repository.git(&["-C", "lib", "commit", "--quiet", "--all", "--message", "B"]);
+    repository.write(
+        "lib/lib.rs",
+        "pub fn c() {}
+",
+    );
+    repository.write(
+        "lib/notes.md",
+        "notes
+",
+    );
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![submodule(
+            "lib",
+            ChangeStatus::Modified,
+            SubmoduleState {
+                commit_changed: true,
+                has_tracked_changes: true,
+                has_untracked_files: true,
+            }
+        )]
+    );
+    assert_eq!(repository.status_by_git(), vec![" M lib"]);
+}
+
+#[test]
+fn a_submodule_with_only_new_files_inside_appears_with_that_state() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_submodule(&sandbox);
+    repository.commit_all("Add the library");
+    repository.write(
+        "lib/notes.md",
+        "notes
+",
+    );
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![submodule(
+            "lib",
+            ChangeStatus::Modified,
+            SubmoduleState {
+                commit_changed: false,
+                has_tracked_changes: false,
+                has_untracked_files: true,
+            }
+        )]
+    );
+    assert_eq!(repository.status_by_git(), vec![" M lib"]);
+}
+
+#[test]
+fn with_sparse_checkout_files_outside_the_sparse_set_are_not_reported_as_deleted() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write(
+        "README.md",
+        "hello
+",
+    );
+    repository.write(
+        "src/main.rs",
+        "fn main() {}
+",
+    );
+    repository.write(
+        "docs/guide.md",
+        "guide
+",
+    );
+    repository.commit_all("Initial commit");
+    repository.git(&["sparse-checkout", "init", "--cone"]);
+    repository.git(&["sparse-checkout", "set", "src"]);
+    repository.write(
+        "src/main.rs",
+        "fn main() { run() }
+",
+    );
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![change("src/main.rs", ChangeStatus::Modified)]
+    );
+    assert!(!repository.root().join("docs/guide.md").exists());
+    assert_eq!(repository.status_by_git(), vec![" M src/main.rs"]);
+}
+
+/// With `core.autocrlf`, git converts line endings on the way in and out: a file whose only
+/// difference from the last commit is its line endings is no change.
+#[test]
+fn with_autocrlf_files_that_differ_only_in_line_endings_do_not_appear() {
+    for setting in ["true", "input"] {
+        let sandbox = Sandbox::new();
+        sandbox.configure(&format!(
+            "[core]
+	autocrlf = {setting}
+"
+        ));
+        let repository = sandbox.repository("app");
+        repository.write(
+            "unix.txt", "one
+two
+",
+        );
+        repository.write(
+            "windows.txt",
+            "one
+two
+",
+        );
+        repository.commit_all("Initial commit");
+        // An editor that writes the other line endings, as each platform's editors do.
+        repository.write(
+            "unix.txt", "one
+two
+",
+        );
+        repository.write(
+            "windows.txt",
+            "one
+two
+",
+        );
+        repository.write(
+            "edited.txt",
+            "new
+",
+        );
+
+        let change_set = read_changes(&sandbox.gikli(), &repository);
+
+        assert_eq!(
+            change_set.changes,
+            vec![change("edited.txt", ChangeStatus::Untracked)],
+            "core.autocrlf = {setting}"
+        );
+        assert_eq!(repository.status_by_git(), vec!["?? edited.txt"]);
+    }
 }
 
 #[test]
@@ -294,29 +700,75 @@ fn the_users_status_settings_do_not_change_the_changes() {
     );
 }
 
-/// Conflicted files get their own status with #7. Until then they stay in the list as modified.
-#[test]
-fn a_file_with_a_merge_conflict_still_appears() {
-    let sandbox = Sandbox::new();
+/// A repository on `main` whose merge of `feature` stops on a conflict over `README.md`: `main`
+/// changes it to `ours`, and `feature` either changes it to `theirs` or, with None, deletes it.
+fn repository_with_a_conflict(sandbox: &Sandbox, theirs: Option<&str>) -> TestRepository {
     let repository = sandbox.repository("app");
-    repository.write("README.md", "base\n");
+    repository.write(
+        "README.md",
+        "base
+",
+    );
     repository.commit_all("Initial commit");
     repository.git(&["switch", "--quiet", "--create", "feature"]);
-    repository.write("README.md", "feature\n");
+    match theirs {
+        Some(contents) => repository.write("README.md", contents),
+        None => repository.delete("README.md"),
+    }
     repository.commit_all("Feature");
     repository.git(&["switch", "--quiet", "main"]);
-    repository.write("README.md", "main\n");
+    repository.write(
+        "README.md",
+        "ours
+",
+    );
     repository.commit_all("Main");
-    let merge = repository.git_succeeds(&["merge", "--quiet", "feature"]);
+    assert!(
+        !repository.git_succeeds(&["merge", "--quiet", "feature"]),
+        "the merge stops on the conflict"
+    );
+    repository
+}
+
+fn conflicted(path: &str, kind: ConflictKind) -> Change {
+    Change {
+        conflict: Some(kind),
+        ..change(path, ChangeStatus::Conflicted)
+    }
+}
+
+#[test]
+fn a_file_both_sides_changed_appears_as_conflicted_by_both_modifying_it() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_conflict(
+        &sandbox,
+        Some(
+            "theirs
+",
+        ),
+    );
 
     let change_set = read_changes(&sandbox.gikli(), &repository);
 
-    assert!(!merge, "the merge stops on the conflict");
     assert_eq!(
         change_set.changes,
-        vec![change("README.md", ChangeStatus::Modified)]
+        vec![conflicted("README.md", ConflictKind::BothModified)]
     );
     assert_eq!(repository.status_by_git(), vec!["UU README.md"]);
+}
+
+#[test]
+fn a_file_changed_here_and_deleted_on_the_merged_branch_appears_as_conflicted_by_their_deletion() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_conflict(&sandbox, None);
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![conflicted("README.md", ConflictKind::DeletedByThem)]
+    );
+    assert_eq!(repository.status_by_git(), vec!["UD README.md"]);
 }
 
 #[test]

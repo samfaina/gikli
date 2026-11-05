@@ -9,8 +9,9 @@ use gikli_core::{Event, OperationLogEntry};
 fn logged(events: &Receiver<Event>) -> Vec<OperationLogEntry> {
     events
         .try_iter()
-        .map(|event| match event {
-            Event::OperationLogged(entry) => entry,
+        .filter_map(|event| match event {
+            Event::OperationLogged(entry) => Some(entry),
+            _ => None,
         })
         .collect()
 }
