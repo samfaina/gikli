@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::host::HostEnvironment;
+use crate::url_passwords::hide_url_passwords;
 use crate::{Failure, lock};
 
 /// Where the askpass program finds the core.
@@ -50,7 +51,7 @@ const REQUEST_LIMIT: u64 = 1024 * 1024;
 pub struct Prompt {
     pub id: u64,
     pub kind: PromptKind,
-    /// The question, as git or ssh words it.
+    /// The question, as git or ssh words it, with any password in a URL hidden.
     pub text: String,
 }
 
@@ -205,7 +206,7 @@ impl BridgeState {
         let prompt = Prompt {
             id,
             kind: PromptKind::of(&text),
-            text,
+            text: hide_url_passwords(&text),
         };
         lock(&self.pending).insert(id, (prompt.clone(), answer_to));
         self.events.send(Event::PromptRaised(prompt));

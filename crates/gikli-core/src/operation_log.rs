@@ -1,5 +1,5 @@
-//! The operation log: every git command gikli ran, with its raw output. It is read-only: the user
-//! can read it and clear it, nothing else.
+//! The operation log: every git command gikli ran, with its raw output, except for the passwords
+//! in URLs, which it never holds. It is read-only: the user can read it and clear it, nothing else.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::events::{Event, EventBus};
 use crate::lock;
 
-/// One git command gikli ran, with its raw output.
+/// One git command gikli ran, with its raw output. A password in a URL shows as `***`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationLogEntry {

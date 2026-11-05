@@ -21,6 +21,7 @@ use crate::host::HostEnvironment;
 use crate::operation_log::{OperationLog, OperationLogEntry};
 use crate::operations::Progress;
 use crate::prompts;
+use crate::url_passwords::hide_url_passwords;
 use crate::version::GitVersion;
 use crate::wsl::WslShare;
 use crate::{GitCheck, GitSource, MINIMUM_GIT_VERSION};
@@ -146,7 +147,10 @@ pub(crate) struct GitRunner {
 /// One finished git run.
 pub(crate) struct Invocation {
     pub success: bool,
+    /// What git wrote, as it wrote it, for gikli to parse. It goes nowhere else, as it can hold a
+    /// password in a URL.
     pub stdout: Vec<u8>,
+    /// What git wrote, with passwords in URLs hidden. Part of it can reach the user.
     pub stderr: Vec<u8>,
     /// The hook that failed in this run, as git's trace of the run names it.
     pub failed_hook: Option<String>,
@@ -282,7 +286,10 @@ impl GitRunner {
         let entry = OperationLogEntry {
             id: 0,
             folder: folder.to_path_buf(),
-            args: command_line.iter().map(|arg| (*arg).to_owned()).collect(),
+            args: command_line
+                .iter()
+                .map(|arg| hide_url_passwords(arg))
+                .collect(),
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
@@ -310,14 +317,15 @@ impl GitRunner {
                 return Err(error);
             }
         };
+        let stderr = hide_url_passwords(&String::from_utf8_lossy(&stderr));
         entry.exit_code = status.code();
-        entry.stdout = String::from_utf8_lossy(&stdout).into_owned();
-        entry.stderr = String::from_utf8_lossy(&stderr).into_owned();
+        entry.stdout = hide_url_passwords(&String::from_utf8_lossy(&stdout));
+        entry.stderr = stderr.clone();
         self.log.record(entry);
         Ok(Invocation {
             success: status.success(),
             stdout,
-            stderr,
+            stderr: stderr.into_bytes(),
             failed_hook: trace.failed_hook(),
             credentials_refused: trace.refused_credentials_file.exists(),
         })
