@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{Event, Failure, LongOperation, Progress, Repository};
+use gikli_core::{Event, Failure, LongOperation, Progress, Repository, RunningOperation};
 
 /// How long the tests wait for the clone to start before failing. Generous, for slow CI machines.
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -96,8 +96,12 @@ fn a_clone_reports_its_progress_and_opens_as_a_project() {
     );
 }
 
-/// Makes every clone from the sandbox's remotes wait, before the remote sends anything, until
-/// the returned file exists. Holds the clone while the test checks what gikli does meanwhile.
+/// The phase the remote reports while a clone is held, before it sends anything. In German, as
+/// git reports its phases in the user's language: gikli reads progress without knowing them.
+const HOLDING: &str = "Übertragung wird angehalten";
+
+/// Makes every clone from the sandbox's remotes report [`HOLDING`] at 50%, then wait until the
+/// returned file exists. Holds the clone while the test checks what gikli does meanwhile.
 fn hold_clones(sandbox: &Sandbox) -> PathBuf {
     let release = sandbox.root().join("release-clone");
     let hook = sandbox.root().join("hold-clone.sh");
@@ -105,7 +109,8 @@ fn hold_clones(sandbox: &Sandbox) -> PathBuf {
     fs::write(
         &hook,
         format!(
-            "while [ ! -f '{}' ]; do sleep 0.05; done\nexec \"$@\"\n",
+            "printf '{HOLDING}:  50%% (1/2)\\r' >&2\n\
+             while [ ! -f '{}' ]; do sleep 0.05; done\nexec \"$@\"\n",
             forward(&release)
         ),
     )
@@ -119,7 +124,7 @@ fn hold_clones(sandbox: &Sandbox) -> PathBuf {
 }
 
 #[test]
-fn the_rest_of_gikli_keeps_answering_while_a_clone_runs() {
+fn a_clone_reports_progress_while_it_runs_and_the_rest_of_gikli_keeps_answering() {
     let sandbox = Sandbox::new();
     let remote = remote_with_commits(&sandbox);
     let other = sandbox.repository("other");
@@ -133,14 +138,15 @@ fn the_rest_of_gikli_keeps_answering_while_a_clone_runs() {
 
     std::thread::scope(|scope| {
         let clone = scope.spawn(|| gikli.clone_repository(&url, &target));
-        loop {
+        let (id, progress) = loop {
             match events.recv_timeout(DEADLINE) {
-                Ok(Event::OperationStarted { .. }) => break,
+                Ok(Event::OperationProgress { id, progress }) => break (id, progress),
                 Ok(_) => {}
-                Err(error) => panic!("the clone never started: {error}"),
+                Err(error) => panic!("the clone reported no progress: {error}"),
             }
-        }
+        };
 
+        let running = gikli.running_operations();
         let changes = gikli
             .read_changes(&project.repositories[0])
             .expect("read changes while the clone runs");
@@ -153,12 +159,27 @@ fn the_rest_of_gikli_keeps_answering_while_a_clone_runs() {
             .expect("clone the remote");
 
         assert!(still_running, "the clone was held while gikli answered");
+        assert!(progress.phase.ends_with(HOLDING), "{progress:?}");
+        assert_eq!(progress.percent, 50);
+        assert_eq!(
+            running,
+            vec![RunningOperation {
+                id,
+                operation: LongOperation::Clone {
+                    url: url.clone(),
+                    folder: target.clone()
+                },
+                progress: Some(progress)
+            }],
+            "a window that opens during the clone sees it"
+        );
         assert_eq!(changes.changes.len(), 1);
         assert!(
             log.iter()
                 .any(|entry| entry.args.contains(&"status".to_owned()))
         );
     });
+    assert!(gikli.running_operations().is_empty());
     assert_eq!(other.status_by_git(), ["?? notes.txt"]);
     assert_eq!(
         sandbox

@@ -16,8 +16,9 @@ use crate::operations::{LongOperation, Progress};
 pub enum Event {
     /// gikli ran a git command. The operation log shows these entries.
     OperationLogged(OperationLogEntry),
-    /// The user cleared the operation log: every view of it empties.
-    OperationLogCleared,
+    /// The user cleared the operation log: every view of it drops the entries whose id is below
+    /// `before`. Later entries count from there.
+    OperationLogCleared { before: u64 },
     /// A feature raised a notification. It stays until the user acts on it or dismisses it.
     NotificationRaised(Notification),
     /// A notification went away: the user acted on it or dismissed it, or what it was about no

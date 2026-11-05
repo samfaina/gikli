@@ -17,6 +17,7 @@ import {
   operationLog,
   readChanges,
   removeRepository,
+  runningOperations as runningOperationsOfCore,
   setChangeGrouping,
   setGitPath,
   setOperationLogSoftWrap,
@@ -35,13 +36,14 @@ import {
   type ConflictKind,
   type Failure,
   type GitCheck,
+  type CoreEvent,
   type LongOperation,
   type Notification,
   type NotificationAction,
   type OperationLogEntry,
-  type Progress,
   type Project,
   type Repository,
+  type RunningOperation,
 } from "./core";
 import { t, type StringKey } from "./strings";
 
@@ -188,25 +190,26 @@ let shownFolder: string | null = null;
 /** The Repositories shown, by root, each with the function that reads its changes again. */
 const shownRepositories = new Map<string, { repository: Repository; refresh: () => void }>();
 
-void onCoreEvent((event) => {
+/** Applies one event from the core to this window. */
+function handleCoreEvent(event: CoreEvent): void {
   switch (event.event) {
     case "operationLogged":
-      appendLogEntries([event.payload]);
+      appendLogEntry(event.payload);
       break;
     case "operationLogCleared":
-      shownLogEntries.clear();
-      showLogEntries();
+      clearLogEntries(event.payload.before);
       break;
     case "notificationRaised":
       shownNotifications.set(event.payload.id, event.payload);
       showNotifications();
       break;
     case "notificationRemoved":
+      removedNotifications.add(event.payload.id);
       shownNotifications.delete(event.payload.id);
       showNotifications();
       break;
     case "operationStarted":
-      runningOperations.set(event.payload.id, { operation: event.payload.operation, progress: null });
+      runningOperations.set(event.payload.id, { id: event.payload.id, operation: event.payload.operation, progress: null });
       showOperations();
       break;
     case "operationProgress": {
@@ -218,6 +221,7 @@ void onCoreEvent((event) => {
       break;
     }
     case "operationFinished":
+      finishedOperations.add(event.payload.id);
       runningOperations.delete(event.payload.id);
       showOperations();
       break;
@@ -225,17 +229,32 @@ void onCoreEvent((event) => {
       shownRepositories.get(event.payload.repository.root)?.refresh();
       break;
   }
-});
+}
 
 async function start(): Promise<void> {
-  // Read before opening a Project, which raises notifications and logs commands as events.
-  const [current, logged, raised] = await Promise.all([settings(), operationLog(), notifications()]);
+  // Listen first, then read what the core already holds: nothing happens between the two unseen.
+  // What an event removed while the reads ran stays removed.
+  await onCoreEvent(handleCoreEvent);
+  const [current, logged, raised, running] = await Promise.all([
+    settings(),
+    operationLog(),
+    notifications(),
+    runningOperationsOfCore(),
+  ]);
   showSoftWrap(current.operationLogSoftWrap);
-  appendLogEntries(logged);
+  mergeLogEntries(logged);
   for (const notification of raised) {
-    shownNotifications.set(notification.id, notification);
+    if (!removedNotifications.has(notification.id) && !shownNotifications.has(notification.id)) {
+      shownNotifications.set(notification.id, notification);
+    }
   }
   showNotifications();
+  for (const operation of running) {
+    if (!finishedOperations.has(operation.id) && !runningOperations.has(operation.id)) {
+      runningOperations.set(operation.id, { ...operation });
+    }
+  }
+  showOperations();
   showGit(await checkGit());
   // Even without a usable git, a folder under \\wsl$ opens with the git of its distribution;
   // any other folder reports why it cannot open.
@@ -623,31 +642,71 @@ const CONFLICT_LABELS: Record<ConflictKind, StringKey> = {
   deletedByThem: "conflictDeletedByThem",
 };
 
-/** The operation log entries this window shows, by id: every entry since the log was last cleared. */
-const shownLogEntries = new Map<number, OperationLogEntry>();
+/** How many operation log entries a window shows, as many as the core keeps. */
+const SHOWN_LOG_ENTRIES = 1000;
 
-/** Adds `entries` to the operation log view, skipping the ones it already shows. */
-function appendLogEntries(entries: OperationLogEntry[]): void {
+/** The ids of the operation log entries this window shows, oldest first, matching the views in {@link operationLogEntries}. */
+const shownLogIds: number[] = [];
+
+/** Entries with a lower id were cleared: a late read of the log must not bring them back. */
+let logClearedBefore = 0;
+
+/** Adds a new entry at the end of the operation log view, unless the view already shows it. */
+function appendLogEntry(entry: OperationLogEntry): void {
+  const last = shownLogIds[shownLogIds.length - 1];
+  if (entry.id < logClearedBefore || (last !== undefined && entry.id <= last)) {
+    return;
+  }
   const atEnd =
     operationLogEntries.scrollTop + operationLogEntries.clientHeight >= operationLogEntries.scrollHeight - 4;
-  for (const entry of entries) {
-    shownLogEntries.set(entry.id, entry);
+  if (shownLogIds.length === 0) {
+    operationLogEntries.replaceChildren();
   }
-  showLogEntries();
+  shownLogIds.push(entry.id);
+  operationLogEntries.append(logEntryView(entry));
+  while (shownLogIds.length > SHOWN_LOG_ENTRIES) {
+    shownLogIds.shift();
+    operationLogEntries.firstElementChild?.remove();
+  }
   // Follows new commands, unless the user scrolled up to read older ones.
   if (atEnd) {
     operationLogEntries.scrollTop = operationLogEntries.scrollHeight;
   }
 }
 
-/** Shows the operation log entries, oldest first. The view is read-only: text can be selected, not edited. */
-function showLogEntries(): void {
-  if (shownLogEntries.size === 0) {
-    operationLogEntries.replaceChildren(line("operation-log-empty", t("operationLogEmpty")));
-    return;
+/** Puts `entries`, read from the core, before the entries that arrived as events meanwhile. */
+function mergeLogEntries(entries: OperationLogEntry[]): void {
+  const first = shownLogIds[0];
+  const older = entries.filter((entry) => entry.id >= logClearedBefore && (first === undefined || entry.id < first));
+  const room = Math.max(0, SHOWN_LOG_ENTRIES - shownLogIds.length);
+  const kept = older.slice(Math.max(0, older.length - room));
+  if (kept.length > 0) {
+    if (shownLogIds.length === 0) {
+      operationLogEntries.replaceChildren();
+    }
+    shownLogIds.unshift(...kept.map((entry) => entry.id));
+    operationLogEntries.prepend(...kept.map(logEntryView));
+    operationLogEntries.scrollTop = operationLogEntries.scrollHeight;
   }
-  const entries = [...shownLogEntries.values()].sort((first, second) => first.id - second.id);
-  operationLogEntries.replaceChildren(...entries.map(logEntryView));
+  if (shownLogIds.length === 0) {
+    showLogEmpty();
+  }
+}
+
+/** Drops every entry whose id is below `before`, as the user cleared the log. */
+function clearLogEntries(before: number): void {
+  logClearedBefore = Math.max(logClearedBefore, before);
+  while (shownLogIds.length > 0 && shownLogIds[0]! < logClearedBefore) {
+    shownLogIds.shift();
+    operationLogEntries.firstElementChild?.remove();
+  }
+  if (shownLogIds.length === 0) {
+    showLogEmpty();
+  }
+}
+
+function showLogEmpty(): void {
+  operationLogEntries.replaceChildren(line("operation-log-empty", t("operationLogEmpty")));
 }
 
 function logEntryView(entry: OperationLogEntry): HTMLElement {
@@ -690,6 +749,9 @@ function showSoftWrap(softWrap: boolean): void {
 /** The notifications raised, by id, for every Project: this window shows the ones about its own. */
 const shownNotifications = new Map<number, Notification>();
 
+/** The notifications removed since this window started listening, so a late read does not bring them back. */
+const removedNotifications = new Set<number>();
+
 /** Shows the notifications about the Project this window shows, each with its actions and a way to dismiss it. */
 function showNotifications(): void {
   const mine = [...shownNotifications.values()]
@@ -716,7 +778,11 @@ function notificationView(notification: Notification): HTMLElement {
       buttons.forEach((other) => (other.disabled = true));
       try {
         const outcome = await actOnNotification(notification.id, action);
-        showProject(outcome.payload);
+        switch (outcome.outcome) {
+          case "projectChanged":
+            showProject(outcome.payload);
+            break;
+        }
       } catch (error) {
         report(describeError(error));
         buttons.forEach((other) => (other.disabled = false));
@@ -746,13 +812,16 @@ function describeNotification(notification: Notification): string {
 }
 
 const ACTION_LABELS: Record<NotificationAction["action"], StringKey> = {
-  addRepository: "notificationAddRepository",
-  ignoreRepository: "notificationIgnoreRepository",
-  removeRepository: "notificationRemoveRepository",
+  addRepository: "addRepository",
+  ignoreRepository: "ignoreRepository",
+  removeRepository: "removeRepository",
 };
 
 /** The long operations running, by id, with the last progress each reported. Every window shows them all. */
-const runningOperations = new Map<number, { operation: LongOperation; progress: Progress | null }>();
+const runningOperations = new Map<number, RunningOperation>();
+
+/** The long operations finished since this window started listening, so a late read does not show them again. */
+const finishedOperations = new Set<number>();
 
 /** Shows each running long operation with its progress, in the status area, without blocking the views. */
 function showOperations(): void {

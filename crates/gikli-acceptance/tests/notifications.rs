@@ -230,6 +230,7 @@ fn a_notification_takes_only_the_actions_it_offers() {
         .expect("reopen project");
     assert_eq!(reopened.repositories, project.repositories);
     assert!(reopened.unregistered_repositories.contains(&other));
+    assert_eq!(app.status_by_git(), vec!["?? docs/", "?? libs/engine/"]);
 }
 
 #[test]
@@ -244,6 +245,7 @@ fn reopening_a_project_does_not_raise_the_same_notification_twice() {
     gikli.open_project(app.root()).expect("open project again");
 
     assert_eq!(gikli.notifications(), first);
+    assert_eq!(app.status_by_git(), vec!["?? libs/engine/"]);
 }
 
 #[test]
@@ -276,4 +278,43 @@ fn a_notification_goes_away_when_the_user_decides_from_the_project_view() {
         }]
     );
     assert_eq!(app.status_by_git(), vec!["?? docs/", "?? libs/engine/"]);
+}
+
+#[test]
+fn reopening_a_project_withdraws_a_notification_that_no_longer_holds() {
+    let sandbox = Sandbox::new();
+    let app = sandbox.repository("app");
+    sandbox.repository("app/libs/engine");
+    let gikli = sandbox.gikli();
+    gikli.open_project(app.root()).expect("open project");
+    let notification = gikli.notifications().remove(0);
+    let events = gikli.subscribe();
+    fs::remove_dir_all(app.root().join("libs")).expect("delete the nested repository");
+
+    gikli.open_project(app.root()).expect("reopen project");
+
+    assert!(gikli.notifications().is_empty());
+    assert!(events.try_iter().any(|event| event
+        == Event::NotificationRemoved {
+            id: notification.id
+        }));
+    assert_eq!(app.status_by_git(), Vec::<String>::new());
+}
+
+#[test]
+fn a_dismissed_notification_stays_dismissed_when_the_project_opens_again() {
+    let sandbox = Sandbox::new();
+    let app = sandbox.repository("app");
+    sandbox.repository("app/libs/engine");
+    let gikli = sandbox.gikli();
+    gikli.open_project(app.root()).expect("open project");
+    let notification = gikli.notifications().remove(0);
+    gikli.dismiss_notification(notification.id);
+    let events = gikli.subscribe();
+
+    gikli.open_project(app.root()).expect("reopen project");
+
+    assert!(gikli.notifications().is_empty());
+    assert!(raised(&events).is_empty());
+    assert_eq!(app.status_by_git(), vec!["?? libs/engine/"]);
 }

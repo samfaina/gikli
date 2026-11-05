@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment,
     Notification, NotificationAction, NotificationOutcome, OperationLogEntry, Project,
-    ProjectWindow, Repository, Settings,
+    ProjectWindow, Repository, RunningOperation, Settings,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -145,6 +145,11 @@ fn remove_repository(
     gikli.remove_repository(&folder, &repository)
 }
 
+#[tauri::command]
+fn running_operations(gikli: State<'_, Gikli>) -> Vec<RunningOperation> {
+    gikli.running_operations()
+}
+
 #[tauri::command(async)]
 fn clone_repository(
     gikli: State<'_, Gikli>,
@@ -265,6 +270,7 @@ fn main() {
             remove_repository,
             create_repository,
             clone_repository,
+            running_operations,
             window_for_project,
             read_changes,
             watch_changes,

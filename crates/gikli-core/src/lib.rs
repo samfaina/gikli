@@ -30,7 +30,7 @@ pub use events::Event;
 pub use host::HostEnvironment;
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
-pub use operations::{LongOperation, Progress};
+pub use operations::{LongOperation, Progress, RunningOperation};
 pub use settings::Settings;
 pub use status::{
     Change, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, ConflictKind, SubmoduleState,
@@ -262,8 +262,8 @@ impl Gikli {
         self.events.subscribe()
     }
 
-    /// Every git command gikli ran, oldest first, with its raw output. Each new one also arrives
-    /// as [`Event::OperationLogged`].
+    /// The git commands gikli ran, oldest first, with their raw output: the last
+    /// thousand of them. Each new one also arrives as [`Event::OperationLogged`].
     pub fn operation_log(&self) -> Vec<OperationLogEntry> {
         self.log.entries()
     }
@@ -363,6 +363,7 @@ impl Gikli {
                 folder: project.folder,
             });
         }
+        self.notifications.withdraw_settled(&project);
         self.raise_project_notifications(&project);
         Ok(project)
     }
@@ -380,13 +381,7 @@ impl Gikli {
         id: u64,
         action: &NotificationAction,
     ) -> Result<NotificationOutcome, Failure> {
-        let notification = self
-            .notifications
-            .get(id)
-            .ok_or(Failure::NotificationGone { id })?;
-        if !notification.actions.contains(action) {
-            return Err(Failure::NotificationActionNotOffered { id });
-        }
+        let notification = self.notifications.offering(id, action)?;
         let folder = &notification.project;
         let project = match action {
             NotificationAction::AddRepository { repository } => {
@@ -552,6 +547,12 @@ impl Gikli {
             return Err(Failure::RepositoryNotCreated { folder });
         }
         Ok(Repository { root: folder })
+    }
+
+    /// The long operations running, with the last progress of each, for a view that opens while
+    /// they run. Their progress then arrives as events.
+    pub fn running_operations(&self) -> Vec<RunningOperation> {
+        self.operations.running()
     }
 
     /// Clones the repository at `url` into `folder`, which must not exist or be empty, and opens
@@ -816,7 +817,9 @@ fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     })
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+/// Locks `mutex`, even when a thread panicked while holding it, so one failed command does not
+/// stop every later one.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

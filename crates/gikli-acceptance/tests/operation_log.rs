@@ -95,12 +95,13 @@ fn clearing_the_operation_log_empties_it_and_later_commands_are_logged_again() {
     gikli.clear_operation_log();
 
     assert!(gikli.operation_log().is_empty());
-    assert!(
-        events
-            .try_iter()
-            .any(|event| matches!(event, Event::OperationLogCleared)),
-        "every window learns the log was cleared"
-    );
+    let cleared_before = events
+        .try_iter()
+        .find_map(|event| match event {
+            Event::OperationLogCleared { before } => Some(before),
+            _ => None,
+        })
+        .expect("every window learns the log was cleared");
     gikli
         .read_changes(&project.repositories[0])
         .expect("read changes");
@@ -108,8 +109,8 @@ fn clearing_the_operation_log_empties_it_and_later_commands_are_logged_again() {
     assert_eq!(after.len(), 1);
     assert!(after[0].args.contains(&"status".to_owned()));
     assert!(
-        before.iter().all(|entry| entry.id < after[0].id),
-        "a new entry is never mistaken for a cleared one"
+        before.iter().all(|entry| entry.id < cleared_before) && after[0].id >= cleared_before,
+        "a window can tell the cleared entries from the new ones"
     );
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }

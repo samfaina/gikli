@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 
 use crate::host::HostEnvironment;
@@ -166,9 +166,7 @@ impl GitRunner {
     /// Runs git with `args` in `folder`.
     pub fn run(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
         let (mut command, entry) = self.command(folder, args);
-        let output = command
-            .output()
-            .map(|output| (output.status, output.stdout, output.stderr));
+        let output = command.output();
         self.finish(entry, output)
     }
 
@@ -193,7 +191,11 @@ impl GitRunner {
             });
             let stderr = read_progress(child.stderr.take().expect("stderr is piped"), report);
             let status = child.wait()?;
-            Ok((status, stdout.join().unwrap_or_default(), stderr))
+            Ok(Output {
+                status,
+                stdout: stdout.join().unwrap_or_default(),
+                stderr,
+            })
         });
         self.finish(entry, output)
     }
@@ -225,14 +227,17 @@ impl GitRunner {
         (command, entry)
     }
 
-    /// Records the run described by `entry`, which ended with `output`: its exit status,
-    /// standard output and error output, or why git could not start.
+    /// Records the run described by `entry`, which ended with `output`, or could not start.
     fn finish(
         &self,
         mut entry: OperationLogEntry,
-        output: std::io::Result<(ExitStatus, Vec<u8>, Vec<u8>)>,
+        output: std::io::Result<Output>,
     ) -> std::io::Result<Invocation> {
-        let (status, stdout, stderr) = match output {
+        let Output {
+            status,
+            stdout,
+            stderr,
+        } = match output {
             Ok(output) => output,
             Err(error) => {
                 entry.error = Some(error.to_string());

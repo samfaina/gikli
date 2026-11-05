@@ -189,9 +189,18 @@ export interface Progress {
   percent: number;
 }
 
+/** A long operation that has started and not finished. */
+export interface RunningOperation {
+  id: number;
+  operation: LongOperation;
+  /** null until git reports any. */
+  progress: Progress | null;
+}
+
 export type CoreEvent =
   | { event: "operationLogged"; payload: OperationLogEntry }
-  | { event: "operationLogCleared" }
+  /** Drop the entries whose id is below `before`. */
+  | { event: "operationLogCleared"; payload: { before: number } }
   | { event: "notificationRaised"; payload: Notification }
   | { event: "notificationRemoved"; payload: { id: number } }
   | { event: "operationStarted"; payload: { id: number; operation: LongOperation } }
@@ -256,6 +265,11 @@ export function actOnNotification(id: number, action: NotificationAction): Promi
 /** Removes the notification `id` without acting on it. */
 export function dismissNotification(id: number): Promise<void> {
   return invoke("dismiss_notification", { id });
+}
+
+/** The long operations running, with their last progress, for a window that opens while they run. */
+export function runningOperations(): Promise<RunningOperation[]> {
+  return invoke("running_operations");
 }
 
 /**

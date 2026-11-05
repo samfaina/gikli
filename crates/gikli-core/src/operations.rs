@@ -3,12 +3,12 @@
 //! git reports in between. Nothing else in the core waits for them.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
 use crate::events::{Event, EventBus};
+use crate::lock;
 
 /// A long operation, as the views show it while it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -46,30 +46,68 @@ impl Progress {
     }
 }
 
-/// Announces the long operations of the core.
+/// A long operation that has started and not finished, with the last progress it reported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningOperation {
+    pub id: u64,
+    pub operation: LongOperation,
+    /// None until git reports any.
+    pub progress: Option<Progress>,
+}
+
+/// The long operations of the core: the ones running, announced as they start, advance and
+/// finish.
 pub(crate) struct LongOperations {
-    next_id: AtomicU64,
+    state: Mutex<State>,
     events: Arc<EventBus>,
+}
+
+#[derive(Default)]
+struct State {
+    next_id: u64,
+    running: Vec<RunningOperation>,
 }
 
 impl LongOperations {
     pub fn new(events: Arc<EventBus>) -> Self {
         Self {
-            next_id: AtomicU64::new(0),
+            state: Mutex::default(),
             events,
         }
     }
 
     /// Runs `work` as `operation`. `work` receives the function that reports its progress.
     /// [`Event::OperationStarted`] goes out before it, and [`Event::OperationFinished`] after it
-    /// whatever its result.
+    /// whatever its result. Nothing is locked while `work` runs.
     pub fn run<T>(&self, operation: LongOperation, work: impl FnOnce(&dyn Fn(Progress)) -> T) -> T {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.events.send(Event::OperationStarted { id, operation });
+        let id = {
+            let mut state = lock(&self.state);
+            let id = state.next_id;
+            state.next_id += 1;
+            state.running.push(RunningOperation {
+                id,
+                operation: operation.clone(),
+                progress: None,
+            });
+            self.events.send(Event::OperationStarted { id, operation });
+            id
+        };
         let result = work(&|progress| {
+            let mut state = lock(&self.state);
+            if let Some(running) = state.running.iter_mut().find(|running| running.id == id) {
+                running.progress = Some(progress.clone());
+            }
             self.events.send(Event::OperationProgress { id, progress });
         });
+        let mut state = lock(&self.state);
+        state.running.retain(|running| running.id != id);
         self.events.send(Event::OperationFinished { id });
         result
+    }
+
+    /// The long operations running, oldest first.
+    pub fn running(&self) -> Vec<RunningOperation> {
+        lock(&self.state).running.clone()
     }
 }
