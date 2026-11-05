@@ -3,33 +3,49 @@
 //! them hidden. Only git receives the URL as the user gave it.
 
 /// What shows in place of a password.
-const HIDDEN: &str = "***";
+const MASK: &str = "***";
 
 /// `text` with the password of each URL in it hidden, and everything else as it was.
-///
-/// The part of a URL that can hold a password ends at the first `/`, `?` or `#`, as git reads it,
-/// and at the end of the line. The password runs from the first `:` there to the last `@`, as a
-/// password can hold an `@` when it is not encoded. Anything else that reads the same way loses the
-/// same part, which is the safe way to get it wrong.
 pub(crate) fn hide_url_passwords(text: &str) -> String {
-    let mut hidden = String::with_capacity(text.len());
+    let mut shown = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(scheme_end) = rest.find("://") {
         let (before, after) = rest.split_at(scheme_end + "://".len());
-        hidden.push_str(before);
+        shown.push_str(before);
         rest = after;
-        let end = after
-            .find(['/', '?', '#', '\r', '\n'])
-            .unwrap_or(after.len());
-        let authority = &after[..end];
-        if let Some(at) = authority.rfind('@')
-            && let Some(colon) = authority[..at].find(':')
-        {
-            hidden.push_str(&authority[..=colon]);
-            hidden.push_str(HIDDEN);
+        if let Some((colon, at)) = password_bounds(after) {
+            shown.push_str(&after[..=colon]);
+            shown.push_str(MASK);
             rest = &after[at..];
         }
     }
-    hidden.push_str(rest);
-    hidden
+    shown.push_str(rest);
+    shown
+}
+
+/// The `:` before the password and the `@` after it, in what follows the `://` of a URL.
+///
+/// A password holds whatever the user typed, encoded or not, so its `@` is the last one before the
+/// first `/` of the line, and `?` and `#` are part of it. When no `@` comes before that `/`, the
+/// password itself may hold the `/`, unless what follows the `:` reads as a port. It then runs to
+/// the last `@` of the line. Other text that reads the same way loses the same part, which is the
+/// safe way to get it wrong; a password that starts with digits and a `/` reads as a port and stays.
+fn password_bounds(url: &str) -> Option<(usize, usize)> {
+    let line = url.split(['\r', '\n']).next().unwrap_or(url);
+    let authority = &line[..line.find('/').unwrap_or(line.len())];
+    if let Some(at) = authority.rfind('@') {
+        return authority[..at].find(':').map(|colon| (colon, at));
+    }
+    // The colons of an IPv6 address.
+    if authority.starts_with('[') {
+        return None;
+    }
+    let colon = authority.find(':')?;
+    let reads_as_port = authority[colon + 1..]
+        .bytes()
+        .all(|byte| byte.is_ascii_digit());
+    if reads_as_port {
+        return None;
+    }
+    line.rfind('@').map(|at| (colon, at))
 }

@@ -9,7 +9,6 @@ use serde::Serialize;
 
 use crate::events::{Event, EventBus};
 use crate::lock;
-use crate::url_passwords::hide_url_passwords;
 
 /// A long operation, as the views show it while it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -41,7 +40,7 @@ impl Progress {
         let percent: u8 = line[digits_start..counter].parse().ok()?;
         let phase = line[..digits_start].trim_end().strip_suffix(':')?.trim();
         (percent <= 100 && !phase.is_empty()).then(|| Self {
-            phase: hide_url_passwords(phase),
+            phase: phase.to_owned(),
             percent,
         })
     }

@@ -151,7 +151,7 @@ pub(crate) struct Invocation {
     /// password in a URL.
     pub stdout: Vec<u8>,
     /// What git wrote, with passwords in URLs hidden. Part of it can reach the user.
-    pub stderr: Vec<u8>,
+    pub stderr: String,
     /// The hook that failed in this run, as git's trace of the run names it.
     pub failed_hook: Option<String>,
     /// Whether a remote refused the credentials git gave it in this run.
@@ -325,7 +325,7 @@ impl GitRunner {
         Ok(Invocation {
             success: status.success(),
             stdout,
-            stderr: stderr.into_bytes(),
+            stderr,
             failed_hook: trace.failed_hook(),
             credentials_refused: trace.refused_credentials_file.exists(),
         })
@@ -372,17 +372,19 @@ fn read_progress(mut stderr: impl Read, report: &dyn Fn(Progress)) -> Vec<u8> {
             .iter()
             .position(|byte| matches!(byte, b'\r' | b'\n'))
         {
-            let line = String::from_utf8_lossy(&captured[line_start..line_start + end]);
-            if let Some(progress) = Progress::parse(&line) {
-                report(progress);
-            }
+            report_progress_in(&captured[line_start..line_start + end], report);
             line_start += end + 1;
         }
     }
-    if let Some(progress) = Progress::parse(&String::from_utf8_lossy(&captured[line_start..])) {
+    report_progress_in(&captured[line_start..], report);
+    captured
+}
+
+/// Passes the progress in this line of git's error output to `report`, when there is any.
+fn report_progress_in(line: &[u8], report: &dyn Fn(Progress)) {
+    if let Some(progress) = Progress::parse(&hide_url_passwords(&String::from_utf8_lossy(line))) {
         report(progress);
     }
-    captured
 }
 
 impl Invocation {
@@ -394,9 +396,8 @@ impl Invocation {
     /// can be told: without the line that names the folder, the first one, in the user's language,
     /// and without the progress of git and of the remote.
     pub fn without_clone_reports(&self) -> Self {
-        let stderr = String::from_utf8_lossy(&self.stderr);
         let mut kept = String::new();
-        for line in stderr.split_inclusive('\n').skip(1) {
+        for line in self.stderr.split_inclusive('\n').skip(1) {
             let text = line.trim_end_matches(['\r', '\n']);
             // git redraws a progress line after a carriage return.
             let last_drawn = text.rsplit('\r').next().unwrap_or(text);
@@ -408,7 +409,7 @@ impl Invocation {
         Self {
             success: self.success,
             stdout: self.stdout.clone(),
-            stderr: kept.into_bytes(),
+            stderr: kept,
             failed_hook: self.failed_hook.clone(),
             credentials_refused: self.credentials_refused,
         }

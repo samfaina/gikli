@@ -1,6 +1,7 @@
 //! A clone URL can carry a password. gikli hides it wherever it keeps or shows the URL, and git
 //! still receives the URL as the user gave it.
 
+use std::path::Path;
 use std::time::Duration;
 
 use gikli_acceptance::{Sandbox, TestRepository, askpass, fake_git, file_url};
@@ -42,13 +43,12 @@ fn a_clone_works_with_the_password_in_the_url_and_only_git_sees_it() {
         .clone_repository(&url, &target)
         .expect("the remote takes the password in the URL");
 
-    let clone = sandbox.existing_repository(&target);
+    assert_cloned(&sandbox, &remote, &target);
     assert_eq!(
-        clone.git(&["rev-parse", "HEAD"]),
-        remote.git(&["rev-parse", "main"])
-    );
-    assert_eq!(
-        clone.git(&["config", "remote.origin.url"]).trim_end(),
+        sandbox
+            .existing_repository(&target)
+            .git(&["config", "remote.origin.url"])
+            .trim_end(),
         url,
         "git received the URL as the user gave it"
     );
@@ -63,23 +63,30 @@ fn a_clone_works_with_the_password_in_the_url_and_only_git_sees_it() {
         )),
         "{events:?}"
     );
+    let args = logged_run(&gikli, "clone").args;
+    assert!(args.contains(&hidden), "{args:?}");
     let log = gikli.operation_log();
-    let logged = log
-        .iter()
-        .find(|entry| entry.args.contains(&"clone".to_owned()))
-        .expect("the clone is logged");
-    assert!(logged.args.contains(&hidden), "{:?}", logged.args);
     assert!(!format!("{log:?}").contains(PASSWORD), "{log:?}");
     assert!(!format!("{events:?}").contains(PASSWORD), "{events:?}");
 }
 
-/// What `gikli` logged about the clone it ran.
-fn logged_clone(gikli: &Gikli) -> OperationLogEntry {
+/// What `gikli` logged about the command with this argument.
+fn logged_run(gikli: &Gikli, argument: &str) -> OperationLogEntry {
     gikli
         .operation_log()
         .into_iter()
-        .find(|entry| entry.args.contains(&"clone".to_owned()))
-        .expect("the clone is logged")
+        .find(|entry| entry.args.iter().any(|arg| arg == argument))
+        .expect("the command is logged")
+}
+
+/// Checks with plain git that `target` holds what `remote` holds.
+fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
+    assert_eq!(
+        sandbox
+            .existing_repository(target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
 }
 
 #[test]
@@ -94,7 +101,8 @@ fn what_a_hook_repeats_of_the_url_shows_without_the_password() {
 
     gikli.clone_repository(&url, &target).expect("clone");
 
-    let stderr = logged_clone(&gikli).stderr;
+    assert_cloned(&sandbox, &remote, &target);
+    let stderr = logged_run(&gikli, "clone").stderr;
     assert!(!stderr.contains(PASSWORD), "{stderr}");
     assert!(
         stderr.contains(&with_credentials(&server.url(), USERNAME, "***")),
@@ -128,6 +136,7 @@ fn a_failing_hook_that_repeats_the_url_is_explained_without_the_password() {
             output: format!("Cannot reach {hidden}\n"),
         }
     );
+    assert_cloned(&sandbox, &remote, &target);
 }
 
 #[test]
@@ -154,7 +163,22 @@ fn only_the_password_of_a_url_goes_away() {
             "from https://ada:s3cret@one/x to ssh://bob:hunter2@two/y",
             "from https://ada:***@one/x to ssh://bob:***@two/y",
         ),
+        (
+            "https://ada:se/cret@host/repo.git",
+            "https://ada:***@host/repo.git",
+        ),
+        (
+            "https://ada:pa#ss@host/repo.git",
+            "https://ada:***@host/repo.git",
+        ),
+        (
+            "https://ada:pa?ss@host/repo.git",
+            "https://ada:***@host/repo.git",
+        ),
         ("https://ada@host/repo.git", "https://ada@host/repo.git"),
+        ("ssh://git@host:org/repo@v1", "ssh://git@host:org/repo@v1"),
+        ("http://[::1]/ada@home", "http://[::1]/ada@home"),
+        ("http://[::1]:8080/ada@home", "http://[::1]:8080/ada@home"),
         ("ssh://git@host:22/repo.git", "ssh://git@host:22/repo.git"),
         ("http://[::1]:8080/repo", "http://[::1]:8080/repo"),
         (
@@ -178,7 +202,8 @@ fn only_the_password_of_a_url_goes_away() {
         .clone_repository(&file_url(remote.root()), &target)
         .expect("clone");
 
-    let stderr = logged_clone(&gikli).stderr;
+    assert_cloned(&sandbox, &remote, &target);
+    let stderr = logged_run(&gikli, "clone").stderr;
     for (written, shown) in cases {
         assert!(
             stderr.lines().any(|line| line == shown),
@@ -219,6 +244,33 @@ fn a_remote_that_refuses_the_password_in_the_url_is_explained_without_it() {
     );
     let kept = format!("{:?}{events:?}", gikli.operation_log());
     assert!(!kept.contains(wrong), "{kept}");
+    assert!(!target.join(".git").exists());
+}
+
+/// git cannot use a password like these unless it is encoded, and its messages can repeat the URL.
+#[test]
+fn a_password_that_should_have_been_encoded_stays_hidden_when_the_clone_fails() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_commit(&sandbox);
+    let server = sandbox.http_remote(&remote, USERNAME, PASSWORD);
+    let gikli = sandbox.gikli();
+    for (folder, password) in [
+        ("slash", "se/cr3t-1815"),
+        ("hash", "se#cr3t-1815"),
+        ("question-mark", "se?cr3t-1815"),
+    ] {
+        let url = with_credentials(&server.url(), USERNAME, password);
+        let target = sandbox.root().join(folder);
+        let events = gikli.subscribe();
+
+        let result = gikli.clone_repository(&url, &target);
+
+        let events: Vec<Event> = events.try_iter().collect();
+        let shown = format!("{result:?}{:?}{events:?}", gikli.operation_log());
+        assert!(result.is_err(), "{shown}");
+        assert!(!shown.contains("cr3t-1815"), "{shown}");
+        assert!(!target.join(".git").exists());
+    }
 }
 
 #[test]
@@ -241,6 +293,7 @@ fn a_clone_that_fails_names_the_url_without_the_password() {
     );
     let log = gikli.operation_log();
     assert!(!format!("{log:?}").contains(PASSWORD), "{log:?}");
+    assert!(!target.join(".git").exists());
 }
 
 #[test]
@@ -259,6 +312,7 @@ fn progress_that_repeats_a_url_shows_without_the_password() {
         .clone_repository(&file_url(remote.root()), &target)
         .expect("clone");
 
+    assert_cloned(&sandbox, &remote, &target);
     let events: Vec<Event> = events.try_iter().collect();
     assert!(
         events.iter().any(|event| matches!(
@@ -299,6 +353,7 @@ fn a_prompt_that_repeats_a_url_reaches_the_user_without_the_password() {
         prompt
     });
 
+    assert_cloned(&sandbox, &remote, &target);
     assert_eq!(prompt.kind, PromptKind::Password);
     assert_eq!(prompt.text, "Password for http://ada:***@host/repo: ");
 }
@@ -319,13 +374,8 @@ fn what_git_writes_on_its_standard_output_shows_without_the_password() {
         .set_git_path(Some(git.executable().to_path_buf()))
         .expect("save the path to git");
 
-    let entry = gikli
-        .operation_log()
-        .into_iter()
-        .find(|entry| entry.args.contains(&"--version".to_owned()))
-        .expect("the version check is logged");
     assert_eq!(
-        entry.stdout,
+        logged_run(&gikli, "--version").stdout,
         "git version 2.50.0 http://ada:***@host/repo.git\n"
     );
 }

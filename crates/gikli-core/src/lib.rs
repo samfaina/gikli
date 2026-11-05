@@ -669,8 +669,8 @@ impl Gikli {
 
     /// Clones the repository at `url` into `folder`, which must not exist or be empty, and opens
     /// it as a Project. The clone runs as a [`LongOperation`] that reports its progress; the
-    /// rest of the core keeps answering meanwhile. A password in `url` goes to git and shows nowhere
-    /// else.
+    /// rest of the core keeps answering meanwhile. A password in `url` goes to git and shows
+    /// nowhere else.
     pub fn clone_repository(&self, url: &str, folder: &Path) -> Result<Project, Failure> {
         let runner = self.runner(folder)?;
         let target = std::path::absolute(folder).map_err(|_| Failure::FolderNotFound {
