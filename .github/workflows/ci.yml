@@ -152,7 +152,14 @@ jobs:
           $temp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
           $app = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'debug\gikli.exe'
           "User: $(whoami); session: $([System.Diagnostics.Process]::GetCurrentProcess().SessionId); interactive: $([Environment]::UserInteractive)"
-          "App exists: $(Test-Path $app)"
+          "App exists: $(Test-Path $app); elevated: $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+          function Test-DevTools($label) {
+            Start-Sleep 15
+            $listening = try { (Invoke-RestMethod http://127.0.0.1:9222/json/version).Browser } catch { "nothing: $_" }
+            "$label -> DevTools on 9222: $listening"
+            Get-CimInstance Win32_Process -Filter "Name = 'gikli.exe'" | ForEach-Object { taskkill /T /F /PID $_.ProcessId | Out-Null }
+            Start-Sleep 2
+          }
           $version = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}').pv
           "WebView2: $version"
           foreach ($key in 'HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge\WebView2') {
@@ -173,6 +180,20 @@ jobs:
           if (-not $process.HasExited) { taskkill /T /F /PID $process.Id }
           "stdout:"; Get-Content "$temp\gikli.out"; "stderr:"; Get-Content "$temp\gikli.err"
           Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+
+          "--- The app without elevation, with the variable"
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
+          runas /trustlevel:0x20000 "$app"
+          Test-DevTools 'runas /trustlevel:0x20000'
+          Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+
+          "--- The app with the AdditionalBrowserArguments policy"
+          $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item $policy -Force | Out-Null
+          New-ItemProperty $policy -Name 'gikli.exe' -Value '--remote-debugging-port=9222' -Force | Out-Null
+          Start-Process $app | Out-Null
+          Test-DevTools 'policy'
+          Remove-Item $policy -Recurse -Force
 
           "--- The app through msedgedriver --verbose"
           $driver = node --input-type=module -e "import { download } from 'edgedriver'; console.log(await download(process.argv[1], process.argv[2]))" $version "$temp\gikli-diagnosis-msedgedriver\$version" | Select-Object -Last 1
