@@ -11,8 +11,10 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   outcome a second way with plain git, in throwaway repositories and local bare remotes. The
   real git runs in every test except the installation and version checks, which use a
   stand-in (`fake-git`) to play what the real one cannot: another version, a git the user
-  installed off the PATH, or `wsl.exe` on a machine without WSL. Tests of WSL itself run on
-  Windows with WSL and a git inside it, and skip elsewhere. Tests of dubious ownership play
+  installed off the PATH, or `wsl.exe` on a machine without WSL. The test that hides passwords
+  in git's standard output uses it too, as the real git writes no URL there for any command
+  gikli runs today. Tests of WSL itself run on Windows with WSL and a git inside it, and skip
+  elsewhere. Tests of dubious ownership play
   another owner with git's own `GIT_TEST_ASSUME_DIFFERENT_OWNER`, and skip on a git that does
   not check ownership, such as 2.34.0. Tests of long paths run only on Windows. Tests of
   credentials use a local HTTP server that requires them, in front of git's own `git http-backend`.

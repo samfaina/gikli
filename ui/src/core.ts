@@ -182,7 +182,7 @@ export type Failure =
   | { kind: "notificationActionNotOffered"; id: number }
   | { kind: "promptGone"; id: number };
 
-/** One git command gikli ran, with its raw output. */
+/** One git command gikli ran, with its raw output. A password in a URL shows as `***`. */
 export interface OperationLogEntry {
   /** Grows with each command: an entry read with {@link operationLog} may arrive again as an event. */
   id: number;

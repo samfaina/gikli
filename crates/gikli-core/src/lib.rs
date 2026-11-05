@@ -16,6 +16,7 @@ mod project;
 mod prompts;
 mod settings;
 mod status;
+mod url_passwords;
 mod version;
 mod watch;
 mod window;
@@ -50,6 +51,7 @@ use operation_log::OperationLog;
 use operations::LongOperations;
 use project::{ProjectRegistry, RememberedProject};
 use prompts::PromptBridge;
+use url_passwords::hide_url_passwords;
 use watch::ChangesWatcher;
 use window::ProjectWindows;
 use wsl::WslShare;
@@ -209,7 +211,8 @@ pub enum Failure {
     RepositoryOutsideProject {
         folder: PathBuf,
     },
-    /// git could not clone `url` into `folder`. The operation log holds git's output.
+    /// git could not clone `url`, its password hidden, into `folder`. The operation log holds git's
+    /// output.
     #[serde(rename_all = "camelCase")]
     CloneFailed {
         url: String,
@@ -332,8 +335,8 @@ impl Gikli {
         self.events.subscribe()
     }
 
-    /// The git commands gikli ran, oldest first, with their raw output: the last
-    /// thousand of them. Each new one also arrives as [`Event::OperationLogged`].
+    /// The git commands gikli ran, oldest first, with their raw output, passwords in URLs hidden:
+    /// the last thousand of them. Each new one also arrives as [`Event::OperationLogged`].
     pub fn operation_log(&self) -> Vec<OperationLogEntry> {
         self.log.entries()
     }
@@ -666,15 +669,18 @@ impl Gikli {
 
     /// Clones the repository at `url` into `folder`, which must not exist or be empty, and opens
     /// it as a Project. The clone runs as a [`LongOperation`] that reports its progress; the
-    /// rest of the core keeps answering meanwhile.
+    /// rest of the core keeps answering meanwhile. A password in `url` goes to git and shows
+    /// nowhere else.
     pub fn clone_repository(&self, url: &str, folder: &Path) -> Result<Project, Failure> {
         let runner = self.runner(folder)?;
         let target = std::path::absolute(folder).map_err(|_| Failure::FolderNotFound {
             folder: folder.to_path_buf(),
         })?;
+        // Only git gets the URL as the user gave it.
+        let shown_url = hide_url_passwords(url);
         let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
             return Err(Failure::CloneFailed {
-                url: url.to_owned(),
+                url: shown_url,
                 folder: target,
             });
         };
@@ -685,7 +691,7 @@ impl Gikli {
         // The folder goes by its name inside its parent, a path git inside WSL reads too.
         let name = name.to_string_lossy();
         let operation = LongOperation::Clone {
-            url: url.to_owned(),
+            url: shown_url.clone(),
             folder: target.clone(),
         };
         let invocation = self
@@ -700,7 +706,7 @@ impl Gikli {
                 parent,
                 &invocation.without_clone_reports(),
                 Failure::CloneFailed {
-                    url: url.to_owned(),
+                    url: shown_url,
                     folder: target.clone(),
                 },
             ));

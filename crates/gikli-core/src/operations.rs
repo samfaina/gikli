@@ -14,7 +14,7 @@ use crate::lock;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LongOperation {
-    /// Cloning the repository at `url` into `folder`.
+    /// Cloning the repository at `url`, its password hidden, into `folder`.
     Clone { url: String, folder: PathBuf },
 }
 

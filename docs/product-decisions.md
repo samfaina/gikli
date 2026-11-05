@@ -23,6 +23,7 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - "Use credential helper" is the other departure: when the user turns it off, git uses none of their helpers. It is on by default, and gikli also adds a helper of its own after theirs, which only notes that a remote refused the credentials.
 - Passphrases for GPG keys stay with `gpg-agent` and its own pinentry window. The embedded GPG prompt is Scope 3 in the reference.
 - gikli never edits `known_hosts`: ssh records a key the user accepted, and a changed key is the user's to resolve.
+- A password in a URL shows as `***` wherever gikli keeps or shows the URL: the operation log, events, prompts and failures. git still receives the URL as the user gave it, so `git clone` writes it to `.git/config`, as it does in a terminal. gikli leaves that file to git. git also writes the command line to the trace file gikli reads and removes after each run: git 2.51 hides the password of a URL it can read there, and gikli cannot change what a given version of git writes.
 
 ### Saved local changes and the Shelf
 

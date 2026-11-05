@@ -101,17 +101,17 @@ pub(crate) fn explain(
         return Some(Explanation {
             message: ExplainedMessage::HookFailed {
                 hook: hook.clone(),
-                output: String::from_utf8_lossy(&invocation.stderr).into_owned(),
+                output: invocation.stderr.clone(),
             },
             next_step: NextStep::FixHook,
             actions: vec![],
         });
     }
-    let stderr = String::from_utf8_lossy(&invocation.stderr);
+    let stderr = &invocation.stderr;
     let repository = Repository {
         root: folder.to_path_buf(),
     };
-    if let Some(untrusted) = untrusted_folder(&stderr) {
+    if let Some(untrusted) = untrusted_folder(stderr) {
         return Some(Explanation {
             message: ExplainedMessage::DubiousOwnership {
                 folder: untrusted.clone(),
@@ -137,19 +137,19 @@ pub(crate) fn explain(
     }
     // What ssh writes, which OpenSSH does not translate. A changed key comes first: ssh may go on
     // to fail in other ways, and this is what the user needs to hear about.
-    if any_line(&stderr, is_changed_host_key) {
+    if any_line(stderr, is_changed_host_key) {
         return Some(explained(
             ExplainedMessage::HostKeyChanged,
             NextStep::CheckChangedHostKey,
         ));
     }
-    if any_line(&stderr, is_failed_host_key_verification) {
+    if any_line(stderr, is_failed_host_key_verification) {
         return Some(explained(
             ExplainedMessage::HostKeyUnknown,
             NextStep::VerifyHostKey,
         ));
     }
-    if invocation.credentials_refused || any_line(&stderr, is_failed_authentication) {
+    if invocation.credentials_refused || any_line(stderr, is_failed_authentication) {
         return Some(explained(
             ExplainedMessage::AuthenticationFailed,
             NextStep::CheckCredentials,
