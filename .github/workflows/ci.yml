@@ -155,6 +155,10 @@ jobs:
           "App exists: $(Test-Path $app)"
           $version = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}').pv
           "WebView2: $version"
+          foreach ($key in 'HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge\WebView2') {
+            if (Test-Path $key) { "Policy $key"; Get-Item $key | Out-String; Get-ChildItem $key -Recurse | Out-String }
+          }
+          Get-ChildItem Env: | Where-Object Name -match 'WEBVIEW2' | Out-String
           Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" -ErrorAction SilentlyContinue | ForEach-Object Name
 
           "--- The app on its own, with remote debugging"
@@ -163,14 +167,15 @@ jobs:
           Start-Sleep 20
           try { Invoke-RestMethod http://127.0.0.1:9222/json/version | ConvertTo-Json } catch { "DevTools: $_" }
           "Exited: $($process.HasExited) $($process.ExitCode)"
-          Get-Process | Where-Object Name -match 'gikli|msedgewebview2' | Format-Table Name, Id, SessionId -AutoSize | Out-String
-          Get-ChildItem "$env:LOCALAPPDATA\dev.gikli.app" -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object FullName
+          $webviews = Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" | Where-Object CommandLine -match 'webview-exe-name=gikli.exe'
+          $webviews | Where-Object CommandLine -notmatch '--type=' | ForEach-Object { "Browser process $($_.ProcessId): $($_.CommandLine)" }
+          Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -in $webviews.ProcessId | Format-Table LocalAddress, LocalPort, OwningProcess -AutoSize | Out-String
           if (-not $process.HasExited) { taskkill /T /F /PID $process.Id }
           "stdout:"; Get-Content "$temp\gikli.out"; "stderr:"; Get-Content "$temp\gikli.err"
           Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 
           "--- The app through msedgedriver --verbose"
-          $driver = node --input-type=module -e "import { download } from 'edgedriver'; console.log(await download(process.argv[1], process.argv[2]))" $version "$temp\gikli-diagnosis-msedgedriver\$version"
+          $driver = node --input-type=module -e "import { download } from 'edgedriver'; console.log(await download(process.argv[1], process.argv[2]))" $version "$temp\gikli-diagnosis-msedgedriver\$version" | Select-Object -Last 1
           "Driver: $driver"
           & $driver --version
           $log = "$temp\msedgedriver.log"
