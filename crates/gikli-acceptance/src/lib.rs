@@ -74,7 +74,18 @@ impl Sandbox {
 
     /// gikli, running in the sandbox's environment.
     pub fn gikli(&self) -> Gikli {
-        Gikli::new(self.host_environment())
+        self.gikli_in(self.host_environment())
+    }
+
+    /// gikli, running in `host`. Every gikli of one sandbox shares the sandbox's settings file,
+    /// as every start of the app shares the user's.
+    pub fn gikli_in(&self, host: HostEnvironment) -> Gikli {
+        Gikli::new(host, self.settings_file())
+    }
+
+    /// Where gikli keeps its application settings in this sandbox.
+    pub fn settings_file(&self) -> PathBuf {
+        self.root.join("gikli-settings").join("settings.json")
     }
 
     /// A plain folder that is not inside any repository.
@@ -135,8 +146,37 @@ impl Sandbox {
     /// An environment whose PATH holds only a stand-in git that reports `version` and records
     /// every invocation. `stand_in` is the path of the `fake-git` binary: pass [`fake_git!`].
     pub fn host_with_fake_git(&self, stand_in: &str, version: &str) -> (HostEnvironment, FakeGit) {
-        let bin = self.folder("fake-bin");
-        let executable = bin.join(format!("git{}", std::env::consts::EXE_SUFFIX));
+        let fake = self.fake_git_in("fake-bin", stand_in, version);
+        (self.host_with_path(&fake.bin), fake)
+    }
+
+    /// An environment whose PATH holds no git, only a stand-in `wsl` whose git reports
+    /// `version`, as on Windows with WSL and no native git. `stand_in` is the path of the
+    /// `fake-git` binary: pass [`fake_git!`].
+    pub fn host_with_fake_wsl(&self, stand_in: &str, version: &str) -> (HostEnvironment, FakeGit) {
+        let fake = self.fake_program_in("fake-wsl", "wsl", stand_in, version);
+        (self.host_with_path(&fake.bin), fake)
+    }
+
+    /// On Windows with WSL and a git inside it: an environment whose PATH holds the real
+    /// `wsl.exe` and no native git. None elsewhere, so the test that asks can skip.
+    pub fn host_with_real_wsl_only(&self) -> Option<HostEnvironment> {
+        let wsl = real_wsl()?;
+        Some(self.host_with_path(wsl.parent()?))
+    }
+
+    /// A stand-in git that reports `version`, installed in the folder `name` and on no PATH, as
+    /// a git the user installed somewhere of their own. `stand_in` is the path of the `fake-git`
+    /// binary: pass [`fake_git!`].
+    pub fn fake_git_in(&self, name: &str, stand_in: &str, version: &str) -> FakeGit {
+        self.fake_program_in(name, "git", stand_in, version)
+    }
+
+    /// Installs the `fake-git` binary as `program` in the folder `name`, answering `--version`
+    /// with `git version {version}`.
+    fn fake_program_in(&self, name: &str, program: &str, stand_in: &str, version: &str) -> FakeGit {
+        let bin = self.folder(name);
+        let executable = bin.join(format!("{program}{}", std::env::consts::EXE_SUFFIX));
         fs::copy(stand_in, &executable).expect("install fake git");
         fs::write(
             bin.join("fake-git-version"),
@@ -146,15 +186,30 @@ impl Sandbox {
         wait_until_runnable(&executable);
         // Start the invocation log empty: only gikli's runs belong in it.
         let _ = fs::remove_file(bin.join("fake-git-invocations"));
-        let mut host = self.host_environment();
-        host.set("PATH", bin.clone());
-        (host, FakeGit { bin })
+        FakeGit { bin, executable }
+    }
+
+    /// The real git executable at a path that is not on the PATH: the copy in git's own
+    /// `libexec/git-core` folder, as a user would point gikli at a git of their choice.
+    pub fn real_git_elsewhere(&self) -> PathBuf {
+        let exec_path = git_output(&self.root, &self.git_environment(), ["--exec-path"]);
+        assert!(exec_path.status.success(), "git --exec-path failed");
+        let folder = String::from_utf8(exec_path.stdout).expect("git output is UTF-8");
+        let executable =
+            Path::new(folder.trim_end()).join(format!("git{}", std::env::consts::EXE_SUFFIX));
+        assert!(executable.is_file(), "no git at {}", executable.display());
+        dunce::canonicalize(&executable).expect("canonicalize git's path")
     }
 
     /// An environment whose PATH holds no git at all.
     pub fn host_without_git(&self) -> HostEnvironment {
+        self.host_with_path(&self.folder("empty-bin"))
+    }
+
+    /// The sandbox's environment with `folder` as the only folder on the PATH.
+    fn host_with_path(&self, folder: &Path) -> HostEnvironment {
         let mut host = self.host_environment();
-        host.set("PATH", self.folder("empty-bin"));
+        host.set("PATH", folder);
         host
     }
 }
@@ -201,7 +256,8 @@ fn wait_until_runnable(executable: &Path) {
 #[cfg(not(unix))]
 fn wait_until_runnable(_executable: &Path) {}
 
-/// Path of the stand-in git binary built with these tests, for [`Sandbox::host_with_fake_git`].
+/// Path of the stand-in git binary built with these tests, for [`Sandbox::host_with_fake_git`],
+/// [`Sandbox::host_with_fake_wsl`] and [`Sandbox::fake_git_in`].
 #[macro_export]
 macro_rules! fake_git {
     () => {
@@ -209,12 +265,18 @@ macro_rules! fake_git {
     };
 }
 
-/// A stand-in git installed by [`Sandbox::host_with_fake_git`].
+/// A stand-in git, or `wsl.exe`, installed by the sandbox.
 pub struct FakeGit {
     bin: PathBuf,
+    executable: PathBuf,
 }
 
 impl FakeGit {
+    /// The stand-in's executable file.
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
     /// The arguments of every run, in order.
     pub fn invocations(&self) -> Vec<Vec<String>> {
         fs::read_to_string(self.bin.join("fake-git-invocations"))
@@ -325,4 +387,144 @@ fn git_output(
         .envs(env.iter().map(|(name, value)| (name, value)))
         .output()
         .expect("run git")
+}
+
+/// The real `wsl.exe`, when WSL is installed and its default distribution has git.
+pub fn real_wsl() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let system_root = std::env::var_os("SystemRoot")?;
+    let wsl = Path::new(&system_root).join("System32").join("wsl.exe");
+    let has_git = Command::new(&wsl)
+        .args(["--exec", "git", "--version"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| output.status.success());
+    has_git.then_some(wsl)
+}
+
+/// A throwaway repository inside the default WSL distribution, created with the git there, and
+/// removed when dropped.
+pub struct WslRepository {
+    wsl: PathBuf,
+    distribution: String,
+    linux_root: String,
+}
+
+impl WslRepository {
+    /// A new repository with no commits in a temporary folder of the default WSL distribution,
+    /// or None without WSL and a git inside it.
+    pub fn create() -> Option<Self> {
+        let wsl = real_wsl()?;
+        let distribution = wsl_output(&wsl, None, &["printenv", "WSL_DISTRO_NAME"])
+            .trim()
+            .to_owned();
+        let linux_root = wsl_output(&wsl, None, &["mktemp", "-d", "/tmp/gikli-test-XXXXXX"])
+            .trim()
+            .to_owned()
+            + "/app";
+        let repository = Self {
+            wsl,
+            distribution,
+            linux_root,
+        };
+        wsl_output(
+            &repository.wsl,
+            None,
+            &["mkdir", "-p", &repository.linux_root],
+        );
+        repository.git(&["init", "--quiet"]);
+        Some(repository)
+    }
+
+    /// The repository root as Windows sees it, under `\\wsl$`.
+    pub fn root(&self) -> PathBuf {
+        self.root_under("wsl$")
+    }
+
+    /// The repository root through the share `server`: `wsl$` or `wsl.localhost`.
+    pub fn root_under(&self, server: &str) -> PathBuf {
+        self.windows_path(server, &self.linux_root)
+    }
+
+    /// The repository root as plain git inside WSL reports it, seen through `\\wsl$`.
+    pub fn toplevel_by_git(&self) -> PathBuf {
+        let toplevel = self.git(&["rev-parse", "--show-toplevel"]);
+        self.windows_path("wsl$", toplevel.trim_end())
+    }
+
+    /// Creates a folder inside the working tree and returns its path under `\\wsl$`.
+    pub fn folder(&self, path: &str) -> PathBuf {
+        let folder = self.root().join(path);
+        fs::create_dir_all(&folder).expect("create folder");
+        folder
+    }
+
+    /// `linux_path` inside the distribution, through the share `server`.
+    fn windows_path(&self, server: &str, linux_path: &str) -> PathBuf {
+        let mut path = format!(r"\\{server}\{}", self.distribution);
+        for name in linux_path.split('/').filter(|name| !name.is_empty()) {
+            path.push('\\');
+            path.push_str(name);
+        }
+        PathBuf::from(path)
+    }
+
+    /// Runs plain git inside WSL in the repository and returns its standard output.
+    pub fn git(&self, args: &[&str]) -> String {
+        let mut command = vec!["git"];
+        command.extend(args);
+        wsl_output(&self.wsl, Some(&self.linux_root), &command)
+    }
+
+    /// Writes a file in the working tree, through the `\\wsl$` share.
+    pub fn write(&self, path: &str, contents: &str) {
+        fs::write(self.root().join(path), contents).expect("write file");
+    }
+
+    /// The uncommitted changes as plain git inside WSL reports them, in the form of
+    /// [`TestRepository::status_by_git`].
+    pub fn status_by_git(&self) -> Vec<String> {
+        self.git(&[
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ])
+        .split_terminator('\0')
+        .map(str::to_owned)
+        .collect()
+    }
+}
+
+impl Drop for WslRepository {
+    fn drop(&mut self) {
+        let parent = self.linux_root.trim_end_matches("/app");
+        let _ = Command::new(&self.wsl)
+            .args(["--exec", "rm", "-rf", parent])
+            .output();
+    }
+}
+
+/// Runs `command` inside the default WSL distribution, in `folder` if given, and returns its
+/// standard output. Panics if it fails.
+fn wsl_output(wsl: &Path, folder: Option<&str>, command: &[&str]) -> String {
+    let mut wsl_command = Command::new(wsl);
+    if let Some(folder) = folder {
+        wsl_command.args(["--cd", folder]);
+    }
+    let output = wsl_command
+        .arg("--exec")
+        .args(command)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run wsl");
+    assert!(
+        output.status.success(),
+        "wsl {command:?} failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("WSL output is UTF-8")
 }

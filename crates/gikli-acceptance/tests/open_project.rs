@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use gikli_acceptance::Sandbox;
-use gikli_core::{Failure, Gikli, Project};
+use gikli_core::{Failure, Project};
 
 fn repository_roots(project: &Project) -> Vec<PathBuf> {
     project
@@ -97,7 +97,8 @@ fn git_variables_in_the_users_environment_do_not_redirect_detection() {
     host.set("GIT_DIR", elsewhere.root().join(".git"));
     host.set("GIT_WORK_TREE", elsewhere.root());
 
-    let project = Gikli::new(host)
+    let project = sandbox
+        .gikli_in(host)
         .open_project(repository.root())
         .expect("open project");
 

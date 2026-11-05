@@ -3,30 +3,42 @@
 //! The core owns all behavior. [`Gikli`] is its application interface: the commands the UI sends
 //! and the events it listens to. The UI and the tests use this same interface.
 
+mod capability;
 mod events;
 mod git;
 mod host;
+mod settings;
 mod status;
 mod version;
+mod wsl;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
+pub use capability::{Capability, CapabilityState};
 pub use events::{Event, OperationLogEntry};
 pub use host::HostEnvironment;
+pub use settings::Settings;
 pub use status::{Change, ChangeSet, ChangeStatus};
 pub use version::GitVersion;
 
 use events::EventBus;
-use git::GitRunner;
+use git::{GitProgram, GitRunner};
+use wsl::WslShare;
 
 /// The application interface of gikli's core.
 pub struct Gikli {
     host: HostEnvironment,
-    git: OnceLock<GitCheck>,
+    settings_file: PathBuf,
+    settings: Mutex<Settings>,
+    /// The result of looking for git, once gikli has looked.
+    git: Mutex<Option<GitCheck>>,
+    /// The git of each WSL distribution that holds a folder gikli opened, once gikli has looked.
+    wsl_git: Mutex<HashMap<WslShare, GitCheck>>,
     events: Arc<EventBus>,
 }
 
@@ -41,20 +53,41 @@ pub enum GitCheck {
     #[serde(rename_all = "camelCase")]
     Ready {
         executable: PathBuf,
+        source: GitSource,
         version: GitVersion,
     },
     /// A git older than [`MINIMUM_GIT_VERSION`]. gikli warns and runs no operations.
     #[serde(rename_all = "camelCase")]
     TooOld {
         executable: PathBuf,
+        source: GitSource,
         version: GitVersion,
         minimum: GitVersion,
     },
     /// A git that does not report a version gikli can read.
     #[serde(rename_all = "camelCase")]
-    Unrecognized { executable: PathBuf },
-    /// No git on the PATH.
+    Unrecognized {
+        executable: PathBuf,
+        source: GitSource,
+    },
+    /// No file at the path to git in the settings.
+    #[serde(rename_all = "camelCase")]
+    Missing { executable: PathBuf },
+    /// No git anywhere gikli looks.
     NotFound { minimum: GitVersion },
+}
+
+/// Where gikli found the git it checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GitSource {
+    /// The path to git in the settings.
+    Configured,
+    /// The folders of PATH.
+    Path,
+    /// The git inside WSL, on Windows when neither of the others has one. The executable is
+    /// `wsl.exe`.
+    Wsl,
 }
 
 /// A folder opened in gikli, holding one or more Repositories (ADR-0004).
@@ -96,6 +129,10 @@ pub enum Failure {
     NotInRepository {
         folder: PathBuf,
     },
+    /// The settings could not be written to disk, so they were not changed.
+    SettingsNotSaved {
+        message: String,
+    },
     /// git could not read the changes of the Repository at `folder`, for example because it is
     /// no longer a repository. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
@@ -105,10 +142,14 @@ pub enum Failure {
 }
 
 impl Gikli {
-    pub fn new(host: HostEnvironment) -> Self {
+    /// The core, running in `host`, with its application settings kept in `settings_file`.
+    pub fn new(host: HostEnvironment, settings_file: PathBuf) -> Self {
         Self {
             host,
-            git: OnceLock::new(),
+            settings: Mutex::new(Settings::load(&settings_file)),
+            settings_file,
+            git: Mutex::default(),
+            wsl_git: Mutex::default(),
             events: Arc::default(),
         }
     }
@@ -121,31 +162,59 @@ impl Gikli {
 
     /// Looks for git and checks that gikli can use it.
     pub fn check_git(&self) -> GitCheck {
-        self.git
-            .get_or_init(|| git::check(&self.host, &self.events))
-            .clone()
+        let mut git = lock(&self.git);
+        git.get_or_insert_with(|| {
+            let configured = lock(&self.settings).git_path.clone();
+            git::check(configured, &self.host, &self.events)
+        })
+        .clone()
+    }
+
+    /// Sets the path to git, or clears it so gikli looks for git itself, and looks for git again.
+    pub fn set_git_path(&self, path: Option<PathBuf>) -> Result<GitCheck, Failure> {
+        {
+            let mut settings = lock(&self.settings);
+            let mut changed = settings.clone();
+            changed.git_path = path;
+            changed
+                .save(&self.settings_file)
+                .map_err(|error| Failure::SettingsNotSaved {
+                    message: error.to_string(),
+                })?;
+            *settings = changed;
+        }
+        lock(&self.git).take();
+        Ok(self.check_git())
+    }
+
+    /// The application settings.
+    pub fn settings(&self) -> Settings {
+        lock(&self.settings).clone()
+    }
+
+    /// Checks the git at `executable` without using it: the test button of the git path setting.
+    pub fn test_git(&self, executable: &Path) -> GitCheck {
+        git::check_executable(
+            executable.to_path_buf(),
+            GitSource::Configured,
+            &self.host,
+            &self.events,
+        )
     }
 
     /// Opens `folder` as a Project and detects the Repository it is in.
     pub fn open_project(&self, folder: &Path) -> Result<Project, Failure> {
-        let runner = self.runner()?;
-        let folder = dunce::canonicalize(folder).map_err(|_| Failure::FolderNotFound {
+        let runner = self.runner(folder)?;
+        let folder = canonicalize(folder).map_err(|_| Failure::FolderNotFound {
             folder: folder.to_path_buf(),
         })?;
         if !folder.is_dir() {
             return Err(Failure::FolderNotFound { folder });
         }
-        let toplevel = runner
-            .run(
-                &folder,
-                &["rev-parse", "--path-format=absolute", "--show-toplevel"],
-            )
-            .map_err(git_failed_to_start)?;
-        if !toplevel.success {
+        let Some(root) = runner.toplevel(&folder).map_err(git_failed_to_start)? else {
             return Err(Failure::NotInRepository { folder });
-        }
-        let root = toplevel.stdout_path();
-        let root = dunce::canonicalize(&root).unwrap_or(root);
+        };
+        let root = canonicalize(&root).unwrap_or(root);
         Ok(Project {
             folder,
             repositories: vec![Repository { root }],
@@ -154,7 +223,7 @@ impl Gikli {
 
     /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
     pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
-        let runner = self.runner()?;
+        let runner = self.runner(&repository.root)?;
         let invocation = runner
             .run(&repository.root, status::STATUS_ARGS)
             .map_err(git_failed_to_start)?;
@@ -169,21 +238,81 @@ impl Gikli {
         })
     }
 
-    /// The runner for every operation, available only with a usable git.
-    fn runner(&self) -> Result<GitRunner, Failure> {
-        match self.check_git() {
-            GitCheck::Ready { executable, .. } => Ok(GitRunner::new(
-                executable,
-                self.host.clone(),
-                self.events.clone(),
-            )),
-            GitCheck::TooOld {
-                version, minimum, ..
-            } => Err(Failure::GitTooOld { version, minimum }),
-            GitCheck::Unrecognized { .. } => Err(Failure::GitUnrecognized),
-            GitCheck::NotFound { .. } => Err(Failure::GitNotFound),
-        }
+    /// What the git that runs in `repository` can do beyond the minimum gikli needs. A feature
+    /// whose capability is unavailable is shown disabled, with the version it needs.
+    pub fn capabilities(&self, repository: &Repository) -> Result<Vec<CapabilityState>, Failure> {
+        let (_, version) = self.git_for(&repository.root)?;
+        Ok(capability::of(version))
     }
+
+    /// The runner for an operation in `folder`, available only with a usable git.
+    fn runner(&self, folder: &Path) -> Result<GitRunner, Failure> {
+        let (program, _) = self.git_for(folder)?;
+        Ok(GitRunner::new(
+            program,
+            self.host.clone(),
+            self.events.clone(),
+        ))
+    }
+
+    /// The git that runs in `folder`, with its version: the git of the WSL distribution for a
+    /// folder under `\\wsl$`, and the git gikli found otherwise.
+    fn git_for(&self, folder: &Path) -> Result<(GitProgram, GitVersion), Failure> {
+        Ok(match WslShare::of(folder) {
+            Some((share, _)) => {
+                let (wsl, _, version) = usable(self.check_wsl_git(&share))?;
+                let program = GitProgram::Wsl {
+                    wsl,
+                    share: Some(share),
+                };
+                (program, version)
+            }
+            None => {
+                let (executable, source, version) = usable(self.check_git())?;
+                (GitProgram::found(executable, source), version)
+            }
+        })
+    }
+
+    /// Looks for the git inside the WSL distribution of `share`.
+    fn check_wsl_git(&self, share: &WslShare) -> GitCheck {
+        lock(&self.wsl_git)
+            .entry(share.clone())
+            .or_insert_with(|| git::check_wsl(share, &self.host, &self.events))
+            .clone()
+    }
+}
+
+/// The executable, source and version of a git gikli can run operations with.
+fn usable(check: GitCheck) -> Result<(PathBuf, GitSource, GitVersion), Failure> {
+    match check {
+        GitCheck::Ready {
+            executable,
+            source,
+            version,
+        } => Ok((executable, source, version)),
+        GitCheck::TooOld {
+            version, minimum, ..
+        } => Err(Failure::GitTooOld { version, minimum }),
+        GitCheck::Unrecognized { .. } => Err(Failure::GitUnrecognized),
+        GitCheck::Missing { .. } | GitCheck::NotFound { .. } => Err(Failure::GitNotFound),
+    }
+}
+
+/// The absolute form of `path`, with links resolved. A folder under `\\wsl$` keeps that form
+/// instead of becoming `\\?\UNC\wsl$`.
+fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = dunce::canonicalize(path)?;
+    Ok(match WslShare::of(&canonical) {
+        Some((share, linux_path)) => share.windows_path(&linux_path),
+        None => canonical,
+    })
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn git_failed_to_start(error: std::io::Error) -> Failure {

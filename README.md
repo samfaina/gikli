@@ -9,8 +9,10 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   interface, `Gikli`: the commands the UI sends and the events it listens to.
 - `crates/gikli-acceptance`: the test harness and the tests. Tests drive `Gikli` and check every
   outcome a second way with plain git, in throwaway repositories and local bare remotes. The
-  real git runs in every test except the installation checks, which put a stand-in git
-  (`fake-git`) on the PATH to play a version the real one cannot.
+  real git runs in every test except the installation and version checks, which use a
+  stand-in (`fake-git`) to play what the real one cannot: another version, a git the user
+  installed off the PATH, or `wsl.exe` on a machine without WSL. Tests of WSL itself run on
+  Windows with WSL and a git inside it, and skip elsewhere.
 - `src-tauri`: the Tauri 2 shell. Each core command is a Tauri command that forwards to `Gikli`,
   and core events reach the UI as `gikli://event`. The shell adds only `startup_folder`, the
   folder to open at launch.
@@ -21,7 +23,8 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
 ## Requirements
 
 - Rust (stable) and Node.js 20 or newer.
-- git 2.34 or newer on the PATH.
+- git 2.34 or newer on the PATH. The tests need it there; the app also takes a path to git in
+  its settings, or on Windows the git inside WSL.
 - The Tauri prerequisites for your platform (<https://v2.tauri.app/start/prerequisites/>):
   WebView2 on Windows (preinstalled on Windows 11), Xcode Command Line Tools on macOS, and on
   Linux `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev` and `libayatana-appindicator3-dev`

@@ -9,6 +9,8 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - Windows, macOS and Linux from the first release, WSL repositories included. Windows is the main development platform ([ADR-0002](adr/0002-tauri-rust-typescript.md)).
 - English interface at launch. Every string is externalized so other languages can be added without code changes.
 - Minimum git version 2.34. Below it, gikli warns and does not run operations. Features that need a newer git (for example `rebase --update-refs`, 2.38) are disabled with an explanation.
+- gikli looks for git in this order: the path in the settings, then PATH, then on Windows the git inside WSL. A path in the settings is used as is: when there is no git there, or it is too old or unreadable, gikli says so and does not fall back to another git.
+- A folder under `\\wsl$` or `\\wsl.localhost` always uses the git of its WSL distribution, whatever git gikli found for other folders.
 - Light and dark themes that follow the operating system. gikli's own design and keyboard shortcuts, following each platform's conventions (Ctrl on Windows and Linux, Cmd on macOS), without copying the JetBrains layout beyond what a feature needs.
 - One window per Project, with several windows open at once.
 - No telemetry and no automatic error reports. The user exports a report by hand.

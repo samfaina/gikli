@@ -1,7 +1,7 @@
 //! Finding git on the PATH and checking its version.
 
 use gikli_acceptance::{Sandbox, fake_git};
-use gikli_core::{Failure, Gikli, GitCheck, GitVersion};
+use gikli_core::{Failure, GitCheck, GitVersion};
 
 #[test]
 fn gikli_finds_git_on_the_path_and_shows_its_version() {
@@ -24,7 +24,7 @@ fn git_older_than_2_34_gets_a_warning_with_its_version() {
     let sandbox = Sandbox::new();
     let (host, _) = sandbox.host_with_fake_git(fake_git!(), "2.33.8");
 
-    let check = Gikli::new(host).check_git();
+    let check = sandbox.gikli_in(host).check_git();
 
     assert!(
         matches!(
@@ -42,7 +42,7 @@ fn git_older_than_2_34_runs_no_operations() {
     let repository = sandbox.repository("app");
     let (host, fake) = sandbox.host_with_fake_git(fake_git!(), "2.33.8");
 
-    let opened = Gikli::new(host).open_project(repository.root());
+    let opened = sandbox.gikli_in(host).open_project(repository.root());
 
     assert_eq!(
         opened,
@@ -63,7 +63,7 @@ fn git_2_34_is_enough() {
     let sandbox = Sandbox::new();
     let (host, _) = sandbox.host_with_fake_git(fake_git!(), "2.34.0");
 
-    let check = Gikli::new(host).check_git();
+    let check = sandbox.gikli_in(host).check_git();
 
     assert!(
         matches!(check, GitCheck::Ready { version, .. } if version == GitVersion::new(2, 34, 0)),
@@ -76,7 +76,7 @@ fn a_platform_suffix_in_the_version_is_ignored() {
     let sandbox = Sandbox::new();
     let (host, _) = sandbox.host_with_fake_git(fake_git!(), "2.39.3 (Apple Git-145)");
 
-    let check = Gikli::new(host).check_git();
+    let check = sandbox.gikli_in(host).check_git();
 
     assert!(
         matches!(check, GitCheck::Ready { version, .. } if version == GitVersion::new(2, 39, 3)),
@@ -87,7 +87,7 @@ fn a_platform_suffix_in_the_version_is_ignored() {
 #[test]
 fn no_git_on_the_path_is_reported() {
     let sandbox = Sandbox::new();
-    let gikli = Gikli::new(sandbox.host_without_git());
+    let gikli = sandbox.gikli_in(sandbox.host_without_git());
 
     assert_eq!(
         gikli.check_git(),
@@ -106,7 +106,7 @@ fn a_git_whose_version_cannot_be_read_is_not_used() {
     let sandbox = Sandbox::new();
     let (host, _) = sandbox.host_with_fake_git(fake_git!(), "unknown");
 
-    let check = Gikli::new(host).check_git();
+    let check = sandbox.gikli_in(host).check_git();
 
     assert!(
         matches!(check, GitCheck::Unrecognized { .. }),

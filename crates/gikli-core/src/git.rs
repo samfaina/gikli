@@ -14,7 +14,8 @@ use std::sync::Arc;
 use crate::events::{Event, EventBus, OperationLogEntry};
 use crate::host::HostEnvironment;
 use crate::version::GitVersion;
-use crate::{GitCheck, MINIMUM_GIT_VERSION};
+use crate::wsl::WslShare;
+use crate::{GitCheck, GitSource, MINIMUM_GIT_VERSION};
 
 /// Configuration that only changes presentation, pinned on every invocation.
 /// Per-command color settings override `color.ui`, so each one is pinned too.
@@ -52,9 +53,80 @@ const REDIRECTING_VARIABLES: &[&str] = &[
     "GIT_PREFIX",
 ];
 
-/// Runs the user's git executable and records each run in the operation log.
+/// The git a runner starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GitProgram {
+    /// A git executable, started directly.
+    Native(PathBuf),
+    /// The git inside WSL, started through `wsl.exe`: in the distribution of `share`, or in the
+    /// default distribution when there is none.
+    Wsl {
+        wsl: PathBuf,
+        share: Option<WslShare>,
+    },
+}
+
+impl GitProgram {
+    /// The program gikli found as `executable` from `source`.
+    pub fn found(executable: PathBuf, source: GitSource) -> Self {
+        match source {
+            GitSource::Configured | GitSource::Path => Self::Native(executable),
+            GitSource::Wsl => Self::Wsl {
+                wsl: executable,
+                share: None,
+            },
+        }
+    }
+
+    /// The command that starts git in `folder`, before its arguments.
+    fn command(&self, folder: &Path) -> Command {
+        match self {
+            Self::Native(executable) => {
+                let mut command = Command::new(executable);
+                command.current_dir(folder);
+                command
+            }
+            Self::Wsl { wsl, share } => {
+                let mut command = Command::new(wsl);
+                if let Some(share) = share {
+                    command.args(["--distribution", &share.distribution]);
+                }
+                // A folder inside the distribution goes as its Linux path; wsl.exe translates
+                // any other Windows path itself.
+                match WslShare::of(folder) {
+                    Some((_, linux_path)) => command.args(["--cd", &linux_path]),
+                    None => command.arg("--cd").arg(folder),
+                };
+                command.args(["--exec", "git"]);
+                command
+            }
+        }
+    }
+
+    /// The arguments that ask git for the root of the repository a folder is in.
+    fn toplevel_args(&self) -> &'static [&'static str] {
+        match self {
+            Self::Native(_) => &["rev-parse", "--path-format=absolute", "--show-toplevel"],
+            // git inside WSL prints Linux paths, and where a Windows drive appears inside WSL
+            // depends on the distribution's settings. The way up from the folder, as `../`
+            // steps, needs no translation.
+            Self::Wsl { .. } => &["rev-parse", "--show-cdup"],
+        }
+    }
+
+    /// The root of the repository `folder` is in, from the output of [`Self::toplevel_args`].
+    fn toplevel(&self, folder: &Path, output: &[u8]) -> PathBuf {
+        let output = output.strip_suffix(b"\n").unwrap_or(output);
+        match self {
+            Self::Native(_) => path_from_bytes(output),
+            Self::Wsl { .. } => folder.join(String::from_utf8_lossy(output).as_ref()),
+        }
+    }
+}
+
+/// Runs the user's git and records each run in the operation log.
 pub(crate) struct GitRunner {
-    executable: PathBuf,
+    program: GitProgram,
     host: HostEnvironment,
     events: Arc<EventBus>,
 }
@@ -65,16 +137,29 @@ pub(crate) struct Invocation {
     pub stdout: Vec<u8>,
 }
 
+/// Variables that cross into WSL, so git there runs without a terminal as it does natively.
+const WSL_SHARED_VARIABLES: &[&str] = &["GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS"];
+
 impl GitRunner {
-    pub fn new(executable: PathBuf, mut host: HostEnvironment, events: Arc<EventBus>) -> Self {
+    pub fn new(program: GitProgram, mut host: HostEnvironment, events: Arc<EventBus>) -> Self {
         for name in REDIRECTING_VARIABLES {
             host.remove(*name);
         }
         // No terminal: a hook or credential prompt that needs one fails instead of hanging.
         host.set("GIT_TERMINAL_PROMPT", "0");
         host.set("GIT_OPTIONAL_LOCKS", "0");
+        if matches!(program, GitProgram::Wsl { .. }) {
+            let mut shared: OsString = host.get("WSLENV").unwrap_or_default().to_owned();
+            for name in WSL_SHARED_VARIABLES {
+                if !shared.is_empty() {
+                    shared.push(":");
+                }
+                shared.push(name);
+            }
+            host.set("WSLENV", shared);
+        }
         Self {
-            executable,
+            program,
             host,
             events,
         }
@@ -88,10 +173,9 @@ impl GitRunner {
         }
         command_line.extend(args);
 
-        let mut command = Command::new(&self.executable);
+        let mut command = self.program.command(folder);
         command
             .args(&command_line)
-            .current_dir(folder)
             .env_clear()
             .envs(self.host.vars())
             .stdin(Stdio::null());
@@ -109,15 +193,18 @@ impl GitRunner {
             stdout: output.stdout,
         })
     }
+
+    /// The root of the repository `folder` is in, as Windows sees it, or None when `folder` is
+    /// not in a repository.
+    pub fn toplevel(&self, folder: &Path) -> std::io::Result<Option<PathBuf>> {
+        let invocation = self.run(folder, self.program.toplevel_args())?;
+        Ok(invocation
+            .success
+            .then(|| self.program.toplevel(folder, &invocation.stdout)))
+    }
 }
 
 impl Invocation {
-    /// Standard output as a path, without the line ending git adds.
-    pub fn stdout_path(&self) -> PathBuf {
-        let bytes = self.stdout.strip_suffix(b"\n").unwrap_or(&self.stdout);
-        path_from_bytes(bytes)
-    }
-
     pub fn stdout_text(&self) -> String {
         String::from_utf8_lossy(&self.stdout).into_owned()
     }
@@ -146,36 +233,111 @@ fn hide_console_window(command: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console_window(_command: &mut Command) {}
 
-/// Finds git and checks its version.
-pub(crate) fn check(host: &HostEnvironment, events: &Arc<EventBus>) -> GitCheck {
-    let Some(executable) = find_on_path(host) else {
+/// Finds git and checks its version. The order is the `configured` path when there is one, then
+/// git on PATH, then on Windows the git inside WSL.
+pub(crate) fn check(
+    configured: Option<PathBuf>,
+    host: &HostEnvironment,
+    events: &Arc<EventBus>,
+) -> GitCheck {
+    if let Some(executable) = configured {
+        return check_executable(executable, GitSource::Configured, host, events);
+    }
+    if let Some(executable) = find_on_path(host, "git") {
+        return check_executable(executable, GitSource::Path, host, events);
+    }
+    if cfg!(windows)
+        && let Some(wsl) = find_on_path(host, "wsl")
+    {
+        return check_executable(wsl, GitSource::Wsl, host, events);
+    }
+    GitCheck::NotFound {
+        minimum: MINIMUM_GIT_VERSION,
+    }
+}
+
+/// Finds `wsl.exe` and checks the version of the git inside the distribution of `share`.
+pub(crate) fn check_wsl(
+    share: &WslShare,
+    host: &HostEnvironment,
+    events: &Arc<EventBus>,
+) -> GitCheck {
+    let Some(wsl) = find_on_path(host, "wsl") else {
         return GitCheck::NotFound {
             minimum: MINIMUM_GIT_VERSION,
         };
     };
-    let runner = GitRunner::new(executable.clone(), host.clone(), events.clone());
+    let program = GitProgram::Wsl {
+        wsl: wsl.clone(),
+        share: Some(share.clone()),
+    };
+    check_program(program, wsl, GitSource::Wsl, host, events)
+}
+
+/// Checks the version of the git at `executable`, found from `source`.
+pub(crate) fn check_executable(
+    executable: PathBuf,
+    source: GitSource,
+    host: &HostEnvironment,
+    events: &Arc<EventBus>,
+) -> GitCheck {
+    let Some(executable) = executable_file(&executable) else {
+        return GitCheck::Missing { executable };
+    };
+    let program = GitProgram::found(executable.clone(), source);
+    check_program(program, executable, source, host, events)
+}
+
+/// Runs `git --version` with `program` and checks the version. `executable` and `source` are
+/// what the result reports.
+fn check_program(
+    program: GitProgram,
+    executable: PathBuf,
+    source: GitSource,
+    host: &HostEnvironment,
+    events: &Arc<EventBus>,
+) -> GitCheck {
+    let runner = GitRunner::new(program, host.clone(), events.clone());
     let version = runner
         .run(&std::env::temp_dir(), &["--version"])
         .ok()
         .filter(|output| output.success)
         .and_then(|output| GitVersion::parse(&output.stdout_text()));
     match version {
-        None => GitCheck::Unrecognized { executable },
+        None => GitCheck::Unrecognized { executable, source },
         Some(version) if version < MINIMUM_GIT_VERSION => GitCheck::TooOld {
             executable,
+            source,
             version,
             minimum: MINIMUM_GIT_VERSION,
         },
         Some(version) => GitCheck::Ready {
             executable,
+            source,
             version,
         },
     }
 }
 
-/// Finds git in the folders of PATH.
-fn find_on_path(host: &HostEnvironment) -> Option<PathBuf> {
-    let name: OsString = format!("git{}", std::env::consts::EXE_SUFFIX).into();
+/// The file `path` names: `path` itself, or on Windows `path` with `.exe` when the user left it
+/// out, as a terminal allows.
+fn executable_file(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    let suffix = std::env::consts::EXE_SUFFIX;
+    if suffix.is_empty() || path.extension().is_some() {
+        return None;
+    }
+    let mut with_suffix = path.as_os_str().to_owned();
+    with_suffix.push(suffix);
+    let with_suffix = PathBuf::from(with_suffix);
+    with_suffix.is_file().then_some(with_suffix)
+}
+
+/// Finds the executable `program` in the folders of PATH.
+fn find_on_path(host: &HostEnvironment, program: &str) -> Option<PathBuf> {
+    let name: OsString = format!("{program}{}", std::env::consts::EXE_SUFFIX).into();
     host.path_folders()
         .into_iter()
         .map(|folder| folder.join(&name))
