@@ -6,16 +6,18 @@
 mod events;
 mod git;
 mod host;
+mod status;
 mod version;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use events::{Event, OperationLogEntry};
 pub use host::HostEnvironment;
+pub use status::{Change, ChangeSet, ChangeStatus};
 pub use version::GitVersion;
 
 use events::EventBus;
@@ -64,7 +66,7 @@ pub struct Project {
 }
 
 /// One git repository inside a Project, identified by its root folder.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
     pub root: PathBuf,
@@ -143,6 +145,25 @@ impl Gikli {
         Ok(Project {
             folder,
             repositories: vec![Repository { root }],
+        })
+    }
+
+    /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
+    pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
+        let runner = self.runner()?;
+        let status = runner
+            .run(&repository.root, status::STATUS_ARGS)
+            .map_err(|error| Failure::GitFailedToStart {
+                message: error.to_string(),
+            })?;
+        if !status.success {
+            return Err(Failure::NotInRepository {
+                folder: repository.root.clone(),
+            });
+        }
+        Ok(ChangeSet {
+            repository: repository.clone(),
+            changes: status::parse(&status.stdout),
         })
     }
 

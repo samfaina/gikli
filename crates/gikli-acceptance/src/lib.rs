@@ -243,6 +243,18 @@ impl TestRepository {
         run_git(&self.root, &self.env, &args)
     }
 
+    /// Runs plain git in the repository and returns whether it succeeded.
+    pub fn git_may_fail(&self, args: &[&str]) -> bool {
+        Command::new("git")
+            .args(args)
+            .current_dir(&self.root)
+            .envs(self.env.iter().map(|(name, value)| (name, value)))
+            .output()
+            .expect("run git")
+            .status
+            .success()
+    }
+
     /// Writes a file in the working tree, creating its folders.
     pub fn write(&self, path: &str, contents: &str) {
         let path = self.root.join(path);
@@ -256,6 +268,26 @@ impl TestRepository {
         let path = self.root.join(path);
         fs::create_dir_all(&path).expect("create folder");
         path
+    }
+
+    /// Deletes a file from the working tree.
+    pub fn delete(&self, path: &str) {
+        fs::remove_file(self.root.join(path)).expect("delete file");
+    }
+
+    /// The uncommitted changes as plain git reports them, one `XY path` entry per file in
+    /// `git status --porcelain` (v1) form, with every untracked file listed.
+    pub fn status_by_git(&self) -> Vec<String> {
+        self.git(&[
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ])
+        .split_terminator('\0')
+        .map(str::to_owned)
+        .collect()
     }
 
     /// Stages everything and commits it with plain git.

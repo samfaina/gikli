@@ -12,4 +12,16 @@ describe("gikli", () => {
     assert.ok((await root.getText()).includes(repository), `expected ${repository} on screen`);
     assert.match(await $('[data-testid="git-status"]').getText(), /^git \d+\.\d+\.\d+$/);
   });
+
+  it("shows the Repository's changes and reads them again on refresh", async () => {
+    const untracked = process.env.GIKLI_E2E_UNTRACKED_FILE;
+    const change = await $('[data-testid="change-path"]');
+    await change.waitForDisplayed({ timeout: 30000 });
+    assert.equal(await change.getText(), untracked);
+
+    await $('[data-testid="refresh-changes"]').click();
+
+    await browser.waitUntil(async () => await $('[data-testid="change-path"]').isDisplayed(), { timeout: 30000 });
+    assert.equal(await $('[data-testid="change-path"]').getText(), untracked);
+  });
 });

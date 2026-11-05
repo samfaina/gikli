@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use gikli_core::{Failure, Gikli, GitCheck, HostEnvironment, Project};
+use gikli_core::{ChangeSet, Failure, Gikli, GitCheck, HostEnvironment, Project, Repository};
 use tauri::{Emitter, Manager, State};
 
 /// The folder opened as a Project at startup: the one given on the command line
@@ -39,6 +39,11 @@ fn open_project(gikli: State<'_, Gikli>, folder: PathBuf) -> Result<Project, Fai
     gikli.open_project(&folder)
 }
 
+#[tauri::command(async)]
+fn read_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<ChangeSet, Failure> {
+    gikli.read_changes(&repository)
+}
+
 #[tauri::command]
 fn startup_folder(startup: State<'_, StartupFolder>) -> Option<PathBuf> {
     startup.0.clone()
@@ -64,6 +69,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             check_git,
             open_project,
+            read_changes,
             startup_folder
         ])
         .run(tauri::generate_context!())

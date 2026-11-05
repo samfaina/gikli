@@ -15,7 +15,13 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const exe = process.platform === "win32" ? ".exe" : "";
 
-/** A temporary folder with a git repository, isolated from the developer's git configuration. */
+/** The one uncommitted change in the smoke test's repository, a file git does not track yet. */
+const UNTRACKED_FILE = "smoke file.txt";
+
+/**
+ * A temporary folder with a git repository holding {@link UNTRACKED_FILE}, isolated from the
+ * developer's git configuration.
+ */
 function createRepository() {
   const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gikli-e2e-")));
   const gitconfig = path.join(sandbox, ".gitconfig");
@@ -29,6 +35,7 @@ function createRepository() {
   if (git.status !== 0) {
     throw new Error(`git init failed: ${git.stderr}`);
   }
+  fs.writeFileSync(path.join(repository, UNTRACKED_FILE), "smoke\n");
   return { sandbox, repository };
 }
 
@@ -49,6 +56,7 @@ if (!process.env.GIKLI_E2E_REPOSITORY) {
   const created = createRepository();
   process.env.GIKLI_E2E_SANDBOX = created.sandbox;
   process.env.GIKLI_E2E_REPOSITORY = created.repository;
+  process.env.GIKLI_E2E_UNTRACKED_FILE = UNTRACKED_FILE;
 }
 
 /**

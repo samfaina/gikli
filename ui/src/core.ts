@@ -24,6 +24,20 @@ export interface Project {
   repositories: Repository[];
 }
 
+export type ChangeStatus = "modified" | "added" | "deleted" | "untracked";
+
+export interface Change {
+  /** Relative to the Repository root, with `/` between folders. */
+  path: string;
+  status: ChangeStatus;
+}
+
+export interface ChangeSet {
+  repository: Repository;
+  /** Ordered by path. */
+  changes: Change[];
+}
+
 export type Failure =
   | { kind: "gitNotFound" }
   | { kind: "gitTooOld"; version: GitVersion; minimum: GitVersion }
@@ -49,6 +63,11 @@ export function checkGit(): Promise<GitCheck> {
 /** Rejects with a {@link Failure}. */
 export function openProject(folder: string): Promise<Project> {
   return invoke("open_project", { folder });
+}
+
+/** Reads the uncommitted changes of `repository`; calling it again refreshes them. Rejects with a {@link Failure}. */
+export function readChanges(repository: Repository): Promise<ChangeSet> {
+  return invoke("read_changes", { repository });
 }
 
 /** The folder passed on the command line, if any. */
