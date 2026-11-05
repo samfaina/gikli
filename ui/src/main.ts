@@ -1,13 +1,18 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
 import {
+  capabilities,
   checkGit,
   formatVersion,
   isFailure,
   onCoreEvent,
   openProject,
   readChanges,
+  setGitPath,
+  settings,
   startupFolder,
+  testGit,
+  type Capability,
   type ChangeSet,
   type ChangeStatus,
   type Failure,
@@ -20,12 +25,63 @@ import { t, type StringKey } from "./strings";
 const openButton = element<HTMLButtonElement>("open-folder");
 const gitStatus = element<HTMLElement>("git-status");
 const projectView = element<HTMLElement>("project");
+const settingsButton = element<HTMLButtonElement>("toggle-settings");
+const settingsPanel = element<HTMLElement>("settings");
+const gitPathInput = element<HTMLInputElement>("git-path");
+const testGitButton = element<HTMLButtonElement>("test-git");
+const saveGitPathButton = element<HTMLButtonElement>("save-git-path");
+const gitTestResult = element<HTMLElement>("git-test-result");
 
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
 openButton.disabled = true;
 gitStatus.textContent = t("checkingGit");
 showMessage(t("noProject"));
+settingsButton.textContent = t("settings");
+element<HTMLElement>("git-path-label").textContent = t("gitPathLabel");
+element<HTMLElement>("git-path-hint").textContent = t("gitPathHint");
+gitPathInput.placeholder = t("gitPathPlaceholder");
+testGitButton.textContent = t("testGit");
+saveGitPathButton.textContent = t("saveGitPath");
+
+settingsButton.addEventListener("click", async () => {
+  const opening = settingsPanel.hidden;
+  if (opening) {
+    gitPathInput.value = (await settings()).gitPath ?? "";
+    gitTestResult.textContent = "";
+  }
+  settingsPanel.hidden = !opening;
+  settingsButton.setAttribute("aria-expanded", String(opening));
+});
+
+testGitButton.addEventListener("click", async () => {
+  const path = gitPathInput.value.trim();
+  if (path === "") {
+    gitTestResult.textContent = t("gitPathEmpty");
+    return;
+  }
+  testGitButton.disabled = true;
+  gitTestResult.textContent = t("testingGit");
+  try {
+    gitTestResult.textContent = describeGit(await testGit(path));
+  } finally {
+    testGitButton.disabled = false;
+  }
+});
+
+saveGitPathButton.addEventListener("click", async () => {
+  const path = gitPathInput.value.trim();
+  saveGitPathButton.disabled = true;
+  try {
+    const git = await setGitPath(path === "" ? null : path);
+    showGit(git);
+    gitTestResult.textContent = t("gitPathSaved", { result: describeGit(git) });
+  } catch (error) {
+    gitTestResult.textContent = isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) });
+  } finally {
+    saveGitPathButton.disabled = false;
+  }
+});
 
 openButton.addEventListener("click", async () => {
   const folder = await open({ directory: true, title: t("openFolderDialogTitle") });
@@ -49,32 +105,36 @@ async function start(): Promise<void> {
   if (git.status !== "ready") {
     return;
   }
-  openButton.disabled = false;
   const folder = await startupFolder();
   if (folder !== null) {
     await showProject(folder);
   }
 }
 
+/** Shows the git gikli uses. Folders open only with a usable one. */
 function showGit(git: GitCheck): void {
   gitStatus.classList.toggle("warning", git.status !== "ready");
+  gitStatus.textContent = describeGit(git);
+  openButton.disabled = git.status !== "ready";
+}
+
+/** The git gikli found or tested: its version, or what is wrong with it. */
+function describeGit(git: GitCheck): string {
   switch (git.status) {
     case "ready":
-      gitStatus.textContent = t("gitReady", { version: formatVersion(git.version) });
-      break;
+      return t(git.source === "wsl" ? "gitReadyWsl" : "gitReady", { version: formatVersion(git.version) });
     case "tooOld":
-      gitStatus.textContent = t("gitTooOld", {
+      return t("gitTooOld", {
         version: formatVersion(git.version),
         minimum: formatVersion(git.minimum),
         executable: git.executable,
       });
-      break;
     case "unrecognized":
-      gitStatus.textContent = t("gitUnrecognized", { executable: git.executable });
-      break;
+      return t("gitUnrecognized", { executable: git.executable });
+    case "missing":
+      return t("gitMissing", { executable: git.executable });
     case "notFound":
-      gitStatus.textContent = t("gitNotFound", { minimum: formatVersion(git.minimum) });
-      break;
+      return t("gitNotFound", { minimum: formatVersion(git.minimum) });
   }
 }
 
@@ -107,7 +167,9 @@ function repositoryView(repository: Repository): HTMLElement {
   header.append(title, refresh);
   const changes = document.createElement("div");
   changes.dataset.testid = "changes";
-  section.append(line("repository-root", t("repositoryRoot", { root: repository.root })), header, changes);
+  const features = document.createElement("div");
+  section.append(line("repository-root", t("repositoryRoot", { root: repository.root })), header, changes, features);
+  void showUnavailableFeatures(repository, features);
 
   const refreshChanges = async (): Promise<void> => {
     refresh.disabled = true;
@@ -126,6 +188,41 @@ function repositoryView(repository: Repository): HTMLElement {
   void refreshChanges();
   return section;
 }
+
+/** The features the Repository's git is too old for, shown disabled with the version each needs. */
+async function showUnavailableFeatures(repository: Repository, container: HTMLElement): Promise<void> {
+  let states;
+  try {
+    states = await capabilities(repository);
+  } catch {
+    // Without a usable git, the changes view already says what is wrong.
+    return;
+  }
+  const unavailable = states.filter((state) => !state.available);
+  if (unavailable.length === 0) {
+    return;
+  }
+  container.className = "unavailable-features";
+  container.dataset.testid = "unavailable-features";
+  const title = document.createElement("h2");
+  title.textContent = t("unavailableFeaturesTitle");
+  const list = document.createElement("ul");
+  for (const state of unavailable) {
+    const item = document.createElement("li");
+    item.dataset.capability = state.capability;
+    item.setAttribute("aria-disabled", "true");
+    item.textContent = t("unavailableFeature", {
+      feature: t(CAPABILITY_LABELS[state.capability]),
+      required: formatVersion(state.required),
+    });
+    list.append(item);
+  }
+  container.replaceChildren(title, list);
+}
+
+const CAPABILITY_LABELS: Record<Capability, StringKey> = {
+  rebaseUpdateRefs: "capabilityRebaseUpdateRefs",
+};
 
 function changeList(changeSet: ChangeSet): HTMLElement {
   if (changeSet.changes.length === 0) {
@@ -170,6 +267,8 @@ function describeFailure(failure: Failure): string {
       return t("failureGitUnrecognized");
     case "gitFailedToStart":
       return t("failureGitFailedToStart", { message: failure.message });
+    case "settingsNotSaved":
+      return t("failureSettingsNotSaved", { message: failure.message });
     case "folderNotFound":
       return t("failureFolderNotFound", { folder: failure.folder });
     case "notInRepository":

@@ -74,8 +74,68 @@ button:disabled {
   padding: 4px 8px;
 }
 
+.toolbar-end {
+  margin-left: auto;
+}
+
+.settings {
+  padding: 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.settings-row {
+  display: flex;
+  gap: 8px;
+}
+
+.settings input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.settings input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  color: var(--muted);
+}
+
 .project {
   padding: 12px;
+}
+
+.unavailable-features {
+  color: var(--muted);
+}
+
+.unavailable-features h2 {
+  margin: 12px 0 6px;
+  font-size: 1rem;
+}
+
+.unavailable-features ul {
+  margin: 0;
+  padding-left: 1.2em;
 }
 
 .project p {

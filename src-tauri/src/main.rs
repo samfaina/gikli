@@ -9,7 +9,10 @@
 
 use std::path::PathBuf;
 
-use gikli_core::{ChangeSet, Failure, Gikli, GitCheck, HostEnvironment, Project, Repository};
+use gikli_core::{
+    CapabilityState, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment, Project, Repository,
+    Settings,
+};
 use tauri::{Emitter, Manager, State};
 
 /// The folder opened as a Project at startup: the one given on the command line
@@ -35,6 +38,29 @@ fn check_git(gikli: State<'_, Gikli>) -> GitCheck {
 }
 
 #[tauri::command(async)]
+fn test_git(gikli: State<'_, Gikli>, executable: PathBuf) -> GitCheck {
+    gikli.test_git(&executable)
+}
+
+#[tauri::command(async)]
+fn set_git_path(gikli: State<'_, Gikli>, path: Option<PathBuf>) -> Result<GitCheck, Failure> {
+    gikli.set_git_path(path)
+}
+
+#[tauri::command]
+fn settings(gikli: State<'_, Gikli>) -> Settings {
+    gikli.settings()
+}
+
+#[tauri::command(async)]
+fn capabilities(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<Vec<CapabilityState>, Failure> {
+    gikli.capabilities(&repository)
+}
+
+#[tauri::command(async)]
 fn open_project(gikli: State<'_, Gikli>, folder: PathBuf) -> Result<Project, Failure> {
     gikli.open_project(&folder)
 }
@@ -54,7 +80,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(StartupFolder::from_process())
         .setup(|app| {
-            let gikli = Gikli::new(HostEnvironment::current());
+            let settings_file = app.path().app_config_dir()?.join("settings.json");
+            let gikli = Gikli::new(HostEnvironment::current(), settings_file);
             let events = gikli.subscribe();
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -68,6 +95,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             check_git,
+            test_git,
+            set_git_path,
+            settings,
+            capabilities,
             open_project,
             read_changes,
             startup_folder

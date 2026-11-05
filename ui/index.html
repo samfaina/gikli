@@ -12,7 +12,18 @@
     <header class="toolbar">
       <button id="open-folder" type="button" data-testid="open-folder"></button>
       <span id="git-status" class="git-status" data-testid="git-status"></span>
+      <button id="toggle-settings" class="toolbar-end" type="button" data-testid="toggle-settings" aria-expanded="false" aria-controls="settings"></button>
     </header>
+    <section id="settings" class="settings" data-testid="settings" hidden>
+      <label id="git-path-label" for="git-path"></label>
+      <div class="settings-row">
+        <input id="git-path" type="text" data-testid="git-path" spellcheck="false" autocomplete="off" />
+        <button id="test-git" type="button" data-testid="test-git"></button>
+        <button id="save-git-path" type="button" data-testid="save-git-path"></button>
+      </div>
+      <p id="git-path-hint" class="hint"></p>
+      <p id="git-test-result" class="git-test-result" data-testid="git-test-result" role="status"></p>
+    </section>
     <main id="project" class="project" data-testid="project"></main>
   </body>
 </html>

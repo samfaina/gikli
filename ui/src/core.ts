@@ -9,11 +9,30 @@ export interface GitVersion {
   patch: number;
 }
 
+/** Where gikli found git: the path in the settings, PATH, or WSL (then `executable` is `wsl.exe`). */
+export type GitSource = "configured" | "path" | "wsl";
+
 export type GitCheck =
-  | { status: "ready"; executable: string; version: GitVersion }
-  | { status: "tooOld"; executable: string; version: GitVersion; minimum: GitVersion }
-  | { status: "unrecognized"; executable: string }
+  | { status: "ready"; executable: string; source: GitSource; version: GitVersion }
+  | { status: "tooOld"; executable: string; source: GitSource; version: GitVersion; minimum: GitVersion }
+  | { status: "unrecognized"; executable: string; source: GitSource }
+  | { status: "missing"; executable: string }
   | { status: "notFound"; minimum: GitVersion };
+
+export interface Settings {
+  /** The git executable to use; null when gikli looks for git itself. */
+  gitPath: string | null;
+}
+
+/** A git feature that needs a newer git than the minimum. */
+export type Capability = "rebaseUpdateRefs";
+
+export interface CapabilityState {
+  capability: Capability;
+  /** The first git version that has it. */
+  required: GitVersion;
+  available: boolean;
+}
 
 export interface Repository {
   root: string;
@@ -43,6 +62,7 @@ export type Failure =
   | { kind: "gitTooOld"; version: GitVersion; minimum: GitVersion }
   | { kind: "gitUnrecognized" }
   | { kind: "gitFailedToStart"; message: string }
+  | { kind: "settingsNotSaved"; message: string }
   | { kind: "folderNotFound"; folder: string }
   | { kind: "notInRepository"; folder: string }
   | { kind: "changesUnreadable"; folder: string };
@@ -59,6 +79,25 @@ export type CoreEvent = { event: "operationLogged"; payload: OperationLogEntry }
 
 export function checkGit(): Promise<GitCheck> {
   return invoke("check_git");
+}
+
+/** Checks the git at `executable` without using it. */
+export function testGit(executable: string): Promise<GitCheck> {
+  return invoke("test_git", { executable });
+}
+
+/** Sets the path to git, or clears it with null, and looks for git again. Rejects with a {@link Failure}. */
+export function setGitPath(path: string | null): Promise<GitCheck> {
+  return invoke("set_git_path", { path });
+}
+
+export function settings(): Promise<Settings> {
+  return invoke("settings");
+}
+
+/** What the git that runs in `repository` can do beyond the minimum. Rejects with a {@link Failure}. */
+export function capabilities(repository: Repository): Promise<CapabilityState[]> {
+  return invoke("capabilities", { repository });
 }
 
 /** Rejects with a {@link Failure}. */
