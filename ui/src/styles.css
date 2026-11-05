@@ -300,3 +300,126 @@ button:disabled {
   color: var(--warning-text);
   background: var(--warning-background);
 }
+
+/* Long-lived notifications about the Project, each with its actions. */
+.notifications {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.notification {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.notification p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.notification[data-kind="invalidRepository"] p {
+  color: var(--warning-text);
+}
+
+.notification-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* The read-only log of git commands and their output. */
+.operation-log {
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.operation-log-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+}
+
+.operation-log-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.operation-log-header label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.operation-log-entries {
+  max-height: 40vh;
+  overflow: auto;
+  padding: 6px 12px;
+  background: var(--background);
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.operation-log-entries pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre;
+}
+
+.operation-log-entries.soft-wrap pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.operation-log-entries p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.log-entry {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-command {
+  color: var(--accent);
+}
+
+.log-entry.failed .log-result {
+  color: var(--status-conflicted);
+}
+
+/* Long operations and their progress, always in view and never in the way. */
+.operations {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.operation {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.operation span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.operation progress {
+  flex: 0 0 160px;
+}

@@ -1,12 +1,14 @@
 //! The events the core sends to whoever listens: the UI, and the tests.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde::Serialize;
 
 use crate::Repository;
+use crate::notifications::Notification;
+use crate::operation_log::OperationLogEntry;
+use crate::operations::{LongOperation, Progress};
 
 /// Something that happened in the core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -14,23 +16,22 @@ use crate::Repository;
 pub enum Event {
     /// gikli ran a git command. The operation log shows these entries.
     OperationLogged(OperationLogEntry),
+    /// The user cleared the operation log: every view of it empties.
+    OperationLogCleared,
+    /// A feature raised a notification. It stays until the user acts on it or dismisses it.
+    NotificationRaised(Notification),
+    /// A notification went away: the user acted on it or dismissed it, or what it was about no
+    /// longer holds.
+    NotificationRemoved { id: u64 },
+    /// A long operation started. Its progress follows, then [`Event::OperationFinished`].
+    OperationStarted { id: u64, operation: LongOperation },
+    /// The long operation `id` advanced.
+    OperationProgress { id: u64, progress: Progress },
+    /// The long operation `id` ended, whether it succeeded or not.
+    OperationFinished { id: u64 },
     /// Files of a watched Repository changed, in its working tree or in its git directory,
     /// outside gikli: its changes should be read again. A burst of changes is announced once.
     FilesChanged { repository: Repository },
-}
-
-/// One git command gikli ran, with its raw output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OperationLogEntry {
-    /// The folder git ran in.
-    pub folder: PathBuf,
-    /// The full command line after `git`.
-    pub args: Vec<String>,
-    /// None when git was ended by a signal.
-    pub exit_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
 }
 
 /// The listeners of the core's events.

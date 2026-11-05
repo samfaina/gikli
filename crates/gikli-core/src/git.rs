@@ -7,12 +7,14 @@
 //! explicit `--format`).
 
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 
-use crate::events::{Event, EventBus, OperationLogEntry};
 use crate::host::HostEnvironment;
+use crate::operation_log::{OperationLog, OperationLogEntry};
+use crate::operations::Progress;
 use crate::version::GitVersion;
 use crate::wsl::WslShare;
 use crate::{GitCheck, GitSource, MINIMUM_GIT_VERSION};
@@ -128,7 +130,7 @@ impl GitProgram {
 pub(crate) struct GitRunner {
     program: GitProgram,
     host: HostEnvironment,
-    events: Arc<EventBus>,
+    log: Arc<OperationLog>,
 }
 
 /// One finished git run.
@@ -141,7 +143,7 @@ pub(crate) struct Invocation {
 const WSL_SHARED_VARIABLES: &[&str] = &["GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS"];
 
 impl GitRunner {
-    pub fn new(program: GitProgram, mut host: HostEnvironment, events: Arc<EventBus>) -> Self {
+    pub fn new(program: GitProgram, mut host: HostEnvironment, log: Arc<OperationLog>) -> Self {
         for name in REDIRECTING_VARIABLES {
             host.remove(*name);
         }
@@ -158,15 +160,46 @@ impl GitRunner {
             }
             host.set("WSLENV", shared);
         }
-        Self {
-            program,
-            host,
-            events,
-        }
+        Self { program, host, log }
     }
 
     /// Runs git with `args` in `folder`.
     pub fn run(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
+        let (mut command, entry) = self.command(folder, args);
+        let output = command
+            .output()
+            .map(|output| (output.status, output.stdout, output.stderr));
+        self.finish(entry, output)
+    }
+
+    /// Runs git with `args` in `folder`, as [`Self::run`] does, and passes each line of progress
+    /// git writes to `report` as it comes. `args` must ask git for progress (`--progress`), as
+    /// git reports none without a terminal otherwise.
+    pub fn run_reporting(
+        &self,
+        folder: &Path,
+        args: &[&str],
+        report: &dyn Fn(Progress),
+    ) -> std::io::Result<Invocation> {
+        let (mut command, entry) = self.command(folder, args);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let output = command.spawn().and_then(|mut child| {
+            let mut stdout = child.stdout.take().expect("stdout is piped");
+            // Read apart, so git never blocks on a full stdout while gikli reads its stderr.
+            let stdout = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = stdout.read_to_end(&mut bytes);
+                bytes
+            });
+            let stderr = read_progress(child.stderr.take().expect("stderr is piped"), report);
+            let status = child.wait()?;
+            Ok((status, stdout.join().unwrap_or_default(), stderr))
+        });
+        self.finish(entry, output)
+    }
+
+    /// The command that runs git with `args` in `folder`, and its operation log entry so far.
+    fn command(&self, folder: &Path, args: &[&str]) -> (Command, OperationLogEntry) {
         let mut command_line = vec!["--no-pager"];
         for setting in PINNED_CONFIG {
             command_line.extend(["-c", setting]);
@@ -180,17 +213,40 @@ impl GitRunner {
             .envs(self.host.vars())
             .stdin(Stdio::null());
         hide_console_window(&mut command);
-        let output = command.output()?;
-        self.events.send(Event::OperationLogged(OperationLogEntry {
+        let entry = OperationLogEntry {
+            id: 0,
             folder: folder.to_path_buf(),
             args: command_line.iter().map(|arg| (*arg).to_owned()).collect(),
-            exit_code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        }));
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: None,
+        };
+        (command, entry)
+    }
+
+    /// Records the run described by `entry`, which ended with `output`: its exit status,
+    /// standard output and error output, or why git could not start.
+    fn finish(
+        &self,
+        mut entry: OperationLogEntry,
+        output: std::io::Result<(ExitStatus, Vec<u8>, Vec<u8>)>,
+    ) -> std::io::Result<Invocation> {
+        let (status, stdout, stderr) = match output {
+            Ok(output) => output,
+            Err(error) => {
+                entry.error = Some(error.to_string());
+                self.log.record(entry);
+                return Err(error);
+            }
+        };
+        entry.exit_code = status.code();
+        entry.stdout = String::from_utf8_lossy(&stdout).into_owned();
+        entry.stderr = String::from_utf8_lossy(&stderr).into_owned();
+        self.log.record(entry);
         Ok(Invocation {
-            success: output.status.success(),
-            stdout: output.stdout,
+            success: status.success(),
+            stdout,
         })
     }
 
@@ -219,6 +275,33 @@ impl GitRunner {
             .success
             .then(|| self.program.toplevel(folder, &invocation.stdout)))
     }
+}
+
+/// Reads git's error output to its end and returns it, passing each line of progress in it to
+/// `report`. git redraws a progress line after a carriage return.
+fn read_progress(mut stderr: impl Read, report: &dyn Fn(Progress)) -> Vec<u8> {
+    let mut captured = Vec::new();
+    let mut line_start = 0;
+    let mut chunk = [0; 4096];
+    while let Ok(read) = stderr.read(&mut chunk)
+        && read > 0
+    {
+        captured.extend_from_slice(&chunk[..read]);
+        while let Some(end) = captured[line_start..]
+            .iter()
+            .position(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            let line = String::from_utf8_lossy(&captured[line_start..line_start + end]);
+            if let Some(progress) = Progress::parse(&line) {
+                report(progress);
+            }
+            line_start += end + 1;
+        }
+    }
+    if let Some(progress) = Progress::parse(&String::from_utf8_lossy(&captured[line_start..])) {
+        report(progress);
+    }
+    captured
 }
 
 impl Invocation {
@@ -255,18 +338,18 @@ fn hide_console_window(_command: &mut Command) {}
 pub(crate) fn check(
     configured: Option<PathBuf>,
     host: &HostEnvironment,
-    events: &Arc<EventBus>,
+    log: &Arc<OperationLog>,
 ) -> GitCheck {
     if let Some(executable) = configured {
-        return check_executable(executable, GitSource::Configured, host, events);
+        return check_executable(executable, GitSource::Configured, host, log);
     }
     if let Some(executable) = find_on_path(host, "git") {
-        return check_executable(executable, GitSource::Path, host, events);
+        return check_executable(executable, GitSource::Path, host, log);
     }
     if cfg!(windows)
         && let Some(wsl) = find_on_path(host, "wsl")
     {
-        return check_executable(wsl, GitSource::Wsl, host, events);
+        return check_executable(wsl, GitSource::Wsl, host, log);
     }
     GitCheck::NotFound {
         minimum: MINIMUM_GIT_VERSION,
@@ -277,7 +360,7 @@ pub(crate) fn check(
 pub(crate) fn check_wsl(
     share: &WslShare,
     host: &HostEnvironment,
-    events: &Arc<EventBus>,
+    log: &Arc<OperationLog>,
 ) -> GitCheck {
     let Some(wsl) = find_on_path(host, "wsl") else {
         return GitCheck::NotFound {
@@ -288,7 +371,7 @@ pub(crate) fn check_wsl(
         wsl: wsl.clone(),
         share: Some(share.clone()),
     };
-    check_program(program, wsl, GitSource::Wsl, host, events)
+    check_program(program, wsl, GitSource::Wsl, host, log)
 }
 
 /// Checks the version of the git at `executable`, found from `source`.
@@ -296,13 +379,13 @@ pub(crate) fn check_executable(
     executable: PathBuf,
     source: GitSource,
     host: &HostEnvironment,
-    events: &Arc<EventBus>,
+    log: &Arc<OperationLog>,
 ) -> GitCheck {
     let Some(executable) = executable_file(&executable) else {
         return GitCheck::Missing { executable };
     };
     let program = GitProgram::found(executable.clone(), source);
-    check_program(program, executable, source, host, events)
+    check_program(program, executable, source, host, log)
 }
 
 /// Runs `git --version` with `program` and checks the version. `executable` and `source` are
@@ -312,9 +395,9 @@ fn check_program(
     executable: PathBuf,
     source: GitSource,
     host: &HostEnvironment,
-    events: &Arc<EventBus>,
+    log: &Arc<OperationLog>,
 ) -> GitCheck {
-    let runner = GitRunner::new(program, host.clone(), events.clone());
+    let runner = GitRunner::new(program, host.clone(), log.clone());
     let version = runner
         .run(&std::env::temp_dir(), &["--version"])
         .ok()

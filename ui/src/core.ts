@@ -26,6 +26,8 @@ export interface Settings {
   showIgnoredFiles: boolean;
   /** How the changes view arranges the changes. */
   changeGrouping: ChangeGrouping;
+  /** Whether the operation log wraps long lines instead of scrolling sideways. */
+  operationLogSoftWrap: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -132,18 +134,69 @@ export type Failure =
   | { kind: "folderNotFound"; folder: string }
   | { kind: "notInRepository"; folder: string }
   | { kind: "changesUnreadable"; folder: string }
-  | { kind: "changesNotWatched"; folder: string; message: string };
+  | { kind: "changesNotWatched"; folder: string; message: string }
+  | { kind: "cloneFailed"; url: string; folder: string }
+  | { kind: "notificationGone"; id: number }
+  | { kind: "notificationActionNotOffered"; id: number };
 
+/** One git command gikli ran, with its raw output. */
 export interface OperationLogEntry {
+  /** Grows with each command: an entry read with {@link operationLog} may arrive again as an event. */
+  id: number;
+  /** The folder git ran in. */
   folder: string;
+  /** The full command line after `git`. */
   args: string[];
+  /** null when git was ended by a signal or could not start. */
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  /** Why git could not start, when it did not. */
+  error: string | null;
+}
+
+/** What a notification says. */
+export type NotificationKind =
+  | { kind: "unregisteredRepository"; repository: Repository }
+  | { kind: "invalidRepository"; repository: Repository };
+
+/** An action a notification offers. */
+export type NotificationAction =
+  | { action: "addRepository"; repository: Repository }
+  | { action: "ignoreRepository"; repository: Repository }
+  | { action: "removeRepository"; repository: Repository };
+
+/** A long-lived message about a Project, with the actions the user can take on it. */
+export interface Notification {
+  id: number;
+  /** The {@link Project.folder} it is about: the window showing that Project shows it. */
+  project: string;
+  kind: NotificationKind;
+  actions: NotificationAction[];
+}
+
+/** What acting on a notification changed. */
+export type NotificationOutcome = { outcome: "projectChanged"; payload: Project };
+
+/** A git command that takes long enough to show its progress. */
+export type LongOperation = { kind: "clone"; url: string; folder: string };
+
+/** How far one phase of a long operation has come. */
+export interface Progress {
+  /** The phase as git names it, in the user's language. */
+  phase: string;
+  /** From 0 to 100. */
+  percent: number;
 }
 
 export type CoreEvent =
   | { event: "operationLogged"; payload: OperationLogEntry }
+  | { event: "operationLogCleared" }
+  | { event: "notificationRaised"; payload: Notification }
+  | { event: "notificationRemoved"; payload: { id: number } }
+  | { event: "operationStarted"; payload: { id: number; operation: LongOperation } }
+  | { event: "operationProgress"; payload: { id: number; progress: Progress } }
+  | { event: "operationFinished"; payload: { id: number } }
   | { event: "filesChanged"; payload: { repository: Repository } };
 
 export function checkGit(): Promise<GitCheck> {
@@ -173,6 +226,44 @@ export function setShowIgnoredFiles(show: boolean): Promise<Settings> {
 /** Groups the changes view by folder or shows a flat list. Rejects with a {@link Failure}. */
 export function setChangeGrouping(grouping: ChangeGrouping): Promise<Settings> {
   return invoke("set_change_grouping", { grouping });
+}
+
+/** Turns soft wrap of the operation log on or off. Rejects with a {@link Failure}. */
+export function setOperationLogSoftWrap(softWrap: boolean): Promise<Settings> {
+  return invoke("set_operation_log_soft_wrap", { softWrap });
+}
+
+/** Every git command gikli ran, oldest first. New ones arrive as `operationLogged` events. */
+export function operationLog(): Promise<OperationLogEntry[]> {
+  return invoke("operation_log");
+}
+
+/** Empties the operation log in every window, through the `operationLogCleared` event. */
+export function clearOperationLog(): Promise<void> {
+  return invoke("clear_operation_log");
+}
+
+/** The notifications raised and not yet acted on or dismissed, oldest first. */
+export function notifications(): Promise<Notification[]> {
+  return invoke("notifications");
+}
+
+/** Takes one of the actions of the notification `id`, which then goes away. Rejects with a {@link Failure}. */
+export function actOnNotification(id: number, action: NotificationAction): Promise<NotificationOutcome> {
+  return invoke("act_on_notification", { id, action });
+}
+
+/** Removes the notification `id` without acting on it. */
+export function dismissNotification(id: number): Promise<void> {
+  return invoke("dismiss_notification", { id });
+}
+
+/**
+ * Clones the repository at `url` into `folder` and opens it as a Project. Its progress arrives as
+ * `operationStarted`, `operationProgress` and `operationFinished` events. Rejects with a {@link Failure}.
+ */
+export function cloneRepository(url: string, folder: string): Promise<Project> {
+  return invoke("clone_repository", { url, folder });
 }
 
 /** What the git that runs in `repository` can do beyond the minimum. Rejects with a {@link Failure}. */
