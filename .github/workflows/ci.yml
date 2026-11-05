@@ -1,5 +1,5 @@
-# Builds gikli and runs its suite on Windows, macOS and Linux, and once more on Linux against the
-# oldest git gikli supports (MINIMUM_GIT_VERSION in crates/gikli-core/src/lib.rs).
+# Builds gikli and runs its suite on Windows, macOS and Linux. On Linux the suite runs twice: once
+# against the latest stable git and once against the oldest git gikli supports.
 name: CI
 
 on:
@@ -17,8 +17,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # The oldest supported git, built from source for the minimum-git job.
-  MINIMUM_GIT: "2.34.1"
 
 jobs:
   test:
@@ -37,7 +35,7 @@ jobs:
           - name: Linux (latest git)
             os: ubuntu-latest
             git: latest
-          - name: Linux (git 2.34)
+          - name: Linux (minimum git)
             os: ubuntu-latest
             git: minimum
     steps:
@@ -56,34 +54,52 @@ jobs:
           sudo add-apt-repository -y ppa:git-core/ppa
           sudo apt-get update
           sudo apt-get install -y git
+          # The package version, such as 1:2.51.1-0ppa1~ubuntu24.04.1, without epoch and revision.
+          version=$(dpkg-query -W -f='${Version}' git | sed -E 's/^[0-9]+://; s/-.*//')
+          # Checked by the_suite_runs_against_the_git_ci_asked_for.
+          echo "GIKLI_EXPECTED_GIT_VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Restore git ${{ env.MINIMUM_GIT }}
+      - name: Read the minimum git version
         if: matrix.git == 'minimum'
         id: minimum-git
+        run: |
+          version=$(sed -nE 's/.*MINIMUM_GIT_VERSION: GitVersion = GitVersion::new\(([0-9]+), ([0-9]+), ([0-9]+)\);.*/\1.\2.\3/p' \
+            crates/gikli-core/src/lib.rs)
+          test -n "$version" || { echo "::error::MINIMUM_GIT_VERSION not found in crates/gikli-core/src/lib.rs"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prefix=$HOME/git-$version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore git ${{ steps.minimum-git.outputs.version }}
+        if: matrix.git == 'minimum'
+        id: minimum-git-cache
         uses: actions/cache@v4
         with:
-          path: /opt/git-${{ env.MINIMUM_GIT }}
-          key: git-${{ env.MINIMUM_GIT }}-${{ matrix.os }}
+          path: ${{ steps.minimum-git.outputs.prefix }}
+          # The workflow's hash covers the build options below.
+          key: git-${{ steps.minimum-git.outputs.version }}-${{ matrix.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
 
-      - name: Build git ${{ env.MINIMUM_GIT }} from source
-        if: matrix.git == 'minimum' && steps.minimum-git.outputs.cache-hit != 'true'
+      - name: Build git ${{ steps.minimum-git.outputs.version }} from source
+        if: matrix.git == 'minimum' && steps.minimum-git-cache.outputs.cache-hit != 'true'
+        env:
+          VERSION: ${{ steps.minimum-git.outputs.version }}
+          PREFIX: ${{ steps.minimum-git.outputs.prefix }}
         run: |
           sudo apt-get install -y zlib1g-dev
-          curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$MINIMUM_GIT.tar.gz" | tar -xz
+          curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$VERSION.tar.gz" | tar -xz
           # Only what the tests use: remotes are local folders, so no HTTP, and no translations.
-          # git 2.34 predates C23, which newer compilers default to.
-          options=(prefix="/opt/git-$MINIMUM_GIT" CFLAGS="-O2 -std=gnu17" NO_CURL=1 NO_EXPAT=1
-            NO_OPENSSL=1 NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1)
-          make -C "git-$MINIMUM_GIT" -j"$(nproc)" "${options[@]}" all
-          sudo make -C "git-$MINIMUM_GIT" "${options[@]}" install
-          rm -rf "git-$MINIMUM_GIT"
+          # This git predates C23, which newer compilers default to.
+          options=(prefix="$PREFIX" CFLAGS="-O2 -std=gnu17" NO_CURL=1 NO_EXPAT=1 NO_OPENSSL=1
+            NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1)
+          make -C "git-$VERSION" -j"$(nproc)" "${options[@]}" all
+          make -C "git-$VERSION" "${options[@]}" install
+          rm -rf "git-$VERSION"
 
-      - name: Put git ${{ env.MINIMUM_GIT }} first on the PATH
+      - name: Put git ${{ steps.minimum-git.outputs.version }} first on the PATH
         if: matrix.git == 'minimum'
         run: |
-          echo "/opt/git-$MINIMUM_GIT/bin" >> "$GITHUB_PATH"
+          echo "${{ steps.minimum-git.outputs.prefix }}/bin" >> "$GITHUB_PATH"
           # Checked by the_suite_runs_against_the_git_ci_asked_for.
-          echo "GIKLI_EXPECTED_GIT_VERSION=$MINIMUM_GIT" >> "$GITHUB_ENV"
+          echo "GIKLI_EXPECTED_GIT_VERSION=${{ steps.minimum-git.outputs.version }}" >> "$GITHUB_ENV"
 
       - name: Show the git under test
         run: git --version
