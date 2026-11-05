@@ -262,8 +262,8 @@ button:disabled {
   white-space: pre-wrap;
 }
 
-/* Repositories found in the Project that the user has not added or ignored yet. */
-.unregistered-repositories {
+/* Repositories the user can add, ignore or remove. */
+.repository-choices {
   margin: 12px 0;
   padding: 8px 12px;
   background: var(--surface);
@@ -271,34 +271,32 @@ button:disabled {
   border-radius: 6px;
 }
 
-.unregistered-repositories h2 {
+.repository-choices h2 {
   margin: 0 0 6px;
   font-size: 1rem;
 }
 
-.unregistered-repositories ul {
+.repository-choices ul {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.unregistered-repositories li {
+.repository-choices li {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 2px 0;
 }
 
-.unregistered-repositories li span {
+.repository-choices li span {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-/* A registered Repository that is no longer a valid repository. */
-.project p[data-testid="invalid-repository"] {
+/* Registered Repositories that are no longer valid repositories. */
+.repository-choices[data-testid="invalid-repositories"] {
   color: var(--warning-text);
   background: var(--warning-background);
-  border-radius: 6px;
-  padding: 4px 8px;
 }

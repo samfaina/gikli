@@ -11,12 +11,14 @@ import {
   onCoreEvent,
   openProject,
   readChanges,
+  removeRepository,
   setChangeGrouping,
   setGitPath,
   setShowIgnoredFiles,
   settings,
   startupFolder,
   testGit,
+  unwatchChanges,
   watchChanges,
   windowForProject,
   type Capability,
@@ -103,7 +105,7 @@ openButton.addEventListener("click", async () => {
   }
 });
 
-// In a window that shows a Project, the new Repository joins it; otherwise it opens as a Project.
+// In a window that shows a Project, a new Repository inside it joins it; any other opens as a Project.
 newRepositoryButton.addEventListener("click", async () => {
   const folder = await open({ directory: true, title: t("newRepositoryDialogTitle") });
   if (typeof folder !== "string") {
@@ -114,8 +116,15 @@ newRepositoryButton.addEventListener("click", async () => {
     const repository = await createRepository(folder);
     if (shownFolder === null) {
       await openFolder(repository.root);
-    } else {
+      return;
+    }
+    try {
       showProject(await addRepository(shownFolder, repository));
+    } catch (error) {
+      if (!isFailure(error) || error.kind !== "repositoryOutsideProject") {
+        throw error;
+      }
+      await openFolder(repository.root);
     }
   } catch (error) {
     report(describeError(error));
@@ -201,64 +210,90 @@ async function openFolder(folder: string): Promise<void> {
   }
 }
 
-/** Shows `project` in this window: the Repositories gikli offers to add, the ones that broke, and the changes of the others. */
+/** Shows `project` in this window: the Repositories gikli offers to add, the ones that broke, the ignored ones, and the changes of the others. */
 function showProject(project: Project): void {
   shownFolder = project.folder;
   const name = project.folder.split(/[\\/]/).filter((part) => part !== "").pop() ?? project.folder;
   document.title = t("windowTitle", { name });
+  // A Repository that leaves the view, removed or ignored, is no longer watched.
+  const shownRoots = new Set(project.repositories.map((repository) => repository.root));
+  for (const { repository } of shownRepositories.values()) {
+    if (!shownRoots.has(repository.root)) {
+      void unwatchChanges(repository);
+    }
+  }
   shownRepositories.clear();
   const options = document.createElement("div");
   void viewOptions().then((view) => options.replaceWith(view));
+  const choose = (choice: typeof addRepository, repository: Repository) => choice(project.folder, repository);
   projectView.replaceChildren(
     line("project-folder", t("projectFolder", { folder: project.folder })),
-    ...(project.unregisteredRepositories.length > 0 ? [unregisteredView(project)] : []),
+    ...repositoryChoices("unregistered-repositories", t("unregisteredRepositoriesTitle"), project.unregisteredRepositories, (repository) => [
+      { testId: "add-repository", text: t("addRepository"), act: () => choose(addRepository, repository) },
+      { testId: "ignore-repository", text: t("ignoreRepository"), act: () => choose(ignoreRepository, repository) },
+    ]),
+    ...repositoryChoices("invalid-repositories", t("invalidRepositoriesTitle"), project.invalidRepositories, (repository) => [
+      { testId: "remove-repository", text: t("removeRepository"), act: () => choose(removeRepository, repository) },
+    ]),
     options,
-    ...project.invalidRepositories.map((repository) =>
-      line("invalid-repository", t("invalidRepository", { root: repository.root })),
-    ),
     ...project.repositories.map(repositoryView),
+    ...repositoryChoices("ignored-repositories", t("ignoredRepositoriesTitle"), project.ignoredRepositories, (repository) => [
+      { testId: "add-repository", text: t("addRepository"), act: () => choose(addRepository, repository) },
+    ]),
   );
 }
 
-/** The Repositories found in the Project that are neither registered nor ignored, each with buttons to add or ignore it. */
-function unregisteredView(project: Project): HTMLElement {
+/** A button that changes which Repositories the Project holds, and returns the Project after the change. */
+interface RepositoryChoice {
+  testId: string;
+  text: string;
+  act: () => Promise<Project>;
+}
+
+/**
+ * A titled list of `repositories`, each with the buttons `choices` gives it; nothing when the
+ * list is empty. A choice shows the Project again once made.
+ */
+function repositoryChoices(
+  testId: string,
+  title: string,
+  repositories: Repository[],
+  choices: (repository: Repository) => RepositoryChoice[],
+): HTMLElement[] {
+  if (repositories.length === 0) {
+    return [];
+  }
   const section = document.createElement("section");
-  section.className = "unregistered-repositories";
-  section.dataset.testid = "unregistered-repositories";
-  const title = document.createElement("h2");
-  title.textContent = t("unregisteredRepositoriesTitle");
+  section.className = "repository-choices";
+  section.dataset.testid = testId;
+  const heading = document.createElement("h2");
+  heading.textContent = title;
   const list = document.createElement("ul");
-  for (const repository of project.unregisteredRepositories) {
+  for (const repository of repositories) {
     const item = document.createElement("li");
-    item.dataset.testid = "unregistered-repository";
-    const text = document.createElement("span");
-    text.textContent = t("unregisteredRepository", { root: repository.root });
-    const add = document.createElement("button");
-    add.type = "button";
-    add.dataset.testid = "add-repository";
-    add.textContent = t("addRepository");
-    const ignore = document.createElement("button");
-    ignore.type = "button";
-    ignore.dataset.testid = "ignore-repository";
-    ignore.textContent = t("ignoreRepository");
-    const decide = async (choice: typeof addRepository): Promise<void> => {
-      add.disabled = true;
-      ignore.disabled = true;
-      try {
-        showProject(await choice(project.folder, repository));
-      } catch (error) {
-        report(describeError(error));
-        add.disabled = false;
-        ignore.disabled = false;
-      }
-    };
-    add.addEventListener("click", () => void decide(addRepository));
-    ignore.addEventListener("click", () => void decide(ignoreRepository));
-    item.append(text, add, ignore);
+    const root = document.createElement("span");
+    root.textContent = repository.root;
+    const buttons = choices(repository).map((choice) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.testid = choice.testId;
+      button.textContent = choice.text;
+      button.addEventListener("click", async () => {
+        buttons.forEach((other) => (other.disabled = true));
+        try {
+          showProject(await choice.act());
+        } catch (error) {
+          report(describeError(error));
+          buttons.forEach((other) => (other.disabled = false));
+        }
+      });
+      return button;
+    });
+    item.append(root, ...buttons);
     list.append(item);
   }
-  section.append(title, list);
-  return section;
+  section.append(heading, list);
+  return [section];
 }
 
 /** The options of the changes view: grouping by folder and showing ignored files. */
@@ -533,6 +568,8 @@ function describeFailure(failure: Failure): string {
       return t("failureRepositoryExists", { folder: failure.folder });
     case "repositoryNotCreated":
       return t("failureRepositoryNotCreated", { folder: failure.folder });
+    case "repositoryOutsideProject":
+      return t("failureRepositoryOutsideProject", { folder: failure.folder });
     case "notARepositoryRoot":
       return t("failureNotARepositoryRoot", { folder: failure.folder });
     case "folderNotFound":

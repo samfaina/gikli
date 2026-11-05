@@ -53,6 +53,8 @@ export interface Project {
   invalidRepositories: Repository[];
   /** Repositories found at or inside the folder that are neither registered nor ignored: offer to add or ignore each. */
   unregisteredRepositories: Repository[];
+  /** Repositories found at or inside the folder that the user ignored; they can still be added. */
+  ignoredRepositories: Repository[];
 }
 
 /** Where a Project shows: in the window that asked, in the window that already shows it, or in a new window. */
@@ -125,6 +127,7 @@ export type Failure =
   | { kind: "folderNotCreated"; folder: string; message: string }
   | { kind: "repositoryExists"; folder: string }
   | { kind: "repositoryNotCreated"; folder: string }
+  | { kind: "repositoryOutsideProject"; folder: string }
   | { kind: "notARepositoryRoot"; folder: string }
   | { kind: "folderNotFound"; folder: string }
   | { kind: "notInRepository"; folder: string }
@@ -182,7 +185,7 @@ export function openProject(folder: string): Promise<Project> {
   return invoke("open_project", { folder });
 }
 
-/** Registers `repository` in the Project at `folder`. Rejects with a {@link Failure}. */
+/** Registers `repository`, at or inside the Project's folder, in the Project at `folder`. Rejects with a {@link Failure}. */
 export function addRepository(folder: string, repository: Repository): Promise<Project> {
   return invoke("add_repository", { folder, repository });
 }
@@ -190,6 +193,11 @@ export function addRepository(folder: string, repository: Repository): Promise<P
 /** Stops offering `repository` to the Project at `folder`. Rejects with a {@link Failure}. */
 export function ignoreRepository(folder: string, repository: Repository): Promise<Project> {
   return invoke("ignore_repository", { folder, repository });
+}
+
+/** Unregisters `repository`, valid or not, from the Project at `folder`. Rejects with a {@link Failure}. */
+export function removeRepository(folder: string, repository: Repository): Promise<Project> {
+  return invoke("remove_repository", { folder, repository });
 }
 
 /** Creates a new Repository in `folder`, creating the folder if needed. Rejects with a {@link Failure}. */

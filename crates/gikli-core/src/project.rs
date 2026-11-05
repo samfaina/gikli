@@ -12,17 +12,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct ProjectRegistry {
-    projects: BTreeMap<PathBuf, ProjectEntry>,
+    projects: BTreeMap<PathBuf, RememberedProject>,
 }
 
 /// What gikli remembers about one Project.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub(crate) struct ProjectEntry {
+pub(crate) struct RememberedProject {
     /// The roots of the Repositories registered in the Project.
     pub repositories: BTreeSet<PathBuf>,
     /// The roots of the Repositories found in the Project that the user chose not to add.
     pub ignored: BTreeSet<PathBuf>,
+}
+
+impl RememberedProject {
+    /// What gikli remembers about a Project it opens for the first time: the Repository its
+    /// folder is in, at `toplevel`, is registered.
+    pub fn first_open(toplevel: Option<&PathBuf>) -> Self {
+        Self {
+            repositories: toplevel.into_iter().cloned().collect(),
+            ignored: BTreeSet::new(),
+        }
+    }
 }
 
 impl ProjectRegistry {
@@ -35,23 +46,28 @@ impl ProjectRegistry {
             .unwrap_or_default()
     }
 
-    /// Writes the registry to `file`, creating its folder.
+    /// Writes the registry to `file`, creating its folder. The file is replaced at once, so a
+    /// crash while writing leaves the previous registry.
     pub fn save(&self, file: &Path) -> io::Result<()> {
         if let Some(folder) = file.parent() {
             fs::create_dir_all(folder)?;
         }
         let json = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        fs::write(file, json)
+        let mut partial = file.as_os_str().to_owned();
+        partial.push(".partial");
+        let partial = PathBuf::from(partial);
+        fs::write(&partial, json)?;
+        fs::rename(&partial, file)
     }
 
     /// What gikli remembers about the Project at `folder`, if it opened it before.
-    pub fn get(&self, folder: &Path) -> Option<&ProjectEntry> {
+    pub fn remembered(&self, folder: &Path) -> Option<&RememberedProject> {
         self.projects.get(folder)
     }
 
-    /// Remembers `entry` for the Project at `folder`.
-    pub fn insert(&mut self, folder: PathBuf, entry: ProjectEntry) {
-        self.projects.insert(folder, entry);
+    /// Remembers `project` for the Project at `folder`.
+    pub fn remember(&mut self, folder: PathBuf, project: RememberedProject) {
+        self.projects.insert(folder, project);
     }
 }
 

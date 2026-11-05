@@ -34,7 +34,7 @@ pub use window::ProjectWindow;
 
 use events::EventBus;
 use git::{GitProgram, GitRunner};
-use project::{ProjectEntry, ProjectRegistry};
+use project::{ProjectRegistry, RememberedProject};
 use watch::ChangesWatcher;
 use window::ProjectWindows;
 use wsl::WslShare;
@@ -119,6 +119,9 @@ pub struct Project {
     /// The Repositories gikli found at or inside the folder that are neither registered nor
     /// ignored, ordered by root. gikli offers to add or ignore each one.
     pub unregistered_repositories: Vec<Repository>,
+    /// The Repositories gikli found at or inside the folder that the user chose to ignore,
+    /// ordered by root. They can still be added.
+    pub ignored_repositories: Vec<Repository>,
 }
 
 /// One git repository inside a Project, identified by its root folder.
@@ -174,6 +177,12 @@ pub enum Failure {
     /// git could not create a repository in `folder`. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     RepositoryNotCreated {
+        folder: PathBuf,
+    },
+    /// The repository at `folder` is neither inside the Project's folder nor the Repository the
+    /// folder is in, so it cannot be a Repository of the Project.
+    #[serde(rename_all = "camelCase")]
+    RepositoryOutsideProject {
         folder: PathBuf,
     },
     /// `folder` is not the root of a repository, so it cannot be a Repository of a Project.
@@ -283,28 +292,26 @@ impl Gikli {
     /// in. Every time, it offers the Repositories it finds at or inside the folder that are
     /// neither registered nor ignored.
     pub fn open_project(&self, folder: &Path) -> Result<Project, Failure> {
-        let (runner, folder, toplevel) = self.project_folder(folder)?;
-        let entry = {
+        let place = self.project_folder(folder)?;
+        let (remembered, opened_before) = {
             let mut projects = lock(&self.projects);
-            match projects.get(&folder) {
-                Some(entry) => entry.clone(),
+            match projects.remembered(&place.folder) {
+                Some(remembered) => (remembered.clone(), true),
                 None => {
-                    let entry = first_entry(&toplevel);
-                    if !entry.repositories.is_empty() {
-                        projects.insert(folder.clone(), entry.clone());
+                    let remembered = RememberedProject::first_open(place.toplevel.as_ref());
+                    if !remembered.repositories.is_empty() {
+                        projects.remember(place.folder.clone(), remembered.clone());
                         // Remembered on a best-effort basis: when the registry cannot be saved,
                         // the next start registers the same Repository again.
                         let _ = projects.save(&self.projects_file);
                     }
-                    entry
+                    (remembered, false)
                 }
             }
         };
-        let project = self.project(&runner, folder, toplevel, &entry)?;
-        if project.repositories.is_empty()
-            && project.invalid_repositories.is_empty()
-            && project.unregistered_repositories.is_empty()
-        {
+        let project = place.project(&remembered)?;
+        // A folder opened before keeps opening, even when the user ignored all it holds.
+        if !opened_before && project.holds_nothing() {
             return Err(Failure::NotInRepository {
                 folder: project.folder,
             });
@@ -312,15 +319,21 @@ impl Gikli {
         Ok(project)
     }
 
-    /// Registers `repository` in the Project at `folder`, and returns the Project.
+    /// Registers `repository`, found at or inside the Project's folder, in the Project at
+    /// `folder`, and returns the Project. An ignored Repository is no longer ignored.
     pub fn add_repository(
         &self,
         folder: &Path,
         repository: &Repository,
     ) -> Result<Project, Failure> {
-        self.change_project(folder, repository, |entry, root| {
-            entry.ignored.remove(root);
-            entry.repositories.insert(root.to_path_buf());
+        let place = self.project_folder(folder)?;
+        let root = place.repository_root(repository)?;
+        if !place.holds(&root) {
+            return Err(Failure::RepositoryOutsideProject { folder: root });
+        }
+        self.change_project(place, |remembered| {
+            remembered.ignored.remove(&root);
+            remembered.repositories.insert(root);
         })
     }
 
@@ -330,43 +343,52 @@ impl Gikli {
         folder: &Path,
         repository: &Repository,
     ) -> Result<Project, Failure> {
-        self.change_project(folder, repository, |entry, root| {
-            entry.repositories.remove(root);
-            entry.ignored.insert(root.to_path_buf());
+        let place = self.project_folder(folder)?;
+        let root = place.repository_root(repository)?;
+        self.change_project(place, |remembered| {
+            remembered.repositories.remove(&root);
+            remembered.ignored.insert(root);
         })
     }
 
-    /// Applies `change` to what gikli remembers about the Project at `folder` for the root of
-    /// `repository`, and saves it. When it cannot be saved, nothing changes.
-    fn change_project(
+    /// Unregisters `repository` from the Project at `folder`, valid or not, and returns the
+    /// Project. A valid one is offered again.
+    pub fn remove_repository(
         &self,
         folder: &Path,
         repository: &Repository,
-        change: impl FnOnce(&mut ProjectEntry, &Path),
     ) -> Result<Project, Failure> {
-        let (runner, folder, toplevel) = self.project_folder(folder)?;
-        let root = canonicalize(&repository.root).unwrap_or_else(|_| repository.root.clone());
-        if !self.is_repository_root(&runner, &root)? {
-            return Err(Failure::NotARepositoryRoot { folder: root });
-        }
-        let entry = {
+        let place = self.project_folder(folder)?;
+        self.change_project(place, |remembered| {
+            remembered.repositories.remove(&repository.root);
+        })
+    }
+
+    /// Applies `change` to what gikli remembers about the Project at `place`, and saves it.
+    /// When it cannot be saved, nothing changes.
+    fn change_project(
+        &self,
+        place: ProjectFolder,
+        change: impl FnOnce(&mut RememberedProject),
+    ) -> Result<Project, Failure> {
+        let remembered = {
             let mut projects = lock(&self.projects);
-            let mut entry = projects
-                .get(&folder)
+            let mut remembered = projects
+                .remembered(&place.folder)
                 .cloned()
-                .unwrap_or_else(|| first_entry(&toplevel));
-            change(&mut entry, &root);
+                .unwrap_or_else(|| RememberedProject::first_open(place.toplevel.as_ref()));
+            change(&mut remembered);
             let mut changed = projects.clone();
-            changed.insert(folder.clone(), entry.clone());
+            changed.remember(place.folder.clone(), remembered.clone());
             changed
                 .save(&self.projects_file)
                 .map_err(|error| Failure::ProjectNotSaved {
                     message: error.to_string(),
                 })?;
             *projects = changed;
-            entry
+            remembered
         };
-        self.project(&runner, folder, toplevel, &entry)
+        place.project(&remembered)
     }
 
     /// Where the Project at `folder`, as [`Project::folder`] gives it, shows when the window
@@ -396,10 +418,8 @@ impl Gikli {
             folder: folder.to_path_buf(),
             message: error.to_string(),
         })?;
-        let folder = canonicalize(folder).map_err(|_| Failure::FolderNotFound {
-            folder: folder.to_path_buf(),
-        })?;
-        if self.is_repository_root(&runner, &folder)? {
+        let folder = absolute_folder(folder)?;
+        if is_repository_root(&runner, &folder)? {
             return Err(Failure::RepositoryExists { folder });
         }
         let invocation = runner
@@ -411,16 +431,10 @@ impl Gikli {
         Ok(Repository { root: folder })
     }
 
-    /// The runner for the Project at `folder`, the folder's absolute form, and the root of the
-    /// Repository the folder is in, if any.
-    fn project_folder(
-        &self,
-        folder: &Path,
-    ) -> Result<(GitRunner, PathBuf, Option<PathBuf>), Failure> {
+    /// The Project folder `folder`, in its absolute form, with the runner for it.
+    fn project_folder(&self, folder: &Path) -> Result<ProjectFolder, Failure> {
         let runner = self.runner(folder)?;
-        let folder = canonicalize(folder).map_err(|_| Failure::FolderNotFound {
-            folder: folder.to_path_buf(),
-        })?;
+        let folder = absolute_folder(folder)?;
         if !folder.is_dir() {
             return Err(Failure::FolderNotFound { folder });
         }
@@ -428,56 +442,11 @@ impl Gikli {
             .toplevel(&folder)
             .map_err(git_failed_to_start)?
             .map(|root| canonicalize(&root).unwrap_or(root));
-        Ok((runner, folder, toplevel))
-    }
-
-    /// The Project at `folder`, whose remembered Repositories are `entry`. `toplevel` is the
-    /// root of the Repository the folder is in, if any.
-    fn project(
-        &self,
-        runner: &GitRunner,
-        folder: PathBuf,
-        toplevel: Option<PathBuf>,
-        entry: &ProjectEntry,
-    ) -> Result<Project, Failure> {
-        let mut repositories = Vec::new();
-        let mut invalid_repositories = Vec::new();
-        for root in &entry.repositories {
-            let repository = Repository { root: root.clone() };
-            if self.is_repository_root(runner, root)? {
-                repositories.push(repository);
-            } else {
-                invalid_repositories.push(repository);
-            }
-        }
-        let mut found: Vec<PathBuf> = toplevel.into_iter().collect();
-        for candidate in project::nested_candidates(&folder) {
-            if self.is_repository_root(runner, &candidate)? {
-                found.push(candidate);
-            }
-        }
-        found.sort();
-        found.dedup();
-        let unregistered_repositories = found
-            .into_iter()
-            .filter(|root| !entry.repositories.contains(root) && !entry.ignored.contains(root))
-            .map(|root| Repository { root })
-            .collect();
-        Ok(Project {
+        Ok(ProjectFolder {
+            runner,
             folder,
-            repositories,
-            invalid_repositories,
-            unregistered_repositories,
+            toplevel,
         })
-    }
-
-    /// Whether `folder` is the root of a repository, as git reports it.
-    fn is_repository_root(&self, runner: &GitRunner, folder: &Path) -> Result<bool, Failure> {
-        if !folder.is_dir() {
-            return Ok(false);
-        }
-        let toplevel = runner.toplevel(folder).map_err(git_failed_to_start)?;
-        Ok(toplevel.is_some_and(|root| canonicalize(&root).unwrap_or(root) == folder))
     }
 
     /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
@@ -576,13 +545,91 @@ impl Gikli {
     }
 }
 
-/// What gikli remembers about a Project it opens for the first time: the Repository its folder
-/// is in, at `toplevel`, is registered.
-fn first_entry(toplevel: &Option<PathBuf>) -> ProjectEntry {
-    ProjectEntry {
-        repositories: toplevel.iter().cloned().collect(),
-        ignored: Default::default(),
+/// The folder of a Project, with what git says about it.
+struct ProjectFolder {
+    /// The runner for operations in the folder.
+    runner: GitRunner,
+    /// The folder, in its absolute form.
+    folder: PathBuf,
+    /// The root of the Repository the folder is in, if any.
+    toplevel: Option<PathBuf>,
+}
+
+impl ProjectFolder {
+    /// The Project in this folder, whose remembered Repositories are `remembered`.
+    fn project(&self, remembered: &RememberedProject) -> Result<Project, Failure> {
+        let mut repositories = Vec::new();
+        let mut invalid_repositories = Vec::new();
+        for root in &remembered.repositories {
+            let repository = Repository { root: root.clone() };
+            if is_repository_root(&self.runner, root)? {
+                repositories.push(repository);
+            } else {
+                invalid_repositories.push(repository);
+            }
+        }
+        let mut found: Vec<PathBuf> = self.toplevel.iter().cloned().collect();
+        for candidate in project::nested_candidates(&self.folder) {
+            if is_repository_root(&self.runner, &candidate)? {
+                found.push(candidate);
+            }
+        }
+        found.sort();
+        found.dedup();
+        let (ignored, unregistered): (Vec<_>, Vec<_>) = found
+            .into_iter()
+            .filter(|root| !remembered.repositories.contains(root))
+            .map(|root| Repository { root })
+            .partition(|repository| remembered.ignored.contains(&repository.root));
+        Ok(Project {
+            folder: self.folder.clone(),
+            repositories,
+            invalid_repositories,
+            unregistered_repositories: unregistered,
+            ignored_repositories: ignored,
+        })
     }
+
+    /// The root of `repository` in its absolute form, when it is the root of a repository.
+    fn repository_root(&self, repository: &Repository) -> Result<PathBuf, Failure> {
+        let root = canonicalize(&repository.root).unwrap_or_else(|_| repository.root.clone());
+        if !is_repository_root(&self.runner, &root)? {
+            return Err(Failure::NotARepositoryRoot { folder: root });
+        }
+        Ok(root)
+    }
+
+    /// Whether the repository at `root` belongs in this Project: it is at or inside the folder,
+    /// or it is the Repository the folder is in.
+    fn holds(&self, root: &Path) -> bool {
+        root.starts_with(&self.folder) || self.toplevel.as_deref() == Some(root)
+    }
+}
+
+impl Project {
+    /// Whether the Project shows no Repository at all.
+    fn holds_nothing(&self) -> bool {
+        self.repositories.is_empty()
+            && self.invalid_repositories.is_empty()
+            && self.unregistered_repositories.is_empty()
+            && self.ignored_repositories.is_empty()
+    }
+}
+
+/// Whether `folder` is the root of a repository, as git reports it.
+fn is_repository_root(runner: &GitRunner, folder: &Path) -> Result<bool, Failure> {
+    if !folder.is_dir() {
+        return Ok(false);
+    }
+    let toplevel = runner.toplevel(folder).map_err(git_failed_to_start)?;
+    Ok(toplevel.is_some_and(|root| canonicalize(&root).unwrap_or(root) == folder))
+}
+
+/// The absolute form of `folder`, which must exist.
+fn absolute_folder(folder: &Path) -> Result<PathBuf, Failure> {
+    canonicalize(folder).map_err(|_| Failure::FolderNotFound {
+        folder: folder.to_path_buf(),
+    })
 }
 
 /// The executable, source and version of a git gikli can run operations with.

@@ -1,5 +1,8 @@
 //! One window per Project, with several open at once. The shell creates and focuses the windows;
 //! the core decides which window shows each Project.
+//!
+//! No plain-git counterpart: which window shows a Project is gikli's own state, which git knows
+//! nothing about.
 
 use gikli_acceptance::Sandbox;
 use gikli_core::ProjectWindow;

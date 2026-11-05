@@ -26,6 +26,10 @@ fn invalid(project: &Project) -> Vec<PathBuf> {
     roots(&project.invalid_repositories)
 }
 
+fn ignored(project: &Project) -> Vec<PathBuf> {
+    roots(&project.ignored_repositories)
+}
+
 #[test]
 fn nested_repositories_that_are_not_registered_are_offered() {
     let sandbox = Sandbox::new();
@@ -77,18 +81,21 @@ fn an_offered_repository_that_is_ignored_is_not_offered_again_after_a_restart() 
     let gikli = sandbox.gikli();
     let project = gikli.open_project(app.root()).expect("open project");
 
-    let ignored = gikli
+    let after = gikli
         .ignore_repository(&project.folder, &project.unregistered_repositories[0])
         .expect("ignore repository");
 
-    assert_eq!(registered(&ignored), vec![app.toplevel_by_git()]);
-    assert_eq!(offered(&ignored), Vec::<PathBuf>::new());
+    assert_eq!(registered(&after), vec![app.toplevel_by_git()]);
+    assert_eq!(offered(&after), Vec::<PathBuf>::new());
     let reopened = sandbox
         .gikli()
         .open_project(app.root())
         .expect("reopen project");
-    assert_eq!(reopened, ignored);
-    assert!(engine.git_succeeds(&["rev-parse", "--git-dir"]));
+    assert_eq!(reopened, after);
+    assert_eq!(ignored(&reopened), vec![engine.toplevel_by_git()]);
+    // Ignoring leaves the repository alone: git still finds it, and its parent still sees it.
+    assert_eq!(engine.toplevel_by_git(), engine.root());
+    assert_eq!(app.status_by_git(), vec!["?? libs/engine/"]);
 }
 
 #[test]
@@ -190,7 +197,10 @@ fn a_folder_that_is_not_a_repository_root_cannot_be_added() {
         })
     );
     assert_eq!(gikli.open_project(app.root()), Ok(project));
-    assert_eq!(app.toplevel_by_git(), app.root());
+    assert_eq!(
+        sandbox.existing_repository(&src).toplevel_by_git(),
+        app.toplevel_by_git()
+    );
 }
 
 #[test]
@@ -326,4 +336,142 @@ fn the_changes_of_each_repository_in_a_project_carry_their_repository() {
     );
     assert_eq!(app.status_by_git(), vec!["?? README.md", "?? libs/engine/"]);
     assert_eq!(engine.status_by_git(), vec!["?? engine.rs"]);
+}
+
+#[test]
+fn an_ignored_repository_can_be_added_after_all() {
+    let sandbox = Sandbox::new();
+    let app = sandbox.repository("app");
+    let engine = sandbox.repository("app/libs/engine");
+    let gikli = sandbox.gikli();
+    let project = gikli.open_project(app.root()).expect("open project");
+    let project = gikli
+        .ignore_repository(&project.folder, &project.unregistered_repositories[0])
+        .expect("ignore repository");
+
+    let added = gikli
+        .add_repository(&project.folder, &project.ignored_repositories[0])
+        .expect("add repository");
+
+    assert_eq!(
+        registered(&added),
+        vec![app.toplevel_by_git(), engine.toplevel_by_git()]
+    );
+    assert_eq!(ignored(&added), Vec::<PathBuf>::new());
+    assert_eq!(engine.toplevel_by_git(), engine.root());
+}
+
+#[test]
+fn a_folder_whose_nested_repositories_are_all_ignored_still_opens() {
+    let sandbox = Sandbox::new();
+    let folder = sandbox.folder("workspace");
+    let api = sandbox.repository("workspace/api");
+    let gikli = sandbox.gikli();
+    let project = gikli.open_project(&folder).expect("open project");
+    gikli
+        .ignore_repository(&project.folder, &project.unregistered_repositories[0])
+        .expect("ignore repository");
+
+    let reopened = sandbox
+        .gikli()
+        .open_project(&folder)
+        .expect("reopen project");
+
+    assert_eq!(registered(&reopened), Vec::<PathBuf>::new());
+    assert_eq!(offered(&reopened), Vec::<PathBuf>::new());
+    assert_eq!(ignored(&reopened), vec![api.toplevel_by_git()]);
+    assert!(!sandbox.is_inside_repository_by_git(&folder));
+}
+
+#[test]
+fn an_invalid_repository_can_be_removed_from_the_project() {
+    let sandbox = Sandbox::new();
+    let app = sandbox.repository("app");
+    let engine = sandbox.repository("app/libs/engine");
+    let gikli = sandbox.gikli();
+    let project = gikli.open_project(app.root()).expect("open project");
+    gikli
+        .add_repository(&project.folder, &project.unregistered_repositories[0])
+        .expect("add repository");
+    fs::remove_dir_all(engine.root().join(".git")).expect("delete git directory");
+    let broken = gikli.open_project(app.root()).expect("reopen project");
+
+    let removed = gikli
+        .remove_repository(&broken.folder, &broken.invalid_repositories[0])
+        .expect("remove repository");
+
+    assert_eq!(registered(&removed), vec![app.toplevel_by_git()]);
+    assert_eq!(invalid(&removed), Vec::<PathBuf>::new());
+    let reopened = sandbox
+        .gikli()
+        .open_project(app.root())
+        .expect("reopen project");
+    assert_eq!(reopened, removed);
+    assert_eq!(engine.toplevel_by_git(), app.toplevel_by_git());
+}
+
+#[test]
+fn a_repository_outside_the_project_folder_cannot_be_added() {
+    let sandbox = Sandbox::new();
+    let app = sandbox.repository("app");
+    let site = sandbox.repository("site");
+    let gikli = sandbox.gikli();
+    let project = gikli.open_project(app.root()).expect("open project");
+
+    let added = gikli.add_repository(
+        &project.folder,
+        &Repository {
+            root: site.toplevel_by_git(),
+        },
+    );
+
+    assert_eq!(
+        added,
+        Err(Failure::RepositoryOutsideProject {
+            folder: site.toplevel_by_git()
+        })
+    );
+    assert_eq!(gikli.open_project(app.root()), Ok(project));
+    assert_eq!(site.toplevel_by_git(), site.root());
+}
+
+#[test]
+fn the_repository_above_a_project_subfolder_stays_registered_when_another_is_added() {
+    let sandbox = Sandbox::new();
+    let app = sandbox.repository("app");
+    let engine = sandbox.repository("app/libs/engine");
+    let libs = app.root().join("libs");
+    let gikli = sandbox.gikli();
+    let project = gikli.open_project(&libs).expect("open project");
+
+    let added = gikli
+        .add_repository(&project.folder, &project.unregistered_repositories[0])
+        .expect("add repository");
+
+    assert_eq!(
+        registered(&added),
+        vec![app.toplevel_by_git(), engine.toplevel_by_git()]
+    );
+    assert_eq!(engine.toplevel_by_git(), engine.root());
+}
+
+#[test]
+fn a_choice_that_cannot_be_saved_is_reported_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let app = sandbox.repository("app");
+    let engine = sandbox.repository("app/libs/engine");
+    // A folder where the registry file belongs: it cannot be written.
+    fs::create_dir_all(sandbox.config_folder().join("projects.json")).expect("block registry");
+    let gikli = sandbox.gikli();
+    let project = gikli.open_project(app.root()).expect("open project");
+
+    let added = gikli.add_repository(&project.folder, &project.unregistered_repositories[0]);
+
+    assert!(
+        matches!(added, Err(Failure::ProjectNotSaved { .. })),
+        "{added:?}"
+    );
+    assert_eq!(gikli.open_project(app.root()), Ok(project));
+    assert_eq!(app.status_by_git(), vec!["?? libs/engine/"]);
+    assert_eq!(engine.toplevel_by_git(), engine.root());
 }

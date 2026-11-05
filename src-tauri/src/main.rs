@@ -99,6 +99,15 @@ fn ignore_repository(
 }
 
 #[tauri::command(async)]
+fn remove_repository(
+    gikli: State<'_, Gikli>,
+    folder: PathBuf,
+    repository: Repository,
+) -> Result<Project, Failure> {
+    gikli.remove_repository(&folder, &repository)
+}
+
+#[tauri::command(async)]
 fn create_repository(gikli: State<'_, Gikli>, folder: PathBuf) -> Result<Repository, Failure> {
     gikli.create_repository(&folder)
 }
@@ -200,6 +209,7 @@ fn main() {
             open_project,
             add_repository,
             ignore_repository,
+            remove_repository,
             create_repository,
             window_for_project,
             read_changes,
