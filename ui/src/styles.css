@@ -1,0 +1,84 @@
+/* Colors follow the operating system's light or dark setting. */
+:root {
+  color-scheme: light dark;
+  --background: #ffffff;
+  --surface: #f3f4f6;
+  --text: #1f2328;
+  --muted: #59636e;
+  --border: #d1d9e0;
+  --warning-background: #fff8c5;
+  --warning-text: #7d4e00;
+  --accent: #2f6f5e;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1e1f22;
+    --surface: #2b2d30;
+    --text: #dfe1e5;
+    --muted: #9da0a8;
+    --border: #43454a;
+    --warning-background: #3d3214;
+    --warning-text: #f2cc60;
+    --accent: #5fb89f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button:disabled {
+  color: var(--muted);
+}
+
+.git-status {
+  color: var(--muted);
+}
+
+.git-status.warning {
+  color: var(--warning-text);
+  background: var(--warning-background);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.project {
+  padding: 12px;
+}
+
+.project p {
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}

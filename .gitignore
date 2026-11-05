@@ -1,0 +1,5 @@
+/target
+node_modules/
+/dist
+/e2e/.output
+/src-tauri/gen/schemas

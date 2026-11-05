@@ -1,0 +1,16 @@
+[package]
+name = "gikli"
+description = "gikli desktop app: the Tauri shell that connects the UI to gikli's core."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+gikli-core.workspace = true
+serde.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

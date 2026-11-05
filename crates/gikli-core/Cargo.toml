@@ -1,0 +1,11 @@
+[package]
+name = "gikli-core"
+description = "gikli's core: runs git and exposes the application interface the UI and the tests use."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+dunce.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "gikli-acceptance"
+description = "Test harness and acceptance tests that drive gikli through its application interface."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gikli-core.workspace = true
+dunce.workspace = true
+tempfile.workspace = true
