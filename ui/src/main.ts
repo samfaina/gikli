@@ -99,7 +99,7 @@ function repositoryView(repository: Repository): HTMLElement {
   const header = document.createElement("div");
   header.className = "changes-header";
   const title = document.createElement("h2");
-  title.textContent = t("changesTitle");
+  title.textContent = t("localChangesTitle");
   const refresh = document.createElement("button");
   refresh.type = "button";
   refresh.dataset.testid = "refresh-changes";
@@ -174,6 +174,8 @@ function describeFailure(failure: Failure): string {
       return t("failureFolderNotFound", { folder: failure.folder });
     case "notInRepository":
       return t("failureNotInRepository", { folder: failure.folder });
+    case "changesUnreadable":
+      return t("failureChangesUnreadable", { folder: failure.folder });
   }
 }
 

@@ -28,10 +28,10 @@ fn an_edited_file_appears_as_modified() {
     repository.commit_all("Initial commit");
     repository.write("README.md", "hello, world\n");
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![change("README.md", ChangeStatus::Modified)]
     );
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);
@@ -46,13 +46,31 @@ fn a_new_file_added_to_git_appears_as_added() {
     repository.write("src/main.rs", "fn main() {}\n");
     repository.git(&["add", "src/main.rs"]);
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![change("src/main.rs", ChangeStatus::Added)]
     );
     assert_eq!(repository.status_by_git(), vec!["A  src/main.rs"]);
+}
+
+/// As in JetBrains, a file added and then deleted is no change: it is in neither the last commit
+/// nor the working tree.
+#[test]
+fn a_new_file_added_to_git_and_then_removed_from_disk_does_not_appear() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("README.md", "hello\n");
+    repository.commit_all("Initial commit");
+    repository.write("draft.md", "draft\n");
+    repository.git(&["add", "draft.md"]);
+    repository.delete("draft.md");
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(change_set.changes, vec![]);
+    assert_eq!(repository.status_by_git(), vec!["AD draft.md"]);
 }
 
 #[test]
@@ -64,10 +82,10 @@ fn a_tracked_file_removed_from_disk_appears_as_deleted() {
     repository.commit_all("Initial commit");
     repository.delete("NOTES.md");
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![change("NOTES.md", ChangeStatus::Deleted)]
     );
     assert_eq!(repository.status_by_git(), vec![" D NOTES.md"]);
@@ -82,10 +100,10 @@ fn a_file_removed_with_git_rm_appears_as_deleted() {
     repository.commit_all("Initial commit");
     repository.git(&["rm", "--quiet", "NOTES.md"]);
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![change("NOTES.md", ChangeStatus::Deleted)]
     );
     assert_eq!(repository.status_by_git(), vec!["D  NOTES.md"]);
@@ -100,10 +118,10 @@ fn new_files_git_does_not_track_appear_one_by_one_as_untracked() {
     repository.write("TODO.md", "todo\n");
     repository.write("docs/guide/intro.md", "intro\n");
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![
             change("TODO.md", ChangeStatus::Untracked),
             change("docs/guide/intro.md", ChangeStatus::Untracked),
@@ -124,10 +142,10 @@ fn paths_with_unicode_and_spaces_appear_exactly_as_on_disk() {
     repository.write("café ☕.txt", "with milk\n");
     repository.write("notas de reunión/日本語 ファイル.md", "メモ\n");
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![
             change("café ☕.txt", ChangeStatus::Modified),
             change(
@@ -140,7 +158,7 @@ fn paths_with_unicode_and_spaces_appear_exactly_as_on_disk() {
         repository.status_by_git(),
         vec![" M café ☕.txt", "?? notas de reunión/日本語 ファイル.md"]
     );
-    for change in &changes.changes {
+    for change in &change_set.changes {
         assert!(repository.root().join(&change.path).is_file());
     }
 }
@@ -153,10 +171,10 @@ fn a_repository_with_no_commits_shows_its_changes() {
     repository.git(&["add", "README.md"]);
     repository.write("src/main.rs", "fn main() {}\n");
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![
             change("README.md", ChangeStatus::Added),
             change("src/main.rs", ChangeStatus::Untracked),
@@ -176,9 +194,9 @@ fn a_clean_repository_has_no_changes() {
     repository.write("README.md", "hello\n");
     repository.commit_all("Initial commit");
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
-    assert_eq!(changes.changes, vec![]);
+    assert_eq!(change_set.changes, vec![]);
     assert!(repository.status_by_git().is_empty());
 }
 
@@ -225,10 +243,10 @@ fn a_file_moved_with_git_mv_appears_deleted_at_its_old_path_and_added_at_its_new
     repository.commit_all("Initial commit");
     repository.git(&["mv", "old name.md", "new name.md"]);
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![
             change("new name.md", ChangeStatus::Added),
             change("old name.md", ChangeStatus::Deleted),
@@ -259,12 +277,12 @@ fn the_users_status_settings_do_not_change_the_changes() {
         .open_project(&repository.folder("src"))
         .expect("open project");
 
-    let changes = gikli
+    let change_set = gikli
         .read_changes(&project.repositories[0])
         .expect("read changes");
 
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![
             change("src/año nuevo.rs", ChangeStatus::Untracked),
             change("src/lib.rs", ChangeStatus::Modified),
@@ -289,13 +307,13 @@ fn a_file_with_a_merge_conflict_still_appears() {
     repository.git(&["switch", "--quiet", "main"]);
     repository.write("README.md", "main\n");
     repository.commit_all("Main");
-    let merge = repository.git_may_fail(&["merge", "--quiet", "feature"]);
+    let merge = repository.git_succeeds(&["merge", "--quiet", "feature"]);
 
-    let changes = read_changes(&sandbox.gikli(), &repository);
+    let change_set = read_changes(&sandbox.gikli(), &repository);
 
     assert!(!merge, "the merge stops on the conflict");
     assert_eq!(
-        changes.changes,
+        change_set.changes,
         vec![change("README.md", ChangeStatus::Modified)]
     );
     assert_eq!(repository.status_by_git(), vec!["UU README.md"]);
@@ -305,20 +323,16 @@ fn a_file_with_a_merge_conflict_still_appears() {
 fn a_repository_that_is_gone_is_reported_instead_of_showing_no_changes() {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("app");
-    repository.write(
-        "README.md",
-        "hello
-",
-    );
+    repository.write("README.md", "hello\n");
     let gikli = sandbox.gikli();
     let project = gikli.open_project(repository.root()).expect("open project");
     std::fs::remove_dir_all(repository.root().join(".git")).expect("remove the git directory");
 
-    let changes = gikli.read_changes(&project.repositories[0]);
+    let read = gikli.read_changes(&project.repositories[0]);
 
     assert_eq!(
-        changes,
-        Err(Failure::NotInRepository {
+        read,
+        Err(Failure::ChangesUnreadable {
             folder: project.repositories[0].root.clone()
         })
     );

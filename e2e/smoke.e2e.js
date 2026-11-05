@@ -1,6 +1,8 @@
 // Checks the wiring between the UI and the core, not behavior: the core's tests cover that.
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 describe("gikli", () => {
   it("opens the startup Project and shows its Repository root and the git version", async () => {
@@ -19,9 +21,12 @@ describe("gikli", () => {
     await change.waitForDisplayed({ timeout: 30000 });
     assert.equal(await change.getText(), untracked);
 
+    const added = "after refresh.txt";
+    fs.writeFileSync(path.join(process.env.GIKLI_E2E_REPOSITORY, added), "later\n");
     await $('[data-testid="refresh-changes"]').click();
 
-    await browser.waitUntil(async () => await $('[data-testid="change-path"]').isDisplayed(), { timeout: 30000 });
-    assert.equal(await $('[data-testid="change-path"]').getText(), untracked);
+    const paths = async () => Promise.all(await $$('[data-testid="change-path"]').map((item) => item.getText()));
+    await browser.waitUntil(async () => (await paths()).length === 2, { timeout: 30000 });
+    assert.deepEqual(await paths(), [added, untracked]);
   });
 });

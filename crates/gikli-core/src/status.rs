@@ -85,12 +85,15 @@ pub(crate) fn parse(output: &[u8]) -> Vec<Change> {
 }
 
 /// The status of a tracked file from its `XY` field: `X` compares the index with the last commit,
-/// `Y` the working tree with the index.
+/// `Y` the working tree with the index. None when the file is no change.
 fn tracked_status(xy: &[u8]) -> Option<ChangeStatus> {
     let [index, worktree] = xy else {
         return None;
     };
     Some(match (index, worktree) {
+        // Added and then deleted: in neither the last commit nor the working tree. JetBrains
+        // shows no change for it, and neither does gikli.
+        (b'A', b'D') => return None,
         (b'A', _) => ChangeStatus::Added,
         (b'D', _) | (_, b'D') => ChangeStatus::Deleted,
         _ => ChangeStatus::Modified,

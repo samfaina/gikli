@@ -9,10 +9,6 @@
   --warning-background: #fff8c5;
   --warning-text: #7d4e00;
   --accent: #2f6f5e;
-  --status-modified: #0b5cad;
-  --status-added: #1a7f37;
-  --status-deleted: #6e7781;
-  --status-untracked: #9a4f00;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   font-size: 14px;
 }
@@ -27,10 +23,6 @@
     --warning-background: #3d3214;
     --warning-text: #f2cc60;
     --accent: #5fb89f;
-    --status-modified: #6ca7f0;
-    --status-added: #62c073;
-    --status-deleted: #9da0a8;
-    --status-untracked: #e0a35b;
   }
 }
 
@@ -123,21 +115,4 @@ button:disabled {
 .change-path {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.changes li[data-status="modified"] .change-path {
-  color: var(--status-modified);
-}
-
-.changes li[data-status="added"] .change-path {
-  color: var(--status-added);
-}
-
-.changes li[data-status="deleted"] .change-path {
-  color: var(--status-deleted);
-  text-decoration: line-through;
-}
-
-.changes li[data-status="untracked"] .change-path {
-  color: var(--status-untracked);
 }

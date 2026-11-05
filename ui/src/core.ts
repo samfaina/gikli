@@ -44,7 +44,8 @@ export type Failure =
   | { kind: "gitUnrecognized" }
   | { kind: "gitFailedToStart"; message: string }
   | { kind: "folderNotFound"; folder: string }
-  | { kind: "notInRepository"; folder: string };
+  | { kind: "notInRepository"; folder: string }
+  | { kind: "changesUnreadable"; folder: string };
 
 export interface OperationLogEntry {
   folder: string;

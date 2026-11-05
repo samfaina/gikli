@@ -96,6 +96,12 @@ pub enum Failure {
     NotInRepository {
         folder: PathBuf,
     },
+    /// git could not read the changes of the Repository at `folder`, for example because it is
+    /// no longer a repository. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    ChangesUnreadable {
+        folder: PathBuf,
+    },
 }
 
 impl Gikli {
@@ -134,9 +140,7 @@ impl Gikli {
                 &folder,
                 &["rev-parse", "--path-format=absolute", "--show-toplevel"],
             )
-            .map_err(|error| Failure::GitFailedToStart {
-                message: error.to_string(),
-            })?;
+            .map_err(git_failed_to_start)?;
         if !toplevel.success {
             return Err(Failure::NotInRepository { folder });
         }
@@ -151,19 +155,17 @@ impl Gikli {
     /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
     pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
         let runner = self.runner()?;
-        let status = runner
+        let invocation = runner
             .run(&repository.root, status::STATUS_ARGS)
-            .map_err(|error| Failure::GitFailedToStart {
-                message: error.to_string(),
-            })?;
-        if !status.success {
-            return Err(Failure::NotInRepository {
+            .map_err(git_failed_to_start)?;
+        if !invocation.success {
+            return Err(Failure::ChangesUnreadable {
                 folder: repository.root.clone(),
             });
         }
         Ok(ChangeSet {
             repository: repository.clone(),
-            changes: status::parse(&status.stdout),
+            changes: status::parse(&invocation.stdout),
         })
     }
 
@@ -181,5 +183,11 @@ impl Gikli {
             GitCheck::Unrecognized { .. } => Err(Failure::GitUnrecognized),
             GitCheck::NotFound { .. } => Err(Failure::GitNotFound),
         }
+    }
+}
+
+fn git_failed_to_start(error: std::io::Error) -> Failure {
+    Failure::GitFailedToStart {
+        message: error.to_string(),
     }
 }
