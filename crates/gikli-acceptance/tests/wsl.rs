@@ -96,6 +96,9 @@ fn a_repository_on_a_windows_drive_opens_through_wsl_git() {
         vec![Change {
             path: PathBuf::from("README.md"),
             status: ChangeStatus::Untracked,
+            original_path: None,
+            conflict: None,
+            submodule: None,
         }]
     );
     assert_eq!(repository.status_by_git(), vec!["?? README.md"]);
@@ -136,6 +139,9 @@ fn a_repository_under_wsl_share_opens_and_works_through_wsl_git() {
         vec![Change {
             path: PathBuf::from("notes.txt"),
             status: ChangeStatus::Untracked,
+            original_path: None,
+            conflict: None,
+            submodule: None,
         }]
     );
     assert_eq!(repository.status_by_git(), vec!["?? notes.txt"]);

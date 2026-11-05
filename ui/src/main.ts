@@ -8,13 +8,19 @@ import {
   onCoreEvent,
   openProject,
   readChanges,
+  setChangeGrouping,
   setGitPath,
+  setShowIgnoredFiles,
   settings,
   startupFolder,
   testGit,
+  watchChanges,
   type Capability,
+  type Change,
+  type ChangeNode,
   type ChangeSet,
   type ChangeStatus,
+  type ConflictKind,
   type Failure,
   type GitCheck,
   type Project,
@@ -77,7 +83,7 @@ saveGitPathButton.addEventListener("click", async () => {
     showGit(git);
     gitTestResult.textContent = t("gitPathSaved", { result: describeGit(git) });
   } catch (error) {
-    gitTestResult.textContent = isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) });
+    gitTestResult.textContent = describeError(error);
   } finally {
     saveGitPathButton.disabled = false;
   }
@@ -92,10 +98,18 @@ openButton.addEventListener("click", async () => {
 
 void start();
 
-// The operation log view does not exist yet; until then, git commands show in the devtools console.
+/** Reads the changes of each shown Repository again, by root. */
+const changeRefreshers = new Map<string, () => void>();
+
 void onCoreEvent((event) => {
-  if (event.event === "operationLogged") {
-    console.debug("git", ...event.payload.args, "→", event.payload.exitCode);
+  switch (event.event) {
+    // The operation log view does not exist yet; until then, git commands show in the devtools console.
+    case "operationLogged":
+      console.debug("git", ...event.payload.args, "→", event.payload.exitCode);
+      break;
+    case "filesChanged":
+      changeRefreshers.get(event.payload.repository.root)?.();
+      break;
   }
 });
 
@@ -141,13 +155,61 @@ async function showProject(folder: string): Promise<void> {
   try {
     project = await openProject(folder);
   } catch (error) {
-    showMessage(isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) }));
+    showMessage(describeError(error));
     return;
   }
+  changeRefreshers.clear();
   projectView.replaceChildren(
     line("project-folder", t("projectFolder", { folder: project.folder })),
+    await viewOptions(),
     ...project.repositories.map(repositoryView),
   );
+}
+
+/** The options of the changes view: grouping by folder and showing ignored files. */
+async function viewOptions(): Promise<HTMLElement> {
+  const current = await settings();
+  const options = document.createElement("div");
+  options.className = "view-options";
+  options.append(
+    checkbox("group-by-folder", t("groupByFolder"), current.changeGrouping === "folder", (checked) =>
+      setChangeGrouping(checked ? "folder" : "flat"),
+    ),
+    checkbox("show-ignored-files", t("showIgnoredFiles"), current.showIgnoredFiles, (checked) =>
+      setShowIgnoredFiles(checked),
+    ),
+  );
+  return options;
+}
+
+/** A labelled checkbox that saves its setting with `save`, then reads every Repository's changes again. */
+function checkbox(
+  testId: string,
+  text: string,
+  checked: boolean,
+  save: (checked: boolean) => Promise<unknown>,
+): HTMLLabelElement {
+  const label = document.createElement("label");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.dataset.testid = testId;
+  input.checked = checked;
+  input.addEventListener("change", async () => {
+    input.disabled = true;
+    try {
+      await save(input.checked);
+      for (const refresh of changeRefreshers.values()) {
+        refresh();
+      }
+    } catch (error) {
+      input.checked = !input.checked;
+      projectView.prepend(line("message", describeError(error)));
+    } finally {
+      input.disabled = false;
+    }
+  });
+  label.append(input, document.createTextNode(text));
+  return label;
 }
 
 /** A Repository's root and its uncommitted changes, with a button that reads them again. */
@@ -165,25 +227,50 @@ function repositoryView(repository: Repository): HTMLElement {
   header.append(title, refresh);
   const changes = document.createElement("div");
   changes.dataset.testid = "changes";
+  const watching = document.createElement("div");
   const features = document.createElement("div");
-  section.append(line("repository-root", t("repositoryRoot", { root: repository.root })), header, changes, features);
+  section.append(
+    line("repository-root", t("repositoryRoot", { root: repository.root })),
+    header,
+    watching,
+    changes,
+    features,
+  );
   void showUnavailableFeatures(repository, features);
 
+  // One read at a time: a request while one runs reads once more when it ends, so requests from
+  // the watcher and the button never pile up.
+  let reading = false;
+  let readAgain = false;
   const refreshChanges = async (): Promise<void> => {
+    if (reading) {
+      readAgain = true;
+      return;
+    }
+    reading = true;
     refresh.disabled = true;
-    changes.replaceChildren(line("message", t("readingChanges")));
     try {
-      changes.replaceChildren(changeList(await readChanges(repository)));
-    } catch (error) {
-      changes.replaceChildren(
-        line("message", isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) })),
-      );
+      do {
+        readAgain = false;
+        try {
+          changes.replaceChildren(changeList(await readChanges(repository)));
+        } catch (error) {
+          changes.replaceChildren(line("message", describeError(error)));
+        }
+      } while (readAgain);
     } finally {
+      reading = false;
       refresh.disabled = false;
     }
   };
+  changeRefreshers.set(repository.root, () => void refreshChanges());
   refresh.addEventListener("click", () => void refreshChanges());
+  changes.replaceChildren(line("message", t("readingChanges")));
   void refreshChanges();
+  // Without a watcher the view still works, refreshed with the button.
+  watchChanges(repository).catch((error: unknown) => {
+    watching.replaceChildren(line("message", describeError(error)));
+  });
   return section;
 }
 
@@ -226,31 +313,106 @@ function changeList(changeSet: ChangeSet): HTMLElement {
   if (changeSet.changes.length === 0) {
     return line("message", t("noChanges"));
   }
+  return nodeList(changeSet.nodes, "");
+}
+
+/** The rows of one folder, whose path is `folder`, or of the whole view when `folder` is "". */
+function nodeList(nodes: ChangeNode[], folder: string): HTMLUListElement {
   const list = document.createElement("ul");
   list.className = "changes";
-  for (const change of changeSet.changes) {
-    const item = document.createElement("li");
-    item.dataset.testid = "change";
-    item.dataset.status = change.status;
-    const status = document.createElement("span");
-    status.className = "change-status";
-    status.textContent = t(STATUS_LABELS[change.status]);
-    const path = document.createElement("span");
-    path.className = "change-path";
-    path.dataset.testid = "change-path";
-    path.textContent = change.path;
-    item.append(status, path);
-    list.append(item);
+  for (const node of nodes) {
+    list.append(node.kind === "folder" ? folderItem(node) : changeItem(node, folder));
   }
   return list;
+}
+
+/** A folder and its rows. A folder that holds changes, not only ignored files, is highlighted. */
+function folderItem(folder: Extract<ChangeNode, { kind: "folder" }>): HTMLLIElement {
+  const item = document.createElement("li");
+  item.className = "change-folder";
+  item.dataset.testid = "change-folder";
+  item.classList.toggle("has-changes", folder.hasChanges);
+  const name = document.createElement("span");
+  name.className = "folder-name";
+  name.textContent = folder.path.slice(folder.path.lastIndexOf("/") + 1);
+  item.append(name, nodeList(folder.children, folder.path));
+  return item;
+}
+
+/** A changed file, shown by its path relative to `folder`. */
+function changeItem(change: Change, folder: string): HTMLLIElement {
+  const item = document.createElement("li");
+  item.className = "change";
+  item.dataset.testid = "change";
+  item.dataset.status = change.status;
+  const status = document.createElement("span");
+  status.className = "change-status";
+  status.textContent = t(STATUS_LABELS[change.status]);
+  const path = document.createElement("span");
+  path.className = "change-path";
+  path.dataset.testid = "change-path";
+  path.title = change.path;
+  path.textContent = folder === "" ? change.path : change.path.slice(folder.length + 1);
+  item.append(status, path);
+  const details = changeDetails(change);
+  if (details.length > 0) {
+    const detail = document.createElement("span");
+    detail.className = "change-detail";
+    detail.textContent = details.join(" · ");
+    item.append(detail);
+  }
+  return item;
+}
+
+/** What else the view says about a change: where it came from, the conflict, the submodule. */
+function changeDetails(change: Change): string[] {
+  const details: string[] = [];
+  if (change.originalPath !== null) {
+    details.push(t(change.status === "copied" ? "copiedFrom" : "renamedFrom", { path: change.originalPath }));
+  }
+  if (change.conflict !== null) {
+    details.push(t(CONFLICT_LABELS[change.conflict]));
+  }
+  if (change.submodule !== null) {
+    const state: string[] = [];
+    if (change.submodule.commitChanged) {
+      state.push(t("submoduleCommitChanged"));
+    }
+    if (change.submodule.hasTrackedChanges) {
+      state.push(t("submoduleTrackedChanges"));
+    }
+    if (change.submodule.hasUntrackedFiles) {
+      state.push(t("submoduleUntrackedFiles"));
+    }
+    details.push(state.length === 0 ? t("submodule") : t("submoduleWithState", { state: state.join(", ") }));
+  }
+  return details;
 }
 
 const STATUS_LABELS: Record<ChangeStatus, StringKey> = {
   modified: "statusModified",
   added: "statusAdded",
   deleted: "statusDeleted",
+  renamed: "statusRenamed",
+  copied: "statusCopied",
   untracked: "statusUntracked",
+  ignored: "statusIgnored",
+  conflicted: "statusConflicted",
 };
+
+const CONFLICT_LABELS: Record<ConflictKind, StringKey> = {
+  bothModified: "conflictBothModified",
+  bothAdded: "conflictBothAdded",
+  bothDeleted: "conflictBothDeleted",
+  addedByUs: "conflictAddedByUs",
+  addedByThem: "conflictAddedByThem",
+  deletedByUs: "conflictDeletedByUs",
+  deletedByThem: "conflictDeletedByThem",
+};
+
+function describeError(error: unknown): string {
+  return isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) });
+}
 
 function describeFailure(failure: Failure): string {
   switch (failure.kind) {
@@ -273,6 +435,8 @@ function describeFailure(failure: Failure): string {
       return t("failureNotInRepository", { folder: failure.folder });
     case "changesUnreadable":
       return t("failureChangesUnreadable", { folder: failure.folder });
+    case "changesNotWatched":
+      return t("failureChangesNotWatched", { folder: failure.folder, message: failure.message });
   }
 }
 

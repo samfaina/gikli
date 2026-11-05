@@ -22,7 +22,13 @@ export type GitCheck =
 export interface Settings {
   /** The git executable to use; null when gikli looks for git itself. */
   gitPath: string | null;
+  /** Whether the changes view lists the files git ignores. */
+  showIgnoredFiles: boolean;
+  changeGrouping: ChangeGrouping;
 }
+
+/** How the changes view arranges the changes: a tree of folders, or one list. */
+export type ChangeGrouping = "folder" | "flat";
 
 /** A git feature that needs a newer git than the minimum. */
 export type Capability = "rebaseUpdateRefs";
@@ -43,18 +49,56 @@ export interface Project {
   repositories: Repository[];
 }
 
-export type ChangeStatus = "modified" | "added" | "deleted" | "untracked";
+export type ChangeStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "untracked"
+  | "ignored"
+  | "conflicted";
+
+/** What each side of a conflict did to the file: "us" is the branch the operation runs on. */
+export type ConflictKind =
+  | "bothModified"
+  | "bothAdded"
+  | "bothDeleted"
+  | "addedByUs"
+  | "addedByThem"
+  | "deletedByUs"
+  | "deletedByThem";
+
+/** What changed inside a submodule. */
+export interface SubmoduleState {
+  /** Another commit is checked out than the one the Repository records. */
+  commitChanged: boolean;
+  hasTrackedChanges: boolean;
+  hasUntrackedFiles: boolean;
+}
 
 export interface Change {
-  /** Relative to the Repository root, with `/` between folders. */
+  /** Relative to the Repository root, with `/` between folders. An ignored folder ends in `/`. */
   path: string;
   status: ChangeStatus;
+  /** The path it was moved or copied from, for a renamed or copied file. */
+  originalPath: string | null;
+  conflict: ConflictKind | null;
+  /** Set when the file is a submodule. */
+  submodule: SubmoduleState | null;
 }
+
+/** One row of the changes view: a folder, when grouped by folder, or a changed file. */
+export type ChangeNode =
+  | { kind: "folder"; path: string; hasChanges: boolean; children: ChangeNode[] }
+  | ({ kind: "file" } & Change);
 
 export interface ChangeSet {
   repository: Repository;
   /** Ordered by path. */
   changes: Change[];
+  /** The changes arranged as the user chose. */
+  nodes: ChangeNode[];
 }
 
 export type Failure =
@@ -65,7 +109,8 @@ export type Failure =
   | { kind: "settingsNotSaved"; message: string }
   | { kind: "folderNotFound"; folder: string }
   | { kind: "notInRepository"; folder: string }
-  | { kind: "changesUnreadable"; folder: string };
+  | { kind: "changesUnreadable"; folder: string }
+  | { kind: "changesNotWatched"; folder: string; message: string };
 
 export interface OperationLogEntry {
   folder: string;
@@ -75,7 +120,9 @@ export interface OperationLogEntry {
   stderr: string;
 }
 
-export type CoreEvent = { event: "operationLogged"; payload: OperationLogEntry };
+export type CoreEvent =
+  | { event: "operationLogged"; payload: OperationLogEntry }
+  | { event: "filesChanged"; payload: { repository: Repository } };
 
 export function checkGit(): Promise<GitCheck> {
   return invoke("check_git");
@@ -96,6 +143,16 @@ export function settings(): Promise<Settings> {
   return invoke("settings");
 }
 
+/** Turns the listing of ignored files on or off. Rejects with a {@link Failure}. */
+export function setShowIgnoredFiles(show: boolean): Promise<Settings> {
+  return invoke("set_show_ignored_files", { show });
+}
+
+/** Groups the changes view by folder or shows a flat list. Rejects with a {@link Failure}. */
+export function setChangeGrouping(grouping: ChangeGrouping): Promise<Settings> {
+  return invoke("set_change_grouping", { grouping });
+}
+
 /** What the git that runs in `repository` can do beyond the minimum. Rejects with a {@link Failure}. */
 export function capabilities(repository: Repository): Promise<CapabilityState[]> {
   return invoke("capabilities", { repository });
@@ -109,6 +166,14 @@ export function openProject(folder: string): Promise<Project> {
 /** Reads the uncommitted changes of `repository`; calling it again refreshes them. Rejects with a {@link Failure}. */
 export function readChanges(repository: Repository): Promise<ChangeSet> {
   return invoke("read_changes", { repository });
+}
+
+/**
+ * Watches `repository` for changes made outside gikli; each burst of them arrives as a
+ * `filesChanged` event. Rejects with a {@link Failure}.
+ */
+export function watchChanges(repository: Repository): Promise<void> {
+  return invoke("watch_changes", { repository });
 }
 
 /** The folder passed on the command line, if any. */

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::ChangeGrouping;
+
 /// gikli's application settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -13,6 +15,10 @@ pub struct Settings {
     /// The git executable to use. When unset, gikli looks for git itself. A folder under
     /// `\\wsl$` always uses the git of its WSL distribution.
     pub git_path: Option<PathBuf>,
+    /// Whether the changes view lists the files git ignores.
+    pub show_ignored_files: bool,
+    /// How the changes view arranges the changes.
+    pub change_grouping: ChangeGrouping,
 }
 
 impl Settings {

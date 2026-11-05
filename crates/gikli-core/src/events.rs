@@ -6,12 +6,17 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde::Serialize;
 
+use crate::Repository;
+
 /// Something that happened in the core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "payload", rename_all = "camelCase")]
 pub enum Event {
     /// gikli ran a git command. The operation log shows these entries.
     OperationLogged(OperationLogEntry),
+    /// Files of a watched Repository changed, in its working tree or in its git directory,
+    /// outside gikli: its changes should be read again. A burst of changes is announced once.
+    FilesChanged { repository: Repository },
 }
 
 /// One git command gikli ran, with its raw output.
