@@ -3,6 +3,8 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
   actOnNotification,
   addRepository,
+  answerPrompt,
+  cancelPrompt,
   capabilities,
   checkGit,
   clearOperationLog,
@@ -15,6 +17,7 @@ import {
   onCoreEvent,
   openProject,
   operationLog,
+  pendingPrompts,
   readChanges,
   removeRepository,
   runningOperations as runningOperationsOfCore,
@@ -22,6 +25,7 @@ import {
   setGitPath,
   setOperationLogSoftWrap,
   setShowIgnoredFiles,
+  setUseCredentialHelper,
   settings,
   startupFolder,
   takeFailureAction,
@@ -47,6 +51,8 @@ import {
   type NotificationAction,
   type OperationLogEntry,
   type Project,
+  type Prompt,
+  type PromptKind,
   type Repository,
   type RunningOperation,
 } from "./core";
@@ -69,6 +75,8 @@ const softWrapInput = element<HTMLInputElement>("operation-log-soft-wrap");
 const clearOperationLogButton = element<HTMLButtonElement>("clear-operation-log");
 const notificationsView = element<HTMLElement>("notifications");
 const operationsView = element<HTMLElement>("operations");
+const promptsView = element<HTMLElement>("prompts");
+const useCredentialHelperInput = element<HTMLInputElement>("use-credential-helper");
 
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
@@ -88,6 +96,21 @@ element<HTMLElement>("operation-log-title").textContent = t("operationLogTitle")
 element<HTMLElement>("operation-log-soft-wrap-label").textContent = t("softWrap");
 clearOperationLogButton.textContent = t("clearOperationLog");
 notificationsView.setAttribute("aria-label", t("notificationsTitle"));
+promptsView.setAttribute("aria-label", t("promptsTitle"));
+element<HTMLElement>("use-credential-helper-label").textContent = t("useCredentialHelper");
+element<HTMLElement>("use-credential-helper-hint").textContent = t("useCredentialHelperHint");
+
+useCredentialHelperInput.addEventListener("change", async () => {
+  useCredentialHelperInput.disabled = true;
+  try {
+    useCredentialHelperInput.checked = (await setUseCredentialHelper(useCredentialHelperInput.checked)).useCredentialHelper;
+  } catch (error) {
+    useCredentialHelperInput.checked = !useCredentialHelperInput.checked;
+    report(error);
+  } finally {
+    useCredentialHelperInput.disabled = false;
+  }
+});
 
 operationLogButton.addEventListener("click", () => {
   const opening = operationLogPanel.hidden;
@@ -116,7 +139,9 @@ clearOperationLogButton.addEventListener("click", () => void clearOperationLog()
 settingsButton.addEventListener("click", async () => {
   const opening = settingsPanel.hidden;
   if (opening) {
-    gitPathInput.value = (await settings()).gitPath ?? "";
+    const current = await settings();
+    gitPathInput.value = current.gitPath ?? "";
+    useCredentialHelperInput.checked = current.useCredentialHelper;
     gitTestResult.textContent = "";
   }
   settingsPanel.hidden = !opening;
@@ -233,6 +258,12 @@ function handleCoreEvent(event: CoreEvent): void {
     case "filesChanged":
       shownRepositories.get(event.payload.repository.root)?.refresh();
       break;
+    case "promptRaised":
+      showPrompt(event.payload);
+      break;
+    case "promptClosed":
+      closePrompt(event.payload.id);
+      break;
   }
 }
 
@@ -240,12 +271,14 @@ async function start(): Promise<void> {
   // Listen first, then read what the core already holds: nothing happens between the two unseen.
   // What an event removed while the reads ran stays removed.
   await onCoreEvent(handleCoreEvent);
-  const [current, logged, raised, running] = await Promise.all([
+  const [current, logged, raised, running, waiting] = await Promise.all([
     settings(),
     operationLog(),
     notifications(),
     runningOperationsOfCore(),
+    pendingPrompts(),
   ]);
+  waiting.forEach(showPrompt);
   showSoftWrap(current.operationLogSoftWrap);
   mergeLogEntries(logged);
   for (const notification of raised) {
@@ -822,6 +855,102 @@ const ACTION_LABELS: Record<NotificationAction["action"], StringKey> = {
   removeRepository: "removeRepository",
 };
 
+/** The prompts this window shows, by id. A view stays in place while others come and go, so what the user is typing survives. */
+const shownPrompts = new Map<number, HTMLElement>();
+
+/** The prompts closed since this window started listening, so a late read does not bring them back. */
+const closedPrompts = new Set<number>();
+
+function showPrompt(prompt: Prompt): void {
+  if (closedPrompts.has(prompt.id) || shownPrompts.has(prompt.id)) {
+    return;
+  }
+  const view = promptView(prompt);
+  shownPrompts.set(prompt.id, view);
+  promptsView.append(view);
+  promptsView.hidden = false;
+  view.querySelector<HTMLElement>("input, button")?.focus();
+}
+
+function closePrompt(id: number): void {
+  closedPrompts.add(id);
+  shownPrompts.get(id)?.remove();
+  shownPrompts.delete(id);
+  promptsView.hidden = shownPrompts.size === 0;
+}
+
+const PROMPT_TITLES: Record<PromptKind, StringKey> = {
+  username: "promptUsername",
+  password: "promptPassword",
+  passphrase: "promptPassphrase",
+  hostKey: "promptHostKey",
+  other: "promptOther",
+};
+
+/** A prompt with what it takes to answer it. The answer goes to the core and stays nowhere here. */
+function promptView(prompt: Prompt): HTMLElement {
+  const view = document.createElement("form");
+  view.className = "prompt";
+  view.dataset.testid = "prompt";
+  view.dataset.kind = prompt.kind;
+  const title = document.createElement("h2");
+  title.textContent = t(PROMPT_TITLES[prompt.kind]);
+  const question = document.createElement("p");
+  question.className = "prompt-text";
+  question.dataset.testid = "prompt-text";
+  question.textContent = prompt.text;
+  const respond = async (response: () => Promise<void>): Promise<void> => {
+    view.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input").forEach((control) => {
+      control.disabled = true;
+    });
+    try {
+      await response();
+    } catch (error) {
+      closePrompt(prompt.id);
+      report(error);
+    }
+  };
+  const button = (testId: string, text: StringKey, response: () => Promise<void>): HTMLButtonElement => {
+    const made = document.createElement("button");
+    made.type = "button";
+    made.dataset.testid = testId;
+    made.textContent = t(text);
+    made.addEventListener("click", () => void respond(response));
+    return made;
+  };
+  const actions = document.createElement("div");
+  actions.className = "notification-actions";
+  if (prompt.kind === "hostKey") {
+    // Not trusting comes first, so it has the focus: a stray Enter must not trust a key.
+    actions.append(
+      button("prompt-reject", "promptRejectHostKey", () => answerPrompt(prompt.id, "no")),
+      button("prompt-accept", "promptAcceptHostKey", () => answerPrompt(prompt.id, "yes")),
+    );
+    view.append(title, question, actions);
+    return view;
+  }
+  const input = document.createElement("input");
+  input.type = prompt.kind === "username" ? "text" : "password";
+  input.dataset.testid = "prompt-answer";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", prompt.text);
+  view.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void respond(() => answerPrompt(prompt.id, input.value));
+  });
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.dataset.testid = "prompt-submit";
+  submit.textContent = t("promptAnswer");
+  actions.append(submit, button("prompt-cancel", "promptCancel", () => cancelPrompt(prompt.id)));
+  const notKept = document.createElement("p");
+  notKept.className = "hint";
+  notKept.textContent = t("promptNotKept");
+  view.append(title, question, input, notKept, actions);
+  return view;
+}
+
 /** The long operations running, by id, with the last progress each reported. Every window shows them all. */
 const runningOperations = new Map<number, RunningOperation>();
 
@@ -927,6 +1056,12 @@ function describeExplainedMessage(message: ExplainedMessage): string {
       return t("failureIndexLocked", { lock: message.lock });
     case "longPaths":
       return t("failureLongPaths");
+    case "authenticationFailed":
+      return t("failureAuthenticationFailed");
+    case "hostKeyUnknown":
+      return t("failureHostKeyUnknown");
+    case "hostKeyChanged":
+      return t("failureHostKeyChanged");
   }
 }
 
@@ -936,6 +1071,9 @@ const NEXT_STEPS: Record<NextStep, StringKey> = {
   removeIndexLock: "nextStepRemoveIndexLock",
   waitForOtherGitOperation: "nextStepWaitForOtherGitOperation",
   enableLongPaths: "nextStepEnableLongPaths",
+  checkCredentials: "nextStepCheckCredentials",
+  verifyHostKey: "nextStepVerifyHostKey",
+  checkChangedHostKey: "nextStepCheckChangedHostKey",
 };
 
 const FAILURE_ACTION_LABELS: Record<FailureAction["action"], StringKey> = {
@@ -1009,6 +1147,8 @@ function describeFailure(failure: Failure): string {
       return t("failureNotificationGone");
     case "notificationActionNotOffered":
       return t("failureNotificationActionNotOffered");
+    case "promptGone":
+      return t("failurePromptGone");
   }
 }
 

@@ -86,11 +86,11 @@ jobs:
           VERSION: ${{ steps.minimum-git.outputs.version }}
           PREFIX: ${{ steps.minimum-git.outputs.prefix }}
         run: |
-          sudo apt-get install -y zlib1g-dev
+          sudo apt-get install -y zlib1g-dev libcurl4-openssl-dev
           curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$VERSION.tar.gz" | tar -xz
-          # Only what the tests use: remotes are local folders, so no HTTP, and no translations.
-          # This git predates C23, which newer compilers default to.
-          options=(prefix="$PREFIX" CFLAGS="-O2 -std=gnu17" NO_CURL=1 NO_EXPAT=1 NO_OPENSSL=1
+          # Only what the tests use: remotes are local folders and a local HTTP server, and no
+          # translations. This git predates C23, which newer compilers default to.
+          options=(prefix="$PREFIX" CFLAGS="-O2 -std=gnu17" NO_EXPAT=1 NO_OPENSSL=1
             NO_GETTEXT=1 NO_TCLTK=1 NO_PERL=1 NO_PYTHON=1)
           make -C "git-$VERSION" -j"$(nproc)" "${options[@]}" all
           make -C "git-$VERSION" "${options[@]}" install

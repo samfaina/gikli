@@ -135,6 +135,7 @@ pub(crate) struct GitRunner {
     program: GitProgram,
     host: HostEnvironment,
     log: Arc<OperationLog>,
+    use_credential_helpers: bool,
 }
 
 /// One finished git run.
@@ -144,14 +145,25 @@ pub(crate) struct Invocation {
     pub stderr: Vec<u8>,
     /// The hook that failed in this run, as git's trace of the run names it.
     pub failed_hook: Option<String>,
+    /// The status of the last HTTP response in this run, when it talked to an HTTP remote.
+    pub last_http_status: Option<u16>,
 }
 
-/// Variables that cross into WSL, so git there runs without a terminal as it does natively, and
-/// traces each run to a file gikli can read: `/p` translates the path of the file.
+/// Variables that cross into WSL, so git there runs without a terminal as it does natively, traces
+/// each run to files gikli can read, and asks the user through gikli's askpass program. `/p`
+/// translates a path. The askpass program is a Windows program, so its variables cross back too.
 const WSL_SHARED_VARIABLES: &[&str] = &[
     "GIT_TERMINAL_PROMPT",
     "GIT_OPTIONAL_LOCKS",
     "GIT_TRACE2_EVENT/p",
+    "GIT_TRACE_CURL/p",
+    "GIT_TRACE_CURL_NO_DATA",
+    "GIT_TRACE_REDACT",
+    "GIT_ASKPASS/p",
+    "SSH_ASKPASS/p",
+    "SSH_ASKPASS_REQUIRE",
+    "GIKLI_ASKPASS_ADDRESS",
+    "GIKLI_ASKPASS_TOKEN",
 ];
 
 impl GitRunner {
@@ -172,7 +184,18 @@ impl GitRunner {
             }
             host.set("WSLENV", shared);
         }
-        Self { program, host, log }
+        Self {
+            program,
+            host,
+            log,
+            use_credential_helpers: true,
+        }
+    }
+
+    /// This runner, where git uses none of the credential helpers the user configured.
+    pub fn without_credential_helpers(mut self) -> Self {
+        self.use_credential_helpers = false;
+        self
     }
 
     /// Whether git runs as a process of this machine, one gikli can see. The git inside WSL does
@@ -225,6 +248,10 @@ impl GitRunner {
         for setting in PINNED_CONFIG {
             command_line.extend(["-c", setting]);
         }
+        if !self.use_credential_helpers {
+            // An empty value empties the list of helpers so far, and this one comes last.
+            command_line.extend(["-c", "credential.helper="]);
+        }
         command_line.extend(args);
 
         let mut command = self.program.command(folder);
@@ -237,6 +264,10 @@ impl GitRunner {
         detach_from_terminal(&mut command);
         let trace = RunTrace::new();
         command.env("GIT_TRACE2_EVENT", &trace.file);
+        command.env("GIT_TRACE_CURL", &trace.http_file);
+        // Only the headers, and never the credentials in them.
+        command.env("GIT_TRACE_CURL_NO_DATA", "1");
+        command.env("GIT_TRACE_REDACT", "1");
         let entry = OperationLogEntry {
             id: 0,
             folder: folder.to_path_buf(),
@@ -277,6 +308,7 @@ impl GitRunner {
             stdout,
             stderr,
             failed_hook: trace.failed_hook(),
+            last_http_status: trace.last_http_status(),
         })
     }
 
@@ -359,15 +391,20 @@ impl Invocation {
             stdout: self.stdout.clone(),
             stderr: kept.into_bytes(),
             failed_hook: self.failed_hook.clone(),
+            last_http_status: self.last_http_status,
         }
     }
 }
 
-/// git's trace of one run, in the event format of trace2, in a file of its own. Unlike git's
-/// messages, it is the same in every language, and it is the only place that tells a hook failed:
-/// git itself says nothing about it.
+/// git's trace of one run, in files of its own. Unlike git's messages, it is the same in every
+/// language. It is the only place that tells a hook failed, as git itself says nothing about it,
+/// and that tells what an HTTP remote answered, as git says it in the user's language.
 struct RunTrace {
+    /// The events of the run, in the event format of trace2.
     file: PathBuf,
+    /// The HTTP headers of the run, as git's `GIT_TRACE_CURL` writes them: redacted, so no
+    /// credentials reach the file.
+    http_file: PathBuf,
 }
 
 /// Tells apart the trace files of the runs of this process.
@@ -376,10 +413,24 @@ static NEXT_TRACE: AtomicU64 = AtomicU64::new(0);
 impl RunTrace {
     fn new() -> Self {
         let number = NEXT_TRACE.fetch_add(1, Ordering::Relaxed);
-        let name = format!("gikli-trace-{}-{number}.json", std::process::id());
+        let name = format!("gikli-trace-{}-{number}", std::process::id());
+        let folder = std::env::temp_dir();
         Self {
-            file: std::env::temp_dir().join(name),
+            file: folder.join(format!("{name}.json")),
+            http_file: folder.join(format!("{name}.http")),
         }
+    }
+
+    /// The status of the last HTTP response of the run. git traces each header on a line of its
+    /// own, after a prefix of its own: `... <= Recv header: HTTP/1.1 401 Unauthorized`.
+    fn last_http_status(&self) -> Option<u16> {
+        let trace = std::fs::read(&self.http_file).ok()?;
+        let trace = String::from_utf8_lossy(&trace);
+        trace.lines().rev().find_map(|line| {
+            let (_, header) = line.split_once("Recv header: ")?;
+            let (_, status) = header.strip_prefix("HTTP/")?.split_once(' ')?;
+            status.split(' ').next()?.parse().ok()
+        })
     }
 
     /// The hook that ended with an error in the run, as the git gikli started saw it. A git the
@@ -410,6 +461,7 @@ impl Drop for RunTrace {
         // Absent when git traced nothing; left behind when a process the hook started still
         // holds it. The temporary folder takes care of it then.
         let _ = std::fs::remove_file(&self.file);
+        let _ = std::fs::remove_file(&self.http_file);
     }
 }
 

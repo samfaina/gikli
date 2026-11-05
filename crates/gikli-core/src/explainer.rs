@@ -38,6 +38,14 @@ pub enum ExplainedMessage {
     IndexLocked { lock: PathBuf },
     /// A path in the Repository is longer than Windows allows by default.
     LongPaths,
+    /// The remote did not accept the credentials it got, or got none because the user declined to
+    /// give them or nobody could be asked.
+    AuthenticationFailed,
+    /// ssh does not know the host key of the server, and nobody accepted it.
+    HostKeyUnknown,
+    /// The server answers with another host key than the one ssh knows for it, so it may not be
+    /// the same server.
+    HostKeyChanged,
 }
 
 /// What the user can do next.
@@ -58,6 +66,13 @@ pub enum NextStep {
     /// Set `core.longpaths` in git. gikli recommends it and never sets it: it is the user's
     /// configuration, and not every tool on Windows copes with such paths.
     EnableLongPaths,
+    /// Check the credentials, the SSH keys and the credential helper git uses, then try again.
+    CheckCredentials,
+    /// Check the fingerprint of the key with whoever runs the server, then try again and accept it.
+    VerifyHostKey,
+    /// Check the new key with whoever runs the server before connecting again, and only then remove
+    /// the old one. gikli leaves `known_hosts` to the user, as trusting a key is theirs to decide.
+    CheckChangedHostKey,
 }
 
 /// Something gikli can do about a failure.
@@ -120,7 +135,66 @@ pub(crate) fn explain(
             actions: vec![],
         });
     }
+    // What ssh writes, which OpenSSH does not translate. A changed key comes first: ssh may go on
+    // to fail in other ways, and this is what the user needs to hear about.
+    if ssh_reports(&stderr, is_changed_host_key) {
+        return Some(explained(
+            ExplainedMessage::HostKeyChanged,
+            NextStep::CheckChangedHostKey,
+        ));
+    }
+    if ssh_reports(&stderr, is_failed_host_key_verification) {
+        return Some(explained(
+            ExplainedMessage::HostKeyUnknown,
+            NextStep::VerifyHostKey,
+        ));
+    }
+    let refused_by_http = matches!(
+        invocation.last_http_status,
+        Some(UNAUTHORIZED | FORBIDDEN | PROXY_AUTHENTICATION_REQUIRED)
+    );
+    if refused_by_http || ssh_reports(&stderr, is_refused_by_server) {
+        return Some(explained(
+            ExplainedMessage::AuthenticationFailed,
+            NextStep::CheckCredentials,
+        ));
+    }
     None
+}
+
+fn explained(message: ExplainedMessage, next_step: NextStep) -> Explanation {
+    Explanation {
+        message,
+        next_step,
+        actions: vec![],
+    }
+}
+
+const UNAUTHORIZED: u16 = 401;
+const FORBIDDEN: u16 = 403;
+const PROXY_AUTHENTICATION_REQUIRED: u16 = 407;
+
+/// Whether a line of `stderr` is one ssh writes, as `is_it` tells. ssh writes these on lines of
+/// their own, unlike git, which quotes a file name that looks like them inside a sentence.
+fn ssh_reports(stderr: &str, is_it: fn(&str) -> bool) -> bool {
+    stderr.lines().any(|line| is_it(line.trim()))
+}
+
+fn is_changed_host_key(line: &str) -> bool {
+    line.starts_with('@') && line.contains("REMOTE HOST IDENTIFICATION HAS CHANGED!")
+}
+
+fn is_failed_host_key_verification(line: &str) -> bool {
+    line == "Host key verification failed."
+}
+
+/// `git@host: Permission denied (publickey,password).`, with the ways the server takes in brackets.
+/// A file that cannot be read says `Permission denied` too, without them.
+fn is_refused_by_server(line: &str) -> bool {
+    line.ends_with(").")
+        && line
+            .split_once("Permission denied (")
+            .is_some_and(|(before, _)| before.is_empty() || before.ends_with(": "))
 }
 
 /// Removes the lock of the index of `repository`, unless a git operation may have started running

@@ -17,6 +17,12 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - License: Apache-2.0.
 - Distribution through GitHub Releases: `.msi`/`.exe` on Windows, `.dmg` on macOS, AppImage and `.deb` on Linux, with the Tauri updater. Code signing on Windows and macOS before the first public release; development builds are unsigned.
 
+### Credentials and prompts
+
+- Prompts from git and ssh reach the user through gikli's askpass program, which replaces any askpass program the user configured. It covers usernames, passwords, SSH passphrases, unknown host keys and signing with an SSH key. gikli keeps no answer.
+- Passphrases for GPG keys stay with `gpg-agent` and its own pinentry window. The embedded GPG prompt is Scope 3 in the reference.
+- gikli never edits `known_hosts`: ssh records a key the user accepted, and a changed key is the user's to resolve.
+
 ### Saved local changes and the Shelf
 
 - In Scope 1, Saved local changes use a stash. When the Shelf ships in Scope 2, the default method becomes Shelve, as in JetBrains.
