@@ -82,3 +82,37 @@ button:disabled {
   margin: 0 0 6px;
   overflow-wrap: anywhere;
 }
+
+.changes-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 6px;
+}
+
+.changes-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.changes li {
+  display: flex;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.change-status {
+  flex: 0 0 6em;
+  color: var(--muted);
+}
+
+.change-path {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

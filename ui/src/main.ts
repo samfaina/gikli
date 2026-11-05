@@ -6,12 +6,16 @@ import {
   isFailure,
   onCoreEvent,
   openProject,
+  readChanges,
   startupFolder,
+  type ChangeSet,
+  type ChangeStatus,
   type Failure,
   type GitCheck,
   type Project,
+  type Repository,
 } from "./core";
-import { t } from "./strings";
+import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
 const gitStatus = element<HTMLElement>("git-status");
@@ -84,11 +88,74 @@ async function showProject(folder: string): Promise<void> {
   }
   projectView.replaceChildren(
     line("project-folder", t("projectFolder", { folder: project.folder })),
-    ...project.repositories.map((repository) =>
-      line("repository-root", t("repositoryRoot", { root: repository.root })),
-    ),
+    ...project.repositories.map(repositoryView),
   );
 }
+
+/** A Repository's root and its uncommitted changes, with a button that reads them again. */
+function repositoryView(repository: Repository): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "repository";
+  const header = document.createElement("div");
+  header.className = "changes-header";
+  const title = document.createElement("h2");
+  title.textContent = t("localChangesTitle");
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.dataset.testid = "refresh-changes";
+  refresh.textContent = t("refreshChanges");
+  header.append(title, refresh);
+  const changes = document.createElement("div");
+  changes.dataset.testid = "changes";
+  section.append(line("repository-root", t("repositoryRoot", { root: repository.root })), header, changes);
+
+  const refreshChanges = async (): Promise<void> => {
+    refresh.disabled = true;
+    changes.replaceChildren(line("message", t("readingChanges")));
+    try {
+      changes.replaceChildren(changeList(await readChanges(repository)));
+    } catch (error) {
+      changes.replaceChildren(
+        line("message", isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) })),
+      );
+    } finally {
+      refresh.disabled = false;
+    }
+  };
+  refresh.addEventListener("click", () => void refreshChanges());
+  void refreshChanges();
+  return section;
+}
+
+function changeList(changeSet: ChangeSet): HTMLElement {
+  if (changeSet.changes.length === 0) {
+    return line("message", t("noChanges"));
+  }
+  const list = document.createElement("ul");
+  list.className = "changes";
+  for (const change of changeSet.changes) {
+    const item = document.createElement("li");
+    item.dataset.testid = "change";
+    item.dataset.status = change.status;
+    const status = document.createElement("span");
+    status.className = "change-status";
+    status.textContent = t(STATUS_LABELS[change.status]);
+    const path = document.createElement("span");
+    path.className = "change-path";
+    path.dataset.testid = "change-path";
+    path.textContent = change.path;
+    item.append(status, path);
+    list.append(item);
+  }
+  return list;
+}
+
+const STATUS_LABELS: Record<ChangeStatus, StringKey> = {
+  modified: "statusModified",
+  added: "statusAdded",
+  deleted: "statusDeleted",
+  untracked: "statusUntracked",
+};
 
 function describeFailure(failure: Failure): string {
   switch (failure.kind) {
@@ -107,6 +174,8 @@ function describeFailure(failure: Failure): string {
       return t("failureFolderNotFound", { folder: failure.folder });
     case "notInRepository":
       return t("failureNotInRepository", { folder: failure.folder });
+    case "changesUnreadable":
+      return t("failureChangesUnreadable", { folder: failure.folder });
   }
 }
 

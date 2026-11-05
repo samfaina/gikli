@@ -6,16 +6,18 @@
 mod events;
 mod git;
 mod host;
+mod status;
 mod version;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use events::{Event, OperationLogEntry};
 pub use host::HostEnvironment;
+pub use status::{Change, ChangeSet, ChangeStatus};
 pub use version::GitVersion;
 
 use events::EventBus;
@@ -64,7 +66,7 @@ pub struct Project {
 }
 
 /// One git repository inside a Project, identified by its root folder.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
     pub root: PathBuf,
@@ -92,6 +94,12 @@ pub enum Failure {
     /// git found no repository at or above the folder, so there is no Project to open.
     #[serde(rename_all = "camelCase")]
     NotInRepository {
+        folder: PathBuf,
+    },
+    /// git could not read the changes of the Repository at `folder`, for example because it is
+    /// no longer a repository. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    ChangesUnreadable {
         folder: PathBuf,
     },
 }
@@ -132,9 +140,7 @@ impl Gikli {
                 &folder,
                 &["rev-parse", "--path-format=absolute", "--show-toplevel"],
             )
-            .map_err(|error| Failure::GitFailedToStart {
-                message: error.to_string(),
-            })?;
+            .map_err(git_failed_to_start)?;
         if !toplevel.success {
             return Err(Failure::NotInRepository { folder });
         }
@@ -143,6 +149,23 @@ impl Gikli {
         Ok(Project {
             folder,
             repositories: vec![Repository { root }],
+        })
+    }
+
+    /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
+    pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
+        let runner = self.runner()?;
+        let invocation = runner
+            .run(&repository.root, status::STATUS_ARGS)
+            .map_err(git_failed_to_start)?;
+        if !invocation.success {
+            return Err(Failure::ChangesUnreadable {
+                folder: repository.root.clone(),
+            });
+        }
+        Ok(ChangeSet {
+            repository: repository.clone(),
+            changes: status::parse(&invocation.stdout),
         })
     }
 
@@ -160,5 +183,11 @@ impl Gikli {
             GitCheck::Unrecognized { .. } => Err(Failure::GitUnrecognized),
             GitCheck::NotFound { .. } => Err(Failure::GitNotFound),
         }
+    }
+}
+
+fn git_failed_to_start(error: std::io::Error) -> Failure {
+    Failure::GitFailedToStart {
+        message: error.to_string(),
     }
 }

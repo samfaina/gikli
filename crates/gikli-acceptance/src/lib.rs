@@ -6,10 +6,10 @@
 //! repositories that act as remotes, and an isolated git configuration so the developer's own
 //! settings never leak into a test.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use gikli_core::{Gikli, HostEnvironment};
 use tempfile::TempDir;
@@ -86,14 +86,13 @@ impl Sandbox {
 
     /// Whether plain git considers `folder` part of a repository's working tree.
     pub fn is_inside_repository_by_git(&self, folder: &Path) -> bool {
-        Command::new("git")
-            .args(["rev-parse", "--is-inside-work-tree"])
-            .current_dir(folder)
-            .envs(self.git_environment())
-            .output()
-            .expect("run git")
-            .status
-            .success()
+        git_output(
+            folder,
+            &self.git_environment(),
+            ["rev-parse", "--is-inside-work-tree"],
+        )
+        .status
+        .success()
     }
 
     /// A new repository with no commits, created with `git init`.
@@ -243,6 +242,12 @@ impl TestRepository {
         run_git(&self.root, &self.env, &args)
     }
 
+    /// Runs plain git in the repository, for a command that may fail, and returns whether it
+    /// succeeded.
+    pub fn git_succeeds(&self, args: &[&str]) -> bool {
+        git_output(&self.root, &self.env, args).status.success()
+    }
+
     /// Writes a file in the working tree, creating its folders.
     pub fn write(&self, path: &str, contents: &str) {
         let path = self.root.join(path);
@@ -256,6 +261,26 @@ impl TestRepository {
         let path = self.root.join(path);
         fs::create_dir_all(&path).expect("create folder");
         path
+    }
+
+    /// Deletes a file from the working tree.
+    pub fn delete(&self, path: &str) {
+        fs::remove_file(self.root.join(path)).expect("delete file");
+    }
+
+    /// The uncommitted changes as plain git reports them, one `XY path` entry per file in
+    /// `git status --porcelain` (v1) form, with every untracked file listed.
+    pub fn status_by_git(&self) -> Vec<String> {
+        self.git(&[
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ])
+        .split_terminator('\0')
+        .map(str::to_owned)
+        .collect()
     }
 
     /// Stages everything and commits it with plain git.
@@ -278,12 +303,7 @@ impl TestRepository {
 }
 
 fn run_git(cwd: &Path, env: &[(OsString, OsString)], args: &[OsString]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .envs(env.iter().map(|(name, value)| (name, value)))
-        .output()
-        .expect("run git");
+    let output = git_output(cwd, env, args);
     assert!(
         output.status.success(),
         "git {:?} failed in {}:\n{}",
@@ -292,4 +312,17 @@ fn run_git(cwd: &Path, env: &[(OsString, OsString)], args: &[OsString]) -> Strin
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("git output is UTF-8")
+}
+
+fn git_output(
+    cwd: &Path,
+    env: &[(OsString, OsString)],
+    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+) -> Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .envs(env.iter().map(|(name, value)| (name, value)))
+        .output()
+        .expect("run git")
 }

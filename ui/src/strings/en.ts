@@ -7,6 +7,14 @@ export const en = {
   noProject: "Open a folder to start.",
   projectFolder: "Project: {folder}",
   repositoryRoot: "Repository: {root}",
+  localChangesTitle: "Local changes",
+  refreshChanges: "Refresh",
+  readingChanges: "Reading changes…",
+  noChanges: "No changes.",
+  statusModified: "Modified",
+  statusAdded: "Added",
+  statusDeleted: "Deleted",
+  statusUntracked: "Untracked",
   gitReady: "git {version}",
   gitTooOld:
     "gikli needs git {minimum} or newer, and found {version} at {executable}. Update git to use gikli; until then gikli runs no git operations.",
@@ -22,6 +30,8 @@ export const en = {
   failureGitFailedToStart: "git could not be started: {message}",
   failureFolderNotFound: "There is no folder at {folder}.",
   failureNotInRepository: "{folder} is not inside a git repository.",
+  failureChangesUnreadable:
+    "git could not read the changes in {folder}. Check that it is still a git repository, then refresh.",
   unexpectedError: "Something went wrong: {message}",
 } as const;
 
