@@ -857,8 +857,8 @@ fn a_signing_prompt_reaches_the_user_and_signs_with_the_answer() {
 
     result.expect("clone, and sign in the hook");
     assert_eq!(prompts.len(), 1, "{prompts:?}");
+    // Only the kind: newer OpenSSH names the key in this prompt, and older OpenSSH does not.
     assert_eq!(prompts[0].kind, PromptKind::Passphrase);
-    assert!(prompts[0].text.contains("signing-key"), "{prompts:?}");
     let signed = sandbox
         .existing_repository(&target)
         .git(&["cat-file", "commit", "HEAD"]);
