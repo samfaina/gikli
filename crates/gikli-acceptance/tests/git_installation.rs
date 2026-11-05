@@ -113,3 +113,45 @@ fn a_git_whose_version_cannot_be_read_is_not_used() {
         "got {check:?}"
     );
 }
+
+/// On Linux, CI runs the suite once against the latest stable git and once against the oldest
+/// supported git. Each of those jobs sets `GIKLI_EXPECTED_GIT_VERSION` to the version it installed
+/// (`2.34`, or a full `2.34.0`). This test proves the job ran against that git: both gikli and
+/// the harness's plain git must find it. It passes without checking when the variable is unset,
+/// as in a local run.
+#[test]
+fn the_suite_runs_against_the_git_ci_asked_for() {
+    let Some(expected) = std::env::var_os("GIKLI_EXPECTED_GIT_VERSION") else {
+        eprintln!("skipped: GIKLI_EXPECTED_GIT_VERSION is not set");
+        return;
+    };
+    let expected = expected
+        .into_string()
+        .expect("GIKLI_EXPECTED_GIT_VERSION is UTF-8");
+    let is_expected = |version: &str| {
+        version == expected
+            || version
+                .strip_prefix(expected.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+    };
+    let sandbox = Sandbox::new();
+
+    let check = sandbox.gikli().check_git();
+
+    let GitCheck::Ready { version, .. } = check else {
+        panic!("expected git {expected}, got {check:?}");
+    };
+    assert!(
+        is_expected(&version.to_string()),
+        "gikli found git {version}, CI installed {expected}"
+    );
+    let reported_by_git = sandbox.repository("probe").git(&["--version"]);
+    let plain_version = reported_by_git
+        .trim()
+        .strip_prefix("git version ")
+        .unwrap_or_default();
+    assert!(
+        is_expected(plain_version),
+        "plain git is {reported_by_git:?}, CI installed {expected}"
+    );
+}

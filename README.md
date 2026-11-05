@@ -40,9 +40,14 @@ npm test               # all of the above checks
 ```
 
 The smoke test needs `tauri-driver` (`cargo install tauri-driver --locked`). On Windows it
-downloads the Microsoft Edge WebDriver that matches the installed Edge on first run. On Linux it
+downloads the Microsoft Edge WebDriver that matches the installed WebView2 Runtime on first run. On Linux it
 needs `webkit2gtk-driver` (WebKitWebDriver). tauri-driver does not support macOS, so there the
 smoke test does not run.
+
+CI (`.github/workflows/ci.yml`) builds the app and runs these checks on every pull request
+against `main` and every push to `main`, on Windows, macOS and Linux, and once more on Linux
+against git 2.34, the oldest supported version. The smoke test runs only on Linux:
+the macOS and Windows jobs report it as skipped (on Windows because of #54).
 
 To open a folder at startup, pass it as the first argument (`gikli <folder>`) or set
 `GIKLI_PROJECT_FOLDER`.

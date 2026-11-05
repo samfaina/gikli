@@ -144,6 +144,9 @@ impl Sandbox {
             format!("git version {version}\n"),
         )
         .expect("write fake git version");
+        wait_until_runnable(&executable);
+        // Start the invocation log empty: only gikli's runs belong in it.
+        let _ = fs::remove_file(bin.join("fake-git-invocations"));
         let mut host = self.host_environment();
         host.set("PATH", bin.clone());
         (host, FakeGit { bin })
@@ -173,6 +176,31 @@ impl Drop for Sandbox {
         }
     }
 }
+
+/// Waits until a freshly copied executable can run.
+///
+/// On Linux, starting a program fails with "text file busy" (`ETXTBSY`) while any process still
+/// has the file open for writing. Tests run in parallel threads: one that starts a process while
+/// another is copying the stand-in git hands the child a copy of the open file, which it holds
+/// until its own program starts. gikli would then find a git it cannot run and report it
+/// unrecognized.
+#[cfg(unix)]
+fn wait_until_runnable(executable: &Path) {
+    const ETXTBSY: i32 = 26;
+    for _ in 0..200 {
+        match Command::new(executable).arg("--version").output() {
+            Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            _ => return,
+        }
+    }
+    panic!("{} stayed busy", executable.display());
+}
+
+/// On Windows, processes started by the tests inherit no open files, so the copy is never busy.
+#[cfg(not(unix))]
+fn wait_until_runnable(_executable: &Path) {}
 
 /// Path of the stand-in git binary built with these tests, for [`Sandbox::host_with_fake_git`].
 #[macro_export]
