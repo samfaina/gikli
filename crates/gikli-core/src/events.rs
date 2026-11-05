@@ -9,6 +9,7 @@ use crate::Repository;
 use crate::notifications::Notification;
 use crate::operation_log::OperationLogEntry;
 use crate::operations::{LongOperation, Progress};
+use crate::prompts::Prompt;
 
 /// Something that happened in the core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -33,6 +34,11 @@ pub enum Event {
     /// Files of a watched Repository changed, in its working tree or in its git directory,
     /// outside gikli: its changes should be read again. A burst of changes is announced once.
     FilesChanged { repository: Repository },
+    /// git or ssh asks the user something. The operation waits until the prompt closes.
+    PromptRaised(Prompt),
+    /// A prompt closed, as the user answered it or cancelled it, or what asked went away. Every
+    /// window stops showing it.
+    PromptClosed { id: u64 },
 }
 
 /// The listeners of the core's events.

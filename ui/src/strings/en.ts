@@ -94,6 +94,10 @@ export const en = {
   failureIndexLocked:
     "The git index of this Repository is locked by {lock}. Another git operation is using it, or one stopped without cleaning up.",
   failureLongPaths: "A path in this Repository is longer than Windows allows by default.",
+  failureAuthenticationFailed: "The remote did not accept your credentials, or it got none.",
+  failureHostKeyUnknown: "SSH does not know the host key of this server, and it was not accepted.",
+  failureHostKeyChanged:
+    "This server answers with a different host key from the one SSH knows. It may have been reinstalled, or someone may be intercepting the connection.",
   nextStepFixHook:
     "Fix what the hook reports, then try again. gikli runs hooks without a terminal, so a hook that asks for input has to work without one. A clone stopped here leaves its folder behind: delete it before you clone again.",
   nextStepTrustFolder: "If you know where this folder comes from, you can trust it.",
@@ -102,6 +106,27 @@ export const en = {
     "Wait for the other git operation to finish, then try again. If the lock stays, make sure no git is running in this Repository, including inside WSL, where gikli cannot see it, and delete the file.",
   nextStepEnableLongPaths:
     "Turn on long paths with git config --global core.longpaths true, then try again. gikli leaves this setting to you. A clone stopped here leaves its folder behind: delete it before you clone again.",
+  nextStepCheckCredentials:
+    "Check your username and password or token, your SSH keys and your credential helper, then try again.",
+  nextStepVerifyHostKey:
+    "Check the key's fingerprint with whoever runs the server, then try again and accept it, or add it to your known_hosts file.",
+  nextStepCheckChangedHostKey:
+    "Do not connect until whoever runs the server confirms the new key. Then remove the old one with ssh-keygen -R and the name of the server, and try again. gikli leaves your known_hosts file to you.",
+  promptUsername: "Username",
+  promptPassword: "Password",
+  promptPassphrase: "Passphrase",
+  promptHostKey: "Unknown host key",
+  promptOther: "git needs an answer",
+  promptNotKept: "gikli does not keep your answer.",
+  promptAnswer: "OK",
+  promptCancel: "Cancel",
+  promptAcceptHostKey: "Trust This Key",
+  promptRejectHostKey: "Do Not Connect",
+  promptsTitle: "Prompts from git",
+  useCredentialHelper: "Use credential helper",
+  useCredentialHelperHint:
+    "Your credential helpers answer for credentials and keep them. When off, git asks you every time and nothing saves your answers. gikli stores no passwords either way.",
+  failurePromptGone: "This prompt is no longer waiting for an answer.",
   trustFolder: "Trust This Folder…",
   removeIndexLock: "Remove the Lock…",
   confirmTrustFolder:

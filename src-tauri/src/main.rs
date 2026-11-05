@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, Failure, FailureAction, Gikli, GitCheck,
     HostEnvironment, Notification, NotificationAction, NotificationOutcome, OperationLogEntry,
-    Project, ProjectWindow, Repository, RunningOperation, Settings,
+    Project, ProjectWindow, Prompt, Repository, RunningOperation, Settings, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -74,6 +74,29 @@ fn set_operation_log_soft_wrap(
     soft_wrap: bool,
 ) -> Result<Settings, Failure> {
     gikli.set_operation_log_soft_wrap(soft_wrap)
+}
+
+#[tauri::command]
+fn set_use_credential_helper(
+    gikli: State<'_, Gikli>,
+    use_helper: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_use_credential_helper(use_helper)
+}
+
+#[tauri::command]
+fn pending_prompts(gikli: State<'_, Gikli>) -> Vec<Prompt> {
+    gikli.pending_prompts()
+}
+
+#[tauri::command]
+fn answer_prompt(gikli: State<'_, Gikli>, id: u64, answer: String) -> Result<(), Failure> {
+    gikli.answer_prompt(id, &answer)
+}
+
+#[tauri::command]
+fn cancel_prompt(gikli: State<'_, Gikli>, id: u64) -> Result<(), Failure> {
+    gikli.cancel_prompt(id)
 }
 
 #[tauri::command]
@@ -243,11 +266,21 @@ fn startup_folder(
 }
 
 fn main() {
+    // git and ssh start this same program to ask the user something.
+    if let Some(code) = answer_askpass_request() {
+        std::process::exit(code);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(StartupFolder::from_process())
         .setup(|app| {
-            let gikli = Gikli::new(HostEnvironment::current(), &app.path().app_config_dir()?);
+            let mut gikli = Gikli::new(HostEnvironment::current(), &app.path().app_config_dir()?);
+            // Without prompts gikli still runs, and what needs an answer fails with a message.
+            if let Err(error) =
+                std::env::current_exe().and_then(|askpass| gikli.bring_prompts_through(askpass))
+            {
+                eprintln!("gikli cannot bring prompts to the user: {error}");
+            }
             let events = gikli.subscribe();
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -272,6 +305,10 @@ fn main() {
             set_show_ignored_files,
             set_change_grouping,
             set_operation_log_soft_wrap,
+            set_use_credential_helper,
+            pending_prompts,
+            answer_prompt,
+            cancel_prompt,
             operation_log,
             clear_operation_log,
             notifications,

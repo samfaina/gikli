@@ -14,6 +14,12 @@ use std::process::{Child, Command, Output, Stdio};
 use gikli_core::{Gikli, HostEnvironment};
 use tempfile::TempDir;
 
+mod http_remote;
+
+pub use http_remote::HttpRemote;
+
+use http_remote::Refusal;
+
 /// Makes git take every repository for someone else's.
 const OWNED_BY_SOMEONE_ELSE: &str = "GIT_TEST_ASSUME_DIFFERENT_OWNER";
 
@@ -50,6 +56,10 @@ impl Sandbox {
     /// the sandbox's and repository discovery stopped at the sandbox folder.
     pub fn host_environment(&self) -> HostEnvironment {
         let mut host = HostEnvironment::current();
+        // Configuration the shell that runs the tests passes to git, such as one that forbids
+        // asking for credentials, is the developer's too.
+        host.remove("GIT_CONFIG_COUNT");
+        host.remove("GIT_CONFIG_PARAMETERS");
         for (name, value) in self.git_environment() {
             host.set(name, value);
         }
@@ -64,6 +74,9 @@ impl Sandbox {
             ),
             ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
             ("GIT_CEILING_DIRECTORIES".into(), self.root.clone().into()),
+            // The remotes of a test are on this machine, whatever proxy the developer uses.
+            ("NO_PROXY".into(), "*".into()),
+            ("no_proxy".into(), "*".into()),
         ]
     }
 
@@ -75,22 +88,49 @@ impl Sandbox {
         fs::write(path, config).expect("write sandbox git configuration");
     }
 
+    /// Whether this git has the setting that forbids asking for credentials, added in git 2.46.
+    pub fn git_knows_credential_interactive(&self) -> bool {
+        let version = git_output(&self.root, &self.git_environment(), ["--version"]);
+        let version = String::from_utf8_lossy(&version.stdout).into_owned();
+        let mut numbers = version
+            .trim_start_matches("git version ")
+            .split('.')
+            .map_while(|number| number.trim().parse::<u32>().ok());
+        (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (2, 46)
+    }
+
     /// Installs `script` as the hook `name` of every repository in the sandbox, as a user would
     /// with `core.hooksPath` in `~/.gitconfig`.
     pub fn hook(&self, name: &str, script: &str) {
         let folder = self.folder("hooks");
-        let path = folder.join(name);
-        // `wait_until_runnable` starts the script to find out whether it can run.
-        fs::write(
-            &path,
-            format!("#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\n{script}\n"),
-        )
-        .expect("write hook");
-        make_executable(&path);
-        wait_until_runnable(&path);
+        self.write_script(&folder.join(name), script);
         self.configure(&format!(
             "[core]\n\thooksPath = {}\n",
             as_git_writes_it(&folder)
+        ));
+    }
+
+    /// Writes `script` at `path` as a shell script git can start. It exits at once when its first
+    /// argument is `--version`, as `wait_until_runnable` starts it to find out whether it can run.
+    pub fn write_script(&self, path: &Path, script: &str) {
+        fs::write(
+            path,
+            format!("#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\n{script}\n"),
+        )
+        .expect("write script");
+        make_executable(path);
+        wait_until_runnable(path);
+    }
+
+    /// Installs `script` as what git starts for ssh, with `core.sshCommand` in `~/.gitconfig`. A test
+    /// cannot count on an SSH server, so this plays the ssh client and the server together. It
+    /// asks and reports as OpenSSH does, in OpenSSH's own words.
+    pub fn ssh_stand_in(&self, script: &str) {
+        let path = self.folder("ssh-stand-in").join("ssh");
+        self.write_script(&path, script);
+        self.configure(&format!(
+            "[core]\n\tsshCommand = \\\"{}\\\"\n",
+            as_git_writes_it(&path)
         ));
     }
 
@@ -103,6 +143,16 @@ impl Sandbox {
     /// folder, as every start of the app shares the user's.
     pub fn gikli_in(&self, host: HostEnvironment) -> Gikli {
         Gikli::new(host, &self.config_folder())
+    }
+
+    /// gikli, running in the sandbox's environment, which brings prompts to the user through the
+    /// askpass program at `askpass`: pass [`askpass!`].
+    pub fn gikli_with_prompts(&self, askpass: &str) -> Gikli {
+        let mut gikli = self.gikli();
+        gikli
+            .bring_prompts_through(askpass.into())
+            .expect("start the askpass bridge");
+        gikli
     }
 
     /// Where gikli keeps its application settings and its Projects in this sandbox.
@@ -145,6 +195,31 @@ impl Sandbox {
         let repository = self.repository_handle(self.folder(name));
         repository.git(&["init", "--quiet", "--bare"]);
         repository
+    }
+
+    /// Serves the bare repository `remote` over HTTP until the result is dropped, to whoever gives
+    /// this `username` and `password`.
+    pub fn http_remote(
+        &self,
+        remote: &TestRepository,
+        username: &str,
+        password: &str,
+    ) -> HttpRemote {
+        HttpRemote::serve(
+            remote.root.clone(),
+            self.git_environment(),
+            Refusal::unless_authorized(username, password),
+        )
+    }
+
+    /// Serves the bare repository `remote` over HTTP until the result is dropped, answering every
+    /// request with `status`, such as `403 Forbidden`.
+    pub fn http_remote_answering(&self, remote: &TestRepository, status: &str) -> HttpRemote {
+        HttpRemote::serve(
+            remote.root.clone(),
+            self.git_environment(),
+            Refusal::Always(status.to_owned()),
+        )
     }
 
     /// Clones `remote` into a new folder with plain git.
@@ -307,6 +382,14 @@ fn wait_until_runnable(_executable: &Path) {}
 macro_rules! fake_git {
     () => {
         env!("CARGO_BIN_EXE_fake-git")
+    };
+}
+
+/// Path of the askpass program built with these tests, for [`Sandbox::gikli_with_prompts`].
+#[macro_export]
+macro_rules! askpass {
+    () => {
+        env!("CARGO_BIN_EXE_gikli-askpass")
     };
 }
 

@@ -14,10 +14,14 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   installed off the PATH, or `wsl.exe` on a machine without WSL. Tests of WSL itself run on
   Windows with WSL and a git inside it, and skip elsewhere. Tests of dubious ownership play
   another owner with git's own `GIT_TEST_ASSUME_DIFFERENT_OWNER`, and skip on a git that does
-  not check ownership, such as 2.34.0. Tests of long paths run only on Windows.
+  not check ownership, such as 2.34.0. Tests of long paths run only on Windows. Tests of
+  credentials use a local HTTP server that requires them, in front of git's own `git http-backend`.
+  A test cannot count on an SSH server, so tests of ssh prompts and host keys use a stand-in for
+  ssh that asks and reports in OpenSSH's words; the signing test runs the real `ssh-keygen`.
 - `src-tauri`: the Tauri 2 shell. Each core command is a Tauri command that forwards to `Gikli`,
   and core events reach the UI as `gikli://event`. The shell adds only `startup_folder`, the
-  folder to open at launch.
+  folder to open at launch. The app is also its own askpass program: when git or ssh start it to
+  ask the user something, it passes the question to the running app and exits.
 - `ui`: the TypeScript UI. Every string it shows is in `ui/src/strings/en.ts`, and the theme
   follows the operating system's light or dark setting.
 - `e2e`: the end-to-end smoke test, which launches the app through WebDriver.

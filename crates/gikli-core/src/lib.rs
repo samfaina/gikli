@@ -13,6 +13,7 @@ mod operation_log;
 mod operations;
 mod processes;
 mod project;
+mod prompts;
 mod settings;
 mod status;
 mod version;
@@ -34,6 +35,7 @@ pub use host::HostEnvironment;
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
+pub use prompts::{Prompt, PromptKind, answer_askpass_request};
 pub use settings::Settings;
 pub use status::{
     Change, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, ConflictKind, SubmoduleState,
@@ -47,6 +49,7 @@ use notifications::Notifications;
 use operation_log::OperationLog;
 use operations::LongOperations;
 use project::{ProjectRegistry, RememberedProject};
+use prompts::PromptBridge;
 use watch::ChangesWatcher;
 use window::ProjectWindows;
 use wsl::WslShare;
@@ -71,6 +74,8 @@ pub struct Gikli {
     log: Arc<OperationLog>,
     notifications: Notifications,
     operations: LongOperations,
+    /// What brings prompts to the user, once [`Self::bring_prompts_through`] has started it.
+    prompts: Option<PromptBridge>,
 }
 
 /// The oldest git gikli works with.
@@ -219,6 +224,10 @@ pub enum Failure {
     NotificationActionNotOffered {
         id: u64,
     },
+    /// The prompt is gone: the user already answered or cancelled it, or what asked went away.
+    PromptGone {
+        id: u64,
+    },
     /// `folder` is not the root of a repository, so it cannot be a Repository of a Project.
     #[serde(rename_all = "camelCase")]
     NotARepositoryRoot {
@@ -276,8 +285,45 @@ impl Gikli {
             log: Arc::new(OperationLog::new(events.clone())),
             notifications: Notifications::new(events.clone()),
             operations: LongOperations::new(events.clone()),
+            prompts: None,
             events,
         }
+    }
+
+    /// Brings what git and ssh ask the user to the user, as [`Event::PromptRaised`]: credentials,
+    /// passphrases of keys and host keys. They ask through the program `askpass`, which must call
+    /// [`answer_askpass_request`] first thing. Without this, what needs an answer fails.
+    pub fn bring_prompts_through(&mut self, askpass: PathBuf) -> std::io::Result<()> {
+        self.prompts = Some(PromptBridge::start(askpass, self.events.clone())?);
+        Ok(())
+    }
+
+    /// The prompts waiting for the user, oldest first, for a window that opens while they wait.
+    /// Each new one arrives as [`Event::PromptRaised`].
+    pub fn pending_prompts(&self) -> Vec<Prompt> {
+        self.prompts
+            .as_ref()
+            .map(PromptBridge::pending)
+            .unwrap_or_default()
+    }
+
+    /// Gives what asked the prompt `id` the user's `answer`, which gikli does not keep. The prompt
+    /// closes with [`Event::PromptClosed`].
+    pub fn answer_prompt(&self, id: u64, answer: &str) -> Result<(), Failure> {
+        self.respond_to_prompt(id, Some(answer))
+    }
+
+    /// Tells what asked the prompt `id` that the user declined to answer, which usually fails the
+    /// operation. The prompt closes with [`Event::PromptClosed`].
+    pub fn cancel_prompt(&self, id: u64) -> Result<(), Failure> {
+        self.respond_to_prompt(id, None)
+    }
+
+    fn respond_to_prompt(&self, id: u64, answer: Option<&str>) -> Result<(), Failure> {
+        self.prompts
+            .as_ref()
+            .ok_or(Failure::PromptGone { id })?
+            .respond(id, answer)
     }
 
     /// Starts listening to the core's events. Each listener receives every event sent after it
@@ -327,6 +373,12 @@ impl Gikli {
     /// Turns soft wrap of the operation log on or off.
     pub fn set_operation_log_soft_wrap(&self, soft_wrap: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.operation_log_soft_wrap = soft_wrap)
+    }
+
+    /// Leaves credentials to the user's credential helpers, or turns them off so git asks the user
+    /// every time and nothing saves the answers.
+    pub fn set_use_credential_helper(&self, use_helper: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.use_credential_helper = use_helper)
     }
 
     /// The application settings.
@@ -764,7 +816,16 @@ impl Gikli {
     /// The runner for an operation in `folder`, available only with a usable git.
     fn runner(&self, folder: &Path) -> Result<GitRunner, Failure> {
         let (program, _) = self.git_for(folder)?;
-        Ok(GitRunner::new(program, self.host.clone(), self.log.clone()))
+        let mut host = self.host.clone();
+        if let Some(prompts) = &self.prompts {
+            prompts.expose_to(&mut host);
+        }
+        let runner = GitRunner::new(program, host, self.log.clone());
+        Ok(if lock(&self.settings).use_credential_helper {
+            runner
+        } else {
+            runner.without_credential_helpers()
+        })
     }
 
     /// The git that runs in `folder`, with its version: the git of the WSL distribution for a

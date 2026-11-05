@@ -29,4 +29,30 @@ describe("gikli", () => {
     await browser.waitUntil(async () => (await paths()).length === 2, { timeout: 30000 });
     assert.deepEqual(await paths(), [added, untracked]);
   });
+
+  it("brings a prompt to the user and gives git the answer", async () => {
+    const sandbox = process.env.GIKLI_E2E_SANDBOX;
+    fs.writeFileSync(path.join(sandbox, "ask-for-prompt"), "");
+    await $('[data-testid="refresh-changes"]').click();
+
+    const prompt = await $('[data-testid="prompt"]');
+    await prompt.waitForDisplayed({ timeout: 30000 });
+    assert.equal(await prompt.getAttribute("data-kind"), "username");
+    assert.equal((await $('[data-testid="prompt-text"]').getText()).trim(), "Username for smoke:");
+
+    await $('[data-testid="prompt-answer"]').setValue("ada");
+    await $('[data-testid="prompt-submit"]').click();
+
+    await prompt.waitForDisplayed({ timeout: 30000, reverse: true });
+    const answer = path.join(sandbox, "prompt-answer");
+    await browser.waitUntil(() => fs.existsSync(answer) && fs.readFileSync(answer, "utf8") !== "", { timeout: 30000 });
+    assert.equal(fs.readFileSync(answer, "utf8").trim(), "ada");
+  });
+
+  it("has the credential helper setting on by default", async () => {
+    await $('[data-testid="toggle-settings"]').click();
+    const setting = await $('[data-testid="use-credential-helper"]');
+    await setting.waitForDisplayed({ timeout: 30000 });
+    assert.equal(await setting.isSelected(), true);
+  });
 });

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::ChangeGrouping;
 
 /// gikli's application settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     /// The git executable to use. When unset, gikli looks for git itself. A folder under
@@ -21,6 +21,21 @@ pub struct Settings {
     pub change_grouping: ChangeGrouping,
     /// Whether the operation log wraps long lines to its width, instead of scrolling sideways.
     pub operation_log_soft_wrap: bool,
+    /// Whether the user's credential helpers answer for credentials and keep them. When off, git
+    /// asks the user every time and nothing saves the answers.
+    pub use_credential_helper: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            git_path: None,
+            show_ignored_files: false,
+            change_grouping: ChangeGrouping::default(),
+            operation_log_soft_wrap: false,
+            use_credential_helper: true,
+        }
+    }
 }
 
 impl Settings {

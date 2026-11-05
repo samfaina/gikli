@@ -36,7 +36,36 @@ function createRepository() {
     throw new Error(`git init failed: ${git.stderr}`);
   }
   fs.writeFileSync(path.join(repository, UNTRACKED_FILE), "smoke\n");
+  installPromptingFsmonitor(sandbox, repository, gitconfig);
   return { sandbox, repository };
+}
+
+/**
+ * Makes the next read of the changes after `ask-for-prompt` appears in `sandbox` raise a prompt,
+ * and leave the answer in `prompt-answer`. The app has no clone or fetch to ask for credentials
+ * yet, so the file system monitor git runs in `git status` asks instead, through gikli's askpass.
+ */
+function installPromptingFsmonitor(sandbox, repository, gitconfig) {
+  const monitor = path.join(sandbox, "fsmonitor");
+  const folder = sandbox.replaceAll("\\", "/");
+  fs.writeFileSync(
+    monitor,
+    `#!/bin/sh
+if [ -e '${folder}/ask-for-prompt' ]; then
+  rm '${folder}/ask-for-prompt'
+  "$GIT_ASKPASS" 'Username for smoke: ' > '${folder}/prompt-answer'
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  const git = spawnSync("git", ["config", "core.fsmonitor", monitor.replaceAll("\\", "/")], {
+    cwd: repository,
+    env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1" },
+  });
+  if (git.status !== 0) {
+    throw new Error(`git config failed: ${git.stderr}`);
+  }
 }
 
 function targetDirectory() {

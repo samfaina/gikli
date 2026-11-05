@@ -139,6 +139,58 @@ button:disabled {
   color: var(--muted);
 }
 
+.settings .settings-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.settings .settings-check input {
+  flex: none;
+}
+
+/* What git or ssh asks the user: the operation waits for the answer. */
+.prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prompt h2,
+.prompt p {
+  margin: 0;
+  font-size: inherit;
+}
+
+.prompt-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prompt input {
+  font: inherit;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.prompt input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .project {
   padding: 12px;
 }

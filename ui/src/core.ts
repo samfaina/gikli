@@ -28,6 +28,8 @@ export interface Settings {
   changeGrouping: ChangeGrouping;
   /** Whether the operation log wraps long lines instead of scrolling sideways. */
   operationLogSoftWrap: boolean;
+  /** Whether the user's credential helpers answer for credentials and keep them. */
+  useCredentialHelper: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -126,7 +128,10 @@ export type ExplainedMessage =
   /** `folder` is written as git writes it. */
   | { kind: "dubiousOwnership"; folder: string }
   | { kind: "indexLocked"; lock: string }
-  | { kind: "longPaths" };
+  | { kind: "longPaths" }
+  | { kind: "authenticationFailed" }
+  | { kind: "hostKeyUnknown" }
+  | { kind: "hostKeyChanged" };
 
 /** What the user can do next, in a failure the core explains. */
 export type NextStep =
@@ -134,7 +139,10 @@ export type NextStep =
   | "trustFolder"
   | "removeIndexLock"
   | "waitForOtherGitOperation"
-  | "enableLongPaths";
+  | "enableLongPaths"
+  | "checkCredentials"
+  | "verifyHostKey"
+  | "checkChangedHostKey";
 
 /** Something gikli can do about a failure, once the user has confirmed. */
 export type FailureAction =
@@ -171,7 +179,8 @@ export type Failure =
   | { kind: "changesNotWatched"; folder: string; message: string }
   | { kind: "cloneFailed"; url: string; folder: string }
   | { kind: "notificationGone"; id: number }
-  | { kind: "notificationActionNotOffered"; id: number };
+  | { kind: "notificationActionNotOffered"; id: number }
+  | { kind: "promptGone"; id: number };
 
 /** One git command gikli ran, with its raw output. */
 export interface OperationLogEntry {
@@ -231,8 +240,22 @@ export interface RunningOperation {
   progress: Progress | null;
 }
 
+/** What a prompt asks for. Only a username and the answer about a host key show as they are typed. */
+export type PromptKind = "username" | "password" | "passphrase" | "hostKey" | "other";
+
+/** Something git or ssh asks the user. The operation waits until it closes. */
+export interface Prompt {
+  id: number;
+  kind: PromptKind;
+  /** The question, as git or ssh words it. */
+  text: string;
+}
+
 export type CoreEvent =
   | { event: "operationLogged"; payload: OperationLogEntry }
+  | { event: "promptRaised"; payload: Prompt }
+  /** The user answered it in some window, or what asked went away: every window stops showing it. */
+  | { event: "promptClosed"; payload: { id: number } }
   /** Drop the entries whose id is below `before`. */
   | { event: "operationLogCleared"; payload: { before: number } }
   | { event: "notificationRaised"; payload: Notification }
@@ -274,6 +297,26 @@ export function setChangeGrouping(grouping: ChangeGrouping): Promise<Settings> {
 /** Turns soft wrap of the operation log on or off. Rejects with a {@link Failure}. */
 export function setOperationLogSoftWrap(softWrap: boolean): Promise<Settings> {
   return invoke("set_operation_log_soft_wrap", { softWrap });
+}
+
+/** Leaves credentials to the user's credential helpers, or makes git ask every time. Rejects with a {@link Failure}. */
+export function setUseCredentialHelper(useHelper: boolean): Promise<Settings> {
+  return invoke("set_use_credential_helper", { useHelper });
+}
+
+/** The prompts waiting for the user, oldest first. New ones arrive as `promptRaised` events. */
+export function pendingPrompts(): Promise<Prompt[]> {
+  return invoke("pending_prompts");
+}
+
+/** Gives what asked the prompt `id` the user's answer, which gikli does not keep. Rejects with a {@link Failure}. */
+export function answerPrompt(id: number, answer: string): Promise<void> {
+  return invoke("answer_prompt", { id, answer });
+}
+
+/** Tells what asked the prompt `id` that the user declined to answer. Rejects with a {@link Failure}. */
+export function cancelPrompt(id: number): Promise<void> {
+  return invoke("cancel_prompt", { id });
 }
 
 /** Every git command gikli ran, oldest first. New ones arrive as `operationLogged` events. */
