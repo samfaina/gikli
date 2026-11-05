@@ -128,14 +128,19 @@ fn a_failing_hook_that_repeats_the_url_is_explained_without_the_password() {
     let Err(Failure::Explained { explanation }) = result else {
         panic!("got {result:?}");
     };
+    let ExplainedMessage::HookFailed { hook, output } = explanation.message else {
+        panic!("got {:?}", explanation.message);
+    };
+    assert_eq!(hook, "post-checkout");
+    // git can add lines of its own that repeat the URL: git 2.34.0 warned of a redirect on CI.
     let hidden = with_credentials(&server.url(), USERNAME, "***");
-    assert_eq!(
-        explanation.message,
-        ExplainedMessage::HookFailed {
-            hook: "post-checkout".to_owned(),
-            output: format!("Cannot reach {hidden}\n"),
-        }
+    assert!(
+        output
+            .lines()
+            .any(|line| line == format!("Cannot reach {hidden}")),
+        "{output}"
     );
+    assert!(!output.contains(PASSWORD), "{output}");
     assert_cloned(&sandbox, &remote, &target);
 }
 
