@@ -5,6 +5,10 @@
 //! `color.ui=always` or `core.quotePath=true` never changes what gikli parses. Commands that
 //! gikli parses must still ask for machine-readable output themselves (porcelain formats, `-z`,
 //! explicit `--format`).
+//!
+//! Credential helpers are the other exception. gikli adds one of its own after the user's, which
+//! only notes that a remote refused the credentials, and the "Use credential helper" setting can
+//! turn the user's off.
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -16,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::host::HostEnvironment;
 use crate::operation_log::{OperationLog, OperationLogEntry};
 use crate::operations::Progress;
+use crate::prompts;
 use crate::version::GitVersion;
 use crate::wsl::WslShare;
 use crate::{GitCheck, GitSource, MINIMUM_GIT_VERSION};
@@ -145,25 +150,27 @@ pub(crate) struct Invocation {
     pub stderr: Vec<u8>,
     /// The hook that failed in this run, as git's trace of the run names it.
     pub failed_hook: Option<String>,
-    /// The status of the last HTTP response in this run, when it talked to an HTTP remote.
-    pub last_http_status: Option<u16>,
+    /// Whether a remote refused the credentials git gave it in this run.
+    pub credentials_refused: bool,
 }
 
-/// Variables that cross into WSL, so git there runs without a terminal as it does natively, traces
-/// each run to files gikli can read, and asks the user through gikli's askpass program. `/p`
-/// translates a path. The askpass program is a Windows program, so its variables cross back too.
+/// Where gikli's credential helper notes that a remote refused the credentials.
+const REFUSED_CREDENTIALS_VARIABLE: &str = "GIKLI_CREDENTIALS_REFUSED";
+
+/// gikli's credential helper, the last of them. git tells every helper to erase credentials a
+/// remote refused, and this one creates an empty file instead. git's own sentence about it is in
+/// the user's language, and tracing the HTTP headers is no option: git before 2.43 can write the
+/// credentials to the trace. This helper reads nothing and keeps nothing.
+const NOTE_REFUSED_CREDENTIALS: &str =
+    "credential.helper=!f() { [ \"$1\" != erase ] || : > \"$GIKLI_CREDENTIALS_REFUSED\"; }; f";
+
+/// Variables that cross into WSL, so git there runs without a terminal as it does natively, and
+/// leaves what it reports about each run in files gikli can read: `/p` translates a path.
 const WSL_SHARED_VARIABLES: &[&str] = &[
     "GIT_TERMINAL_PROMPT",
     "GIT_OPTIONAL_LOCKS",
     "GIT_TRACE2_EVENT/p",
-    "GIT_TRACE_CURL/p",
-    "GIT_TRACE_CURL_NO_DATA",
-    "GIT_TRACE_REDACT",
-    "GIT_ASKPASS/p",
-    "SSH_ASKPASS/p",
-    "SSH_ASKPASS_REQUIRE",
-    "GIKLI_ASKPASS_ADDRESS",
-    "GIKLI_ASKPASS_TOKEN",
+    "GIKLI_CREDENTIALS_REFUSED/p",
 ];
 
 impl GitRunner {
@@ -176,7 +183,10 @@ impl GitRunner {
         host.set("GIT_OPTIONAL_LOCKS", "0");
         if matches!(program, GitProgram::Wsl { .. }) {
             let mut shared: OsString = host.get("WSLENV").unwrap_or_default().to_owned();
-            for name in WSL_SHARED_VARIABLES {
+            for name in WSL_SHARED_VARIABLES
+                .iter()
+                .chain(prompts::WSL_SHARED_VARIABLES)
+            {
                 if !shared.is_empty() {
                     shared.push(":");
                 }
@@ -252,6 +262,7 @@ impl GitRunner {
             // An empty value empties the list of helpers so far, and this one comes last.
             command_line.extend(["-c", "credential.helper="]);
         }
+        command_line.extend(["-c", NOTE_REFUSED_CREDENTIALS]);
         command_line.extend(args);
 
         let mut command = self.program.command(folder);
@@ -264,10 +275,10 @@ impl GitRunner {
         detach_from_terminal(&mut command);
         let trace = RunTrace::new();
         command.env("GIT_TRACE2_EVENT", &trace.file);
-        command.env("GIT_TRACE_CURL", &trace.http_file);
-        // Only the headers, and never the credentials in them.
-        command.env("GIT_TRACE_CURL_NO_DATA", "1");
-        command.env("GIT_TRACE_REDACT", "1");
+        command.env(
+            REFUSED_CREDENTIALS_VARIABLE,
+            &trace.refused_credentials_file,
+        );
         let entry = OperationLogEntry {
             id: 0,
             folder: folder.to_path_buf(),
@@ -308,7 +319,7 @@ impl GitRunner {
             stdout,
             stderr,
             failed_hook: trace.failed_hook(),
-            last_http_status: trace.last_http_status(),
+            credentials_refused: trace.refused_credentials_file.exists(),
         })
     }
 
@@ -391,20 +402,19 @@ impl Invocation {
             stdout: self.stdout.clone(),
             stderr: kept.into_bytes(),
             failed_hook: self.failed_hook.clone(),
-            last_http_status: self.last_http_status,
+            credentials_refused: self.credentials_refused,
         }
     }
 }
 
-/// git's trace of one run, in files of its own. Unlike git's messages, it is the same in every
-/// language. It is the only place that tells a hook failed, as git itself says nothing about it,
-/// and that tells what an HTTP remote answered, as git says it in the user's language.
+/// What git reports about one run outside its messages, which is the same in every language, in
+/// files of its own. It is the only place that tells a hook failed, as git itself says nothing
+/// about it.
 struct RunTrace {
     /// The events of the run, in the event format of trace2.
     file: PathBuf,
-    /// The HTTP headers of the run, as git's `GIT_TRACE_CURL` writes them: redacted, so no
-    /// credentials reach the file.
-    http_file: PathBuf,
+    /// The empty file gikli's credential helper creates when a remote refuses the credentials.
+    refused_credentials_file: PathBuf,
 }
 
 /// Tells apart the trace files of the runs of this process.
@@ -417,20 +427,8 @@ impl RunTrace {
         let folder = std::env::temp_dir();
         Self {
             file: folder.join(format!("{name}.json")),
-            http_file: folder.join(format!("{name}.http")),
+            refused_credentials_file: folder.join(format!("{name}.refused")),
         }
-    }
-
-    /// The status of the last HTTP response of the run. git traces each header on a line of its
-    /// own, after a prefix of its own: `... <= Recv header: HTTP/1.1 401 Unauthorized`.
-    fn last_http_status(&self) -> Option<u16> {
-        let trace = std::fs::read(&self.http_file).ok()?;
-        let trace = String::from_utf8_lossy(&trace);
-        trace.lines().rev().find_map(|line| {
-            let (_, header) = line.split_once("Recv header: ")?;
-            let (_, status) = header.strip_prefix("HTTP/")?.split_once(' ')?;
-            status.split(' ').next()?.parse().ok()
-        })
     }
 
     /// The hook that ended with an error in the run, as the git gikli started saw it. A git the
@@ -461,7 +459,7 @@ impl Drop for RunTrace {
         // Absent when git traced nothing; left behind when a process the hook started still
         // holds it. The temporary folder takes care of it then.
         let _ = std::fs::remove_file(&self.file);
-        let _ = std::fs::remove_file(&self.http_file);
+        let _ = std::fs::remove_file(&self.refused_credentials_file);
     }
 }
 

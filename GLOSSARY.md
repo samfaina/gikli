@@ -42,6 +42,12 @@ _Avoid_: Stash (that is git's own mechanism), drafts
 The uncommitted changes that gikli puts aside before an operation that needs a clean working tree and restores when the operation finishes, together with their Changelists.
 _Avoid_: Auto-stash, temporary shelf
 
+## Authentication
+
+**Prompt**:
+Something git, ssh or a program they start asks the user while an operation waits, such as a password or the passphrase of a key. It reaches the user inside gikli, and gikli keeps no answer.
+_Avoid_: Question, credential dialog
+
 ## Safety
 
 **Backup**:

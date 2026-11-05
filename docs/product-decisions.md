@@ -19,7 +19,8 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 
 ### Credentials and prompts
 
-- Prompts from git and ssh reach the user through gikli's askpass program, which replaces any askpass program the user configured. It covers usernames, passwords, SSH passphrases, unknown host keys and signing with an SSH key. gikli keeps no answer.
+- Prompts from git and ssh reach the user through gikli's askpass program, which replaces any askpass program the user configured. It covers usernames, passwords, SSH passphrases, unknown host keys and signing with an SSH key. gikli keeps no answer. This departs from "work as configured" in [ADR-0001](adr/0001-drive-the-users-git-executable.md) for the askpass program only, as gikli runs git without a terminal.
+- "Use credential helper" is the other departure: when the user turns it off, git uses none of their helpers. It is on by default, and gikli also adds a helper of its own after theirs, which only notes that a remote refused the credentials.
 - Passphrases for GPG keys stay with `gpg-agent` and its own pinentry window. The embedded GPG prompt is Scope 3 in the reference.
 - gikli never edits `known_hosts`: ssh records a key the user accepted, and a changed key is the user's to resolve.
 

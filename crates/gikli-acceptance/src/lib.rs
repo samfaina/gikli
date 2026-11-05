@@ -18,7 +18,7 @@ mod http_remote;
 
 pub use http_remote::HttpRemote;
 
-use http_remote::Access;
+use http_remote::Refusal;
 
 /// Makes git take every repository for someone else's.
 const OWNED_BY_SOMEONE_ELSE: &str = "GIT_TEST_ASSUME_DIFFERENT_OWNER";
@@ -88,28 +88,36 @@ impl Sandbox {
         fs::write(path, config).expect("write sandbox git configuration");
     }
 
+    /// Whether this git has the setting that forbids asking for credentials, added in git 2.46.
+    pub fn git_knows_credential_interactive(&self) -> bool {
+        let version = git_output(&self.root, &self.git_environment(), ["--version"]);
+        let version = String::from_utf8_lossy(&version.stdout).into_owned();
+        let mut numbers = version
+            .trim_start_matches("git version ")
+            .split('.')
+            .map_while(|number| number.trim().parse::<u32>().ok());
+        (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (2, 46)
+    }
+
     /// Installs `script` as the hook `name` of every repository in the sandbox, as a user would
     /// with `core.hooksPath` in `~/.gitconfig`.
     pub fn hook(&self, name: &str, script: &str) {
         let folder = self.folder("hooks");
-        let path = folder.join(name);
-        // `wait_until_runnable` starts the script to find out whether it can run.
-        fs::write(
-            &path,
-            format!("#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\n{script}\n"),
-        )
-        .expect("write hook");
-        self.make_runnable(&path);
+        self.write_script(&folder.join(name), script);
         self.configure(&format!(
             "[core]\n\thooksPath = {}\n",
             as_git_writes_it(&folder)
         ));
     }
 
-    /// Makes the script at `path` something git can start, as a user would with `chmod +x`. The
-    /// script must exit at once when its first argument is `--version`, as `wait_until_runnable`
-    /// starts it to find out whether it can run.
-    pub fn make_runnable(&self, path: &Path) {
+    /// Writes `script` at `path` as a shell script git can start. It exits at once when its first
+    /// argument is `--version`, as `wait_until_runnable` starts it to find out whether it can run.
+    pub fn write_script(&self, path: &Path, script: &str) {
+        fs::write(
+            path,
+            format!("#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\n{script}\n"),
+        )
+        .expect("write script");
         make_executable(path);
         wait_until_runnable(path);
     }
@@ -119,12 +127,7 @@ impl Sandbox {
     /// asks and reports as OpenSSH does, in OpenSSH's own words.
     pub fn ssh_stand_in(&self, script: &str) {
         let path = self.folder("ssh-stand-in").join("ssh");
-        fs::write(
-            &path,
-            format!("#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\n{script}\n"),
-        )
-        .expect("write the stand-in for ssh");
-        self.make_runnable(&path);
+        self.write_script(&path, script);
         self.configure(&format!(
             "[core]\n\tsshCommand = \\\"{}\\\"\n",
             as_git_writes_it(&path)
@@ -205,7 +208,7 @@ impl Sandbox {
         HttpRemote::serve(
             remote.root.clone(),
             self.git_environment(),
-            Access::Credentials { username, password },
+            Refusal::unless_authorized(username, password),
         )
     }
 
@@ -215,7 +218,7 @@ impl Sandbox {
         HttpRemote::serve(
             remote.root.clone(),
             self.git_environment(),
-            Access::Refused { status },
+            Refusal::Always(status.to_owned()),
         )
     }
 

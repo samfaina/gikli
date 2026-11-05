@@ -3,8 +3,9 @@
 //!
 //! Classification never reads git's translated sentences. It relies on what stays the same in
 //! every language: what git records in its trace of the run, the file names and the commands it
-//! quotes, and the state of the repository. ADR-0001 pins what gikli parses, but git's error output
-//! has no format to pin, which is why only these fixed parts of it count.
+//! quotes, the sentences git never translates and those of programs that have no translations,
+//! such as ssh and curl, and the state of the repository. ADR-0001 pins what gikli parses, but
+//! git's error output has no format to pin, which is why only these fixed parts of it count.
 
 use std::path::{Path, PathBuf};
 
@@ -129,31 +130,26 @@ pub(crate) fn explain(
         return Some(explain_index_lock(runner, &repository, lock));
     }
     if cfg!(windows) && runner.runs_natively() && stderr.contains(PATH_TOO_LONG) {
-        return Some(Explanation {
-            message: ExplainedMessage::LongPaths,
-            next_step: NextStep::EnableLongPaths,
-            actions: vec![],
-        });
+        return Some(explained(
+            ExplainedMessage::LongPaths,
+            NextStep::EnableLongPaths,
+        ));
     }
     // What ssh writes, which OpenSSH does not translate. A changed key comes first: ssh may go on
     // to fail in other ways, and this is what the user needs to hear about.
-    if ssh_reports(&stderr, is_changed_host_key) {
+    if any_line(&stderr, is_changed_host_key) {
         return Some(explained(
             ExplainedMessage::HostKeyChanged,
             NextStep::CheckChangedHostKey,
         ));
     }
-    if ssh_reports(&stderr, is_failed_host_key_verification) {
+    if any_line(&stderr, is_failed_host_key_verification) {
         return Some(explained(
             ExplainedMessage::HostKeyUnknown,
             NextStep::VerifyHostKey,
         ));
     }
-    let refused_by_http = matches!(
-        invocation.last_http_status,
-        Some(UNAUTHORIZED | FORBIDDEN | PROXY_AUTHENTICATION_REQUIRED)
-    );
-    if refused_by_http || ssh_reports(&stderr, is_refused_by_server) {
+    if invocation.credentials_refused || any_line(&stderr, is_failed_authentication) {
         return Some(explained(
             ExplainedMessage::AuthenticationFailed,
             NextStep::CheckCredentials,
@@ -170,14 +166,10 @@ fn explained(message: ExplainedMessage, next_step: NextStep) -> Explanation {
     }
 }
 
-const UNAUTHORIZED: u16 = 401;
-const FORBIDDEN: u16 = 403;
-const PROXY_AUTHENTICATION_REQUIRED: u16 = 407;
-
-/// Whether a line of `stderr` is one ssh writes, as `is_it` tells. ssh writes these on lines of
-/// their own, unlike git, which quotes a file name that looks like them inside a sentence.
-fn ssh_reports(stderr: &str, is_it: fn(&str) -> bool) -> bool {
-    stderr.lines().any(|line| is_it(line.trim()))
+/// Whether a line of `stderr` is what `reports` looks for. What it looks for ends a line, unlike a
+/// file name that looks like it, which git quotes inside a sentence.
+fn any_line(stderr: &str, reports: fn(&str) -> bool) -> bool {
+    stderr.lines().any(|line| reports(line.trim()))
 }
 
 fn is_changed_host_key(line: &str) -> bool {
@@ -188,13 +180,51 @@ fn is_failed_host_key_verification(line: &str) -> bool {
     line == "Host key verification failed."
 }
 
+fn is_failed_authentication(line: &str) -> bool {
+    is_refused_by_ssh_server(line)
+        || is_tired_ssh_server(line)
+        || is_unanswered_credential_prompt(line)
+        || is_refused_by_http_server(line)
+}
+
 /// `git@host: Permission denied (publickey,password).`, with the ways the server takes in brackets.
-/// A file that cannot be read says `Permission denied` too, without them.
-fn is_refused_by_server(line: &str) -> bool {
+/// A file that cannot be read says `Permission denied` too, without them, and what a server says
+/// comes after `remote: `, without a user.
+fn is_refused_by_ssh_server(line: &str) -> bool {
     line.ends_with(").")
         && line
             .split_once("Permission denied (")
-            .is_some_and(|(before, _)| before.is_empty() || before.ends_with(": "))
+            .is_some_and(|(before, _)| {
+                before.is_empty() || (before.ends_with(": ") && before.contains('@'))
+            })
+}
+
+/// `Received disconnect from 192.0.2.1 port 22:2: Too many authentication failures`.
+fn is_tired_ssh_server(line: &str) -> bool {
+    line.starts_with("Received disconnect from ")
+        && line.ends_with(": Too many authentication failures")
+}
+
+/// git could not get an answer for a credential prompt: the user declined it, nobody could be asked,
+/// or the user forbids asking with `credential.interactive`. git never translates these sentences.
+fn is_unanswered_credential_prompt(line: &str) -> bool {
+    (line.contains("could not read ") && line.ends_with(": terminal prompts disabled"))
+        || line.ends_with("unable to get password from user")
+}
+
+/// `... 'https://host/repo': The requested URL returned error: 403`, which is the text of a curl
+/// error, whatever language git speaks. A 401 never gets here: git tries credentials for it, and
+/// tells the helpers when they are refused.
+fn is_refused_by_http_server(line: &str) -> bool {
+    const FORBIDDING_STATUSES: [&str; 2] = ["403", "407"];
+    line.rsplit_once("The requested URL returned error: ")
+        .is_some_and(|(_, status)| {
+            !status.contains('\'')
+                && status
+                    .split(' ')
+                    .next()
+                    .is_some_and(|status| FORBIDDING_STATUSES.contains(&status))
+        })
 }
 
 /// Removes the lock of the index of `repository`, unless a git operation may have started running

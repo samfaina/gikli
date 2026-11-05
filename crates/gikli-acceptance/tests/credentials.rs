@@ -34,18 +34,14 @@ fn credential_helper(sandbox: &Sandbox, on_get: &str) -> PathBuf {
     let folder = sandbox.folder("credential-helper");
     let record = folder.join("record");
     let helper = folder.join("helper");
-    fs::write(
+    sandbox.write_script(
         &helper,
-        format!(
-            "#!/bin/sh\n\
-             if [ \"$1\" = --version ]; then exit 0; fi\n\
-             echo \"$1\" >> '{record}'\n\
-             if [ \"$1\" = get ]; then :\n{on_get}\nelse grep -E '^(username|password)=' >> '{record}'; fi\n",
+        &format!(
+            "echo \"$1\" >> '{record}'\n\
+             if [ \"$1\" = get ]; then :\n{on_get}\nelse grep -E '^(username|password)=' >> '{record}'; fi",
             record = as_git_writes_it(&record),
         ),
-    )
-    .expect("write the credential helper");
-    sandbox.make_runnable(&helper);
+    );
     sandbox.configure(&format!(
         "[credential]\n\thelper = \"!\\\"{}\\\"\"\n",
         as_git_writes_it(&helper)
@@ -195,6 +191,7 @@ fn username_and_password_prompts_reach_the_user_and_gikli_keeps_neither_answer()
         gikli.clone_repository(&server.url(), &second)
     });
     result.expect("clone again, answering again");
+    assert_cloned(&sandbox, &remote, &second);
     assert_eq!(prompts.len(), 2, "gikli remembers no answer: {prompts:?}");
 }
 
@@ -232,6 +229,7 @@ fn with_the_setting_off_git_asks_the_user_and_the_helper_stays_out_of_it() {
         gikli.clone_repository(&server.url(), &again)
     });
     result.expect("clone with the credentials of the helper");
+    assert_cloned(&sandbox, &remote, &again);
     assert_eq!(prompts, []);
     assert!(record.exists());
 }
@@ -271,6 +269,7 @@ fn the_users_helper_keeps_what_the_user_answered_and_forgets_what_the_remote_ref
         gikli.clone_repository(&server.url(), &target)
     });
     result.expect("clone with the answers");
+    assert_cloned(&sandbox, &remote, &target);
     let told = fs::read_to_string(&record).expect("git told the helper");
     assert!(
         told.contains(&format!(
@@ -383,6 +382,47 @@ fn a_refusal_is_explained_the_same_when_git_speaks_another_language() {
 }
 
 #[test]
+fn declining_to_answer_is_explained_the_same_when_git_speaks_another_language() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_commit(&sandbox);
+    let server = sandbox.http_remote(&remote, USERNAME, PASSWORD);
+    let mut gikli = sandbox.gikli_in(speaking(sandbox.host_environment(), "de"));
+    gikli
+        .bring_prompts_through(askpass!().into())
+        .expect("start the askpass bridge");
+    let target = sandbox.root().join("declined");
+
+    let (result, _, _) = answering_prompts(
+        &gikli,
+        |_| None,
+        || gikli.clone_repository(&server.url(), &target),
+    );
+
+    assert_explained(result, explanation_of_failed_authentication());
+}
+
+#[test]
+fn a_user_who_forbade_asking_for_credentials_gets_the_same_message() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_commit(&sandbox);
+    let server = sandbox.http_remote(&remote, USERNAME, PASSWORD);
+    if !sandbox.git_knows_credential_interactive() {
+        eprintln!("skipped: this git always asks");
+        return;
+    }
+    sandbox.configure("[credential]\n\tinteractive = false\n");
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli_with_prompts(askpass!());
+
+    let (result, prompts, _) = answering_prompts(&gikli, the_right_credentials, || {
+        gikli.clone_repository(&server.url(), &target)
+    });
+
+    assert_explained(result, explanation_of_failed_authentication());
+    assert_eq!(prompts, []);
+}
+
+#[test]
 fn a_remote_that_forbids_access_or_wants_proxy_credentials_is_an_authentication_failure() {
     let sandbox = Sandbox::new();
     let remote = remote_with_a_commit(&sandbox);
@@ -489,6 +529,23 @@ fn a_server_that_refuses_the_key_is_an_authentication_failure() {
         |_| Some("not the passphrase".to_owned()),
         || gikli.clone_repository(SSH_URL, &target),
     );
+
+    assert_explained(result, explanation_of_failed_authentication());
+}
+
+/// A server gives up on a client that offers too many keys, in words of its own that ssh passes on.
+#[test]
+fn a_server_tired_of_being_offered_keys_is_an_authentication_failure() {
+    let sandbox = Sandbox::new();
+    sandbox.ssh_stand_in(
+        "echo 'Received disconnect from 127.0.0.1 port 22:2: Too many authentication failures' >&2\n\
+         echo 'Disconnected from 127.0.0.1 port 22' >&2\n\
+         exit 255",
+    );
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli();
+
+    let result = gikli.clone_repository(SSH_URL, &target);
 
     assert_explained(result, explanation_of_failed_authentication());
 }
@@ -640,6 +697,10 @@ fn a_failure_that_only_mentions_what_ssh_says_is_not_taken_for_it() {
         "Host key verification failed.",
         "REMOTE HOST IDENTIFICATION HAS CHANGED!",
         "git@host: Permission denied (publickey).",
+        "Too many authentication failures",
+        "could not read Username for x: terminal prompts disabled",
+        "unable to get password from user",
+        "The requested URL returned error: 403",
     ] {
         assert_eq!(
             gikli.add_files(&root, &[name.to_owned()]),
@@ -767,6 +828,7 @@ fn a_program_without_the_token_cannot_ask_the_user_anything() {
     );
 
     result.expect("the clone goes on");
+    assert_cloned(&sandbox, &remote, &target);
     assert_eq!(prompts, []);
 }
 
@@ -843,5 +905,37 @@ fn a_prompt_from_the_git_inside_wsl_reaches_the_user() {
         repository.git(&["show", ":notes.txt"]).trim_end(),
         USERNAME,
         "the answer reached the git inside WSL"
+    );
+}
+
+/// The note of refused credentials has to reach a file gikli can read from inside WSL too. A required
+/// clean filter plays the credential helper, as a remote on the Windows side is out of reach of WSL.
+#[test]
+fn refused_credentials_inside_wsl_are_noted_where_gikli_finds_them() {
+    let Some(repository) = WslRepository::create() else {
+        eprintln!("skipped: needs WSL with git");
+        return;
+    };
+    repository.git(&[
+        "config",
+        "filter.refuse.clean",
+        ": > \"$GIKLI_CREDENTIALS_REFUSED\"; exit 1",
+    ]);
+    repository.git(&["config", "filter.refuse.required", "true"]);
+    repository.write(".gitattributes", "notes.txt filter=refuse\n");
+    repository.write("notes.txt", "draft\n");
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let root = Repository {
+        root: repository.root(),
+    };
+
+    let result = gikli.add_files(&root, &["notes.txt".to_owned()]);
+
+    assert_explained(result, explanation_of_failed_authentication());
+    assert!(
+        repository
+            .status_by_git()
+            .contains(&"?? notes.txt".to_owned())
     );
 }

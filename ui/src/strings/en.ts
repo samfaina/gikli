@@ -122,11 +122,11 @@ export const en = {
   promptCancel: "Cancel",
   promptAcceptHostKey: "Trust This Key",
   promptRejectHostKey: "Do Not Connect",
-  promptsTitle: "Questions from git",
+  promptsTitle: "Prompts from git",
   useCredentialHelper: "Use credential helper",
   useCredentialHelperHint:
     "Your credential helpers answer for credentials and keep them. When off, git asks you every time and nothing saves your answers. gikli stores no passwords either way.",
-  failurePromptGone: "This question is no longer waiting for an answer.",
+  failurePromptGone: "This prompt is no longer waiting for an answer.",
   trustFolder: "Trust This Folder…",
   removeIndexLock: "Remove the Lock…",
   confirmTrustFolder:

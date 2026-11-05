@@ -13,35 +13,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The server, which runs until this is dropped.
 pub struct HttpRemote {
     address: SocketAddr,
-    repository: String,
+    folder_name: String,
     stopping: Arc<AtomicBool>,
 }
 
-/// Who the server lets in.
-pub(crate) enum Access<'a> {
-    Credentials {
-        username: &'a str,
-        password: &'a str,
-    },
-    /// Nobody: every request gets this status, such as `403 Forbidden`.
-    Refused { status: &'a str },
-}
-
 impl HttpRemote {
-    pub(crate) fn serve(root: PathBuf, env: Vec<(OsString, OsString)>, access: Access) -> Self {
+    pub(crate) fn serve(root: PathBuf, env: Vec<(OsString, OsString)>, refusal: Refusal) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listen on a local port");
         let address = listener.local_addr().expect("the listener has an address");
         let stopping = Arc::new(AtomicBool::new(false));
         let server = Server {
             project_root: root.parent().expect("remote has a folder").to_path_buf(),
             env,
-            refusal: match access {
-                Access::Credentials { username, password } => Refusal::UnlessAuthorized(format!(
-                    "Basic {}",
-                    base64(format!("{username}:{password}").as_bytes())
-                )),
-                Access::Refused { status } => Refusal::Always(status.to_owned()),
-            },
+            refusal,
         };
         let stop = stopping.clone();
         std::thread::spawn(move || {
@@ -55,21 +39,21 @@ impl HttpRemote {
                 }
             }
         });
-        let repository = root
+        let folder_name = root
             .file_name()
             .expect("remote has a name")
             .to_string_lossy()
             .into_owned();
         Self {
             address,
-            repository,
+            folder_name,
             stopping,
         }
     }
 
     /// The URL to clone from.
     pub fn url(&self) -> String {
-        format!("http://{}/{}", self.address, self.repository)
+        format!("http://{}/{}", self.address, self.folder_name)
     }
 }
 
@@ -87,11 +71,20 @@ struct Server {
     refusal: Refusal,
 }
 
-enum Refusal {
+/// What the server turns away.
+pub(crate) enum Refusal {
     /// Requests that do not carry this `Authorization` header are asked for credentials.
     UnlessAuthorized(String),
-    /// Every request gets this status.
+    /// Every request gets this status, such as `403 Forbidden`.
     Always(String),
+}
+
+impl Refusal {
+    /// Turns away whoever does not give this `username` and `password`.
+    pub(crate) fn unless_authorized(username: &str, password: &str) -> Self {
+        let credentials = base64(format!("{username}:{password}").as_bytes());
+        Self::UnlessAuthorized(format!("Basic {credentials}"))
+    }
 }
 
 /// One request, as far as the server needs it.

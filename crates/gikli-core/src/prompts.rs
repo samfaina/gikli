@@ -28,6 +28,16 @@ const ADDRESS_VARIABLE: &str = "GIKLI_ASKPASS_ADDRESS";
 /// What the askpass program shows the core to be let in.
 const TOKEN_VARIABLE: &str = "GIKLI_ASKPASS_TOKEN";
 
+/// Variables that cross into WSL, and back to the askpass program, a Windows program, that git
+/// inside WSL starts: `/p` translates a path.
+pub(crate) const WSL_SHARED_VARIABLES: &[&str] = &[
+    "GIT_ASKPASS/p",
+    "SSH_ASKPASS/p",
+    "SSH_ASKPASS_REQUIRE",
+    "GIKLI_ASKPASS_ADDRESS",
+    "GIKLI_ASKPASS_TOKEN",
+];
+
 /// How long a connection gets to say what it wants.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// More than any question takes.
@@ -139,12 +149,10 @@ impl PromptBridge {
     pub fn expose_to(&self, host: &mut HostEnvironment) {
         host.set("GIT_ASKPASS", &self.askpass);
         host.set("SSH_ASKPASS", &self.askpass);
-        // ssh asks the askpass program even though it could try a terminal.
+        // ssh asks the askpass program without looking for a display. OpenSSH before 8.4 ignores
+        // this, and asks it only when `DISPLAY` is set. gikli does not make one up for it, as the
+        // variable would reach every program git starts, and such an ssh fails with a message.
         host.set("SSH_ASKPASS_REQUIRE", "force");
-        // OpenSSH before 8.4 knows no SSH_ASKPASS_REQUIRE, and asks only when this is set.
-        if host.get("DISPLAY").is_none() {
-            host.set("DISPLAY", "gikli:0");
-        }
         host.set(ADDRESS_VARIABLE, self.address.to_string());
         host.set(TOKEN_VARIABLE, &self.token);
     }
