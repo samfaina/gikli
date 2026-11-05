@@ -2,10 +2,12 @@
 //! next, and offers what it can do about it. git's raw output stays in the operation log.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use gikli_acceptance::{Sandbox, TestRepository, WslRepository, file_url};
+use gikli_acceptance::{
+    Sandbox, TestRepository, WslRepository, as_git_writes_it, file_url, speaking,
+};
 use gikli_core::{ExplainedMessage, Explanation, Failure, FailureAction, NextStep, Repository};
 
 /// A bare remote holding one commit, pushed from a working repository.
@@ -51,7 +53,12 @@ fn a_failing_hook_shows_its_output_and_leaves_gits_output_in_the_operation_log()
         .find(|entry| entry.args.contains(&"clone".to_owned()))
         .expect("the clone is logged");
     assert_eq!(clone.exit_code, Some(3));
-    assert!(clone.stderr.contains("Cloning into"), "{}", clone.stderr);
+    assert!(clone.stderr.contains("% ("), "{}", clone.stderr);
+    assert!(
+        clone.stderr.contains("Run the formatter"),
+        "{}",
+        clone.stderr
+    );
     assert_eq!(
         sandbox
             .existing_repository(&target)
@@ -109,11 +116,6 @@ fn git_checks_ownership(repository: &TestRepository) -> bool {
     refused
 }
 
-/// `root` as git writes it in its messages.
-fn as_git_writes_it(root: &Path) -> String {
-    root.to_string_lossy().replace('\\', "/")
-}
-
 #[test]
 fn dubious_ownership_is_explained_and_the_folder_is_trusted_only_when_the_user_takes_the_offer() {
     let sandbox = Sandbox::new();
@@ -123,9 +125,7 @@ fn dubious_ownership_is_explained_and_the_folder_is_trusted_only_when_the_user_t
     if !git_checks_ownership(&repository) {
         return;
     }
-    let root = Repository {
-        root: repository.toplevel_by_git(),
-    };
+    let root = repository_of(&repository);
     let folder = as_git_writes_it(&root.root);
     let gikli = sandbox.gikli_in(sandbox.host_where_repositories_belong_to_someone_else());
 
@@ -300,6 +300,54 @@ fn removing_the_lock_is_not_offered_while_another_git_operation_runs_in_the_repo
     assert_eq!(repository.status_by_git(), ["?? new.txt"]);
 }
 
+/// A git sent to the repository from elsewhere runs there just the same.
+#[test]
+fn removing_the_lock_is_not_offered_while_a_git_from_another_folder_works_on_the_repository() {
+    let sandbox = Sandbox::new();
+    let (repository, lock) = repository_with_a_stale_lock(&sandbox, "app");
+    let elsewhere = sandbox.folder("elsewhere");
+    let root = repository_of(&repository);
+    let gikli = sandbox.gikli();
+    let new_file = ["new.txt".to_owned()];
+    let locked = Err(Failure::Explained {
+        explanation: Explanation {
+            message: ExplainedMessage::IndexLocked { lock: lock.clone() },
+            next_step: NextStep::WaitForOtherGitOperation,
+            actions: vec![],
+        },
+    });
+
+    let with_option = repository.running_git_with_option_from(&elsewhere);
+    assert_eq!(gikli.add_files(&root, &new_file), locked);
+    drop(with_option);
+
+    let with_variable = repository.running_git_with_variable_from(&elsewhere);
+    assert_eq!(gikli.add_files(&root, &new_file), locked);
+    drop(with_variable);
+
+    assert!(lock.exists());
+    assert_eq!(repository.status_by_git(), ["?? new.txt"]);
+}
+
+/// git recommends the command only when it refuses a repository for its owner.
+#[test]
+fn a_failure_that_only_mentions_the_setting_is_not_taken_for_dubious_ownership() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    let root = repository_of(&repository);
+    let gikli = sandbox.gikli();
+
+    let result = gikli.add_files(&root, &["safe.directory x".to_owned()]);
+
+    assert_eq!(
+        result,
+        Err(Failure::FilesNotAdded {
+            folder: root.root.clone()
+        })
+    );
+    assert!(!repository.git_succeeds(&["config", "--global", "--get-all", "safe.directory"]));
+}
+
 #[test]
 fn a_git_operation_in_another_repository_does_not_hold_back_the_offer() {
     let sandbox = Sandbox::new();
@@ -374,21 +422,27 @@ fn long_paths_on_windows_are_reported_recommending_core_longpaths_without_settin
 /// What gikli says does not depend on the language git speaks. git translates its messages only
 /// where its translations are installed, as on Linux with the latest git in CI.
 #[test]
-fn every_failure_is_classified_the_same_when_git_speaks_another_language() {
+fn a_stale_lock_and_a_failing_hook_are_classified_the_same_when_git_speaks_another_language() {
     let sandbox = Sandbox::new();
     let (locked, lock) = repository_with_a_stale_lock(&sandbox, "locked");
-    let gikli = sandbox.gikli_in(sandbox.host_speaking("de"));
+    let gikli = sandbox.gikli_in(speaking(sandbox.host_environment(), "de"));
 
     let result = gikli.add_files(&repository_of(&locked), &["new.txt".to_owned()]);
 
     let Err(Failure::Explained { explanation }) = result else {
         panic!("got {result:?}");
     };
-    assert_eq!(explanation.message, ExplainedMessage::IndexLocked { lock });
+    assert_eq!(
+        explanation.message,
+        ExplainedMessage::IndexLocked { lock: lock.clone() }
+    );
+    assert!(lock.exists());
+    assert_eq!(locked.status_by_git(), ["?? new.txt"]);
 
     let remote = remote_with_a_commit(&sandbox);
     sandbox.hook("post-checkout", "echo 'Prüfung fehlgeschlagen'\nexit 1");
-    let result = gikli.clone_repository(&file_url(remote.root()), &sandbox.root().join("clone"));
+    let target = sandbox.root().join("clone");
+    let result = gikli.clone_repository(&file_url(remote.root()), &target);
 
     assert_eq!(
         result,
@@ -403,17 +457,28 @@ fn every_failure_is_classified_the_same_when_git_speaks_another_language() {
             }
         })
     );
+    assert_eq!(
+        sandbox
+            .existing_repository(&target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
+}
 
+#[test]
+fn dubious_ownership_is_classified_the_same_when_git_speaks_another_language() {
+    let sandbox = Sandbox::new();
     let shared = sandbox.repository("shared");
     if !git_checks_ownership(&shared) {
         return;
     }
-    let mut host = sandbox.host_where_repositories_belong_to_someone_else();
-    for (name, value) in [("LANGUAGE", "de"), ("LC_ALL", "C.UTF-8")] {
-        host.set(name, value);
-    }
     let root = repository_of(&shared);
-    let result = sandbox.gikli_in(host).read_changes(&root);
+    let gikli = sandbox.gikli_in(speaking(
+        sandbox.host_where_repositories_belong_to_someone_else(),
+        "de",
+    ));
+
+    let result = gikli.read_changes(&root);
 
     let Err(Failure::Explained { explanation }) = result else {
         panic!("got {result:?}");
@@ -424,8 +489,33 @@ fn every_failure_is_classified_the_same_when_git_speaks_another_language() {
             folder: as_git_writes_it(&root.root)
         }
     );
-    assert_eq!(shared.status_by_git(), Vec::<String>::new());
-    assert!(locked.git_succeeds(&["rev-parse", "HEAD"]));
+    assert!(
+        !shared.git_succeeds(&["config", "--global", "--get-all", "safe.directory"]),
+        "explaining trusts nothing"
+    );
+}
+
+/// The one classification that reads a sentence: the text of a system error, which on Windows does
+/// not come from git's translations.
+#[cfg(windows)]
+#[test]
+fn long_paths_are_reported_the_same_when_git_speaks_another_language() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_long_path(&sandbox);
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli_in(speaking(sandbox.host_environment(), "de"));
+
+    let result = gikli.clone_repository(&file_url(remote.root()), &target);
+
+    let Err(Failure::Explained { explanation }) = result else {
+        panic!("got {result:?}");
+    };
+    assert_eq!(explanation.message, ExplainedMessage::LongPaths);
+    assert!(
+        !sandbox
+            .existing_repository(&target)
+            .git_succeeds(&["config", "core.longpaths"])
+    );
 }
 
 #[test]

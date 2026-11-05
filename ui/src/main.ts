@@ -960,7 +960,10 @@ function describeError(error: unknown): string {
 function describeFailure(failure: Failure): string {
   switch (failure.kind) {
     case "explained":
-      return `${describeExplainedMessage(failure.explanation.message)} ${t(NEXT_STEPS[failure.explanation.nextStep])}`;
+      return t("failureExplained", {
+        message: describeExplainedMessage(failure.explanation.message),
+        nextStep: t(NEXT_STEPS[failure.explanation.nextStep]),
+      });
     case "gitNotFound":
       return t("failureGitNotFound");
     case "gitTooOld":

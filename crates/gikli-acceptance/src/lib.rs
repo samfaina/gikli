@@ -90,7 +90,7 @@ impl Sandbox {
         wait_until_runnable(&path);
         self.configure(&format!(
             "[core]\n\thooksPath = {}\n",
-            folder.to_string_lossy().replace('\\', "/")
+            as_git_writes_it(&folder)
         ));
     }
 
@@ -228,15 +228,6 @@ impl Sandbox {
         dunce::canonicalize(&executable).expect("canonicalize git's path")
     }
 
-    /// The sandbox's environment, where git speaks `language` as far as its translations are
-    /// installed. `LANGUAGE` is what selects them, in any locale but the plain C one.
-    pub fn host_speaking(&self, language: &str) -> HostEnvironment {
-        let mut host = self.host_environment();
-        host.set("LANGUAGE", language);
-        host.set("LC_ALL", "C.UTF-8");
-        host
-    }
-
     /// The sandbox's environment, where the real git takes every repository for someone else's:
     /// the variable git's own tests use, as a test cannot own a folder as another user.
     pub fn host_where_repositories_belong_to_someone_else(&self) -> HostEnvironment {
@@ -322,8 +313,21 @@ macro_rules! fake_git {
 /// A `file://` URL for `folder`, so git clones through its transport, as from a server, instead of
 /// copying the folder.
 pub fn file_url(folder: &Path) -> String {
-    let path = folder.to_string_lossy().replace('\\', "/");
+    let path = as_git_writes_it(folder);
     format!("file:///{}", path.trim_start_matches('/'))
+}
+
+/// `path` as git writes it in its messages and reads it in its configuration.
+pub fn as_git_writes_it(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// `host`, where git speaks `language` as far as its translations are installed. `LANGUAGE` is what
+/// selects them, in any locale but the plain C one.
+pub fn speaking(mut host: HostEnvironment, language: &str) -> HostEnvironment {
+    host.set("LANGUAGE", language);
+    host.set("LC_ALL", "C.UTF-8");
+    host
 }
 
 /// A stand-in git, or `wsl.exe`, installed by the sandbox.
@@ -392,9 +396,31 @@ impl TestRepository {
     /// A plain git running in the repository until the result is dropped, as a git the user
     /// started in a terminal. It waits for input it never gets.
     pub fn running_git(&self) -> RunningGit {
-        let child = Command::new("git")
+        self.spawn_waiting_git(Command::new("git").current_dir(&self.root))
+    }
+
+    /// A plain git that works on this repository from the unrelated `folder`, until the result is
+    /// dropped, sent here by the option `--git-dir=<path>`.
+    pub fn running_git_with_option_from(&self, folder: &Path) -> RunningGit {
+        let option = format!("--git-dir={}", self.root.join(".git").display());
+        self.spawn_waiting_git(Command::new("git").arg(option).current_dir(folder))
+    }
+
+    /// A plain git that works on this repository from the unrelated `folder`, until the result is
+    /// dropped, sent here by the variable `GIT_DIR`.
+    pub fn running_git_with_variable_from(&self, folder: &Path) -> RunningGit {
+        let git_dir = self.root.join(".git");
+        self.spawn_waiting_git(
+            Command::new("git")
+                .env("GIT_DIR", git_dir)
+                .current_dir(folder),
+        )
+    }
+
+    /// Starts `git` waiting for input it never gets.
+    fn spawn_waiting_git(&self, git: &mut Command) -> RunningGit {
+        let child = git
             .args(["cat-file", "--batch"])
-            .current_dir(&self.root)
             .envs(self.env.iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())

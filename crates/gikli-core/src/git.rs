@@ -339,32 +339,27 @@ impl Invocation {
         String::from_utf8_lossy(&self.stdout).into_owned()
     }
 
-    /// This run, without the first line of its error output.
-    pub fn after_first_line(&self) -> Self {
-        let first_line_end = self.stderr.iter().position(|byte| *byte == b'\n');
-        Self {
-            success: self.success,
-            stdout: self.stdout.clone(),
-            stderr: first_line_end.map_or(Vec::new(), |end| self.stderr[end + 1..].to_vec()),
-            failed_hook: self.failed_hook.clone(),
-        }
-    }
-
-    /// What the hook of this run wrote: git sends a hook's output to its own error output. Only
-    /// the progress git reports around the hook is left out.
-    pub fn hook_output(&self) -> String {
+    /// This run of `git clone`, with only what a hook wrote in its error output, as far as that
+    /// can be told: without the line that names the folder, the first one, in the user's language,
+    /// and without the progress of git and of the remote.
+    pub fn without_clone_reports(&self) -> Self {
         let stderr = String::from_utf8_lossy(&self.stderr);
-        let mut output = String::new();
-        for line in stderr.split_inclusive('\n') {
+        let mut kept = String::new();
+        for line in stderr.split_inclusive('\n').skip(1) {
             let text = line.trim_end_matches(['\r', '\n']);
             // git redraws a progress line after a carriage return.
             let last_drawn = text.rsplit('\r').next().unwrap_or(text);
             if !last_drawn.starts_with("remote: ") && Progress::parse(last_drawn).is_none() {
-                output.push_str(last_drawn);
-                output.push('\n');
+                kept.push_str(last_drawn);
+                kept.push('\n');
             }
         }
-        output
+        Self {
+            success: self.success,
+            stdout: self.stdout.clone(),
+            stderr: kept.into_bytes(),
+            failed_hook: self.failed_hook.clone(),
+        }
     }
 }
 
@@ -458,7 +453,10 @@ fn detach_from_terminal(command: &mut Command) {
     }
 }
 
-/// On Windows, git has no terminal to reach: the console it gets is hidden.
+/// On Windows, `/dev/tty` fails by itself in a hook, as no terminal is attached. A native program
+/// that reads the console directly (`CONIN$`) is the exception: the shell that runs the hook gives
+/// it a hidden console, whatever flags git starts with, and it waits there until it is killed.
+/// gikli keeps answering meanwhile, and cannot tell it from a hook that takes long.
 #[cfg(not(unix))]
 fn detach_from_terminal(_command: &mut Command) {}
 

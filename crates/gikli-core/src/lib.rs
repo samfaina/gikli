@@ -434,7 +434,10 @@ impl Gikli {
                     )
                     .map_err(git_failed_to_start)?;
                 if !invocation.success {
-                    return Err(explained(&runner, &repository.root, &invocation).unwrap_or(
+                    return Err(failure_of(
+                        &runner,
+                        &repository.root,
+                        &invocation,
                         Failure::FolderNotTrusted {
                             folder: folder.clone(),
                         },
@@ -443,18 +446,7 @@ impl Gikli {
                 Ok(())
             }
             FailureAction::RemoveIndexLock { repository } => {
-                let runner = self.runner(&repository.root)?;
-                let Some(lock) = explainer::index_lock(&runner, &repository.root) else {
-                    return Ok(());
-                };
-                let explanation = explainer::index_locked(&runner, repository, lock.clone());
-                if explanation.actions.is_empty() {
-                    return Err(Failure::Explained { explanation });
-                }
-                std::fs::remove_file(&lock).map_err(|error| Failure::IndexLockNotRemoved {
-                    lock,
-                    message: error.to_string(),
-                })
+                explainer::remove_stale_index_lock(&self.runner(&repository.root)?, repository)
             }
         }
     }
@@ -606,8 +598,10 @@ impl Gikli {
             .run(&folder, &["init"])
             .map_err(git_failed_to_start)?;
         if !invocation.success {
-            return Err(explained(&runner, &folder, &invocation)
-                .unwrap_or(Failure::RepositoryNotCreated { folder }));
+            let fallback = Failure::RepositoryNotCreated {
+                folder: folder.clone(),
+            };
+            return Err(failure_of(&runner, &folder, &invocation, fallback));
         }
         Ok(Repository { root: folder })
     }
@@ -649,15 +643,15 @@ impl Gikli {
             })
             .map_err(git_failed_to_start)?;
         if !invocation.success {
-            // git starts the output of a clone by naming the folder, in the user's language.
-            return Err(
-                explained(&runner, parent, &invocation.after_first_line()).unwrap_or(
-                    Failure::CloneFailed {
-                        url: url.to_owned(),
-                        folder: target,
-                    },
-                ),
-            );
+            return Err(failure_of(
+                &runner,
+                parent,
+                &invocation.without_clone_reports(),
+                Failure::CloneFailed {
+                    url: url.to_owned(),
+                    folder: target.clone(),
+                },
+            ));
         }
         self.open_project(&target)
     }
@@ -692,7 +686,10 @@ impl Gikli {
             .run(&repository.root, &args)
             .map_err(git_failed_to_start)?;
         if !invocation.success {
-            return Err(explained(&runner, &repository.root, &invocation).unwrap_or(
+            return Err(failure_of(
+                &runner,
+                &repository.root,
+                &invocation,
                 Failure::FilesNotAdded {
                     folder: repository.root.clone(),
                 },
@@ -712,7 +709,10 @@ impl Gikli {
             )
             .map_err(git_failed_to_start)?;
         if !invocation.success {
-            return Err(explained(&runner, &repository.root, &invocation).unwrap_or(
+            return Err(failure_of(
+                &runner,
+                &repository.root,
+                &invocation,
                 Failure::ChangesUnreadable {
                     folder: repository.root.clone(),
                 },
@@ -916,10 +916,18 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The failure of `invocation`, which failed in `folder`, when the failure explainer knows it.
-fn explained(runner: &GitRunner, folder: &Path, invocation: &Invocation) -> Option<Failure> {
-    explainer::explain(runner, folder, invocation)
-        .map(|explanation| Failure::Explained { explanation })
+/// The failure of `invocation`, which failed in `folder`: what the failure explainer says about
+/// it, or `otherwise` when it does not know this failure.
+fn failure_of(
+    runner: &GitRunner,
+    folder: &Path,
+    invocation: &Invocation,
+    otherwise: Failure,
+) -> Failure {
+    match explainer::explain(runner, folder, invocation) {
+        Some(explanation) => Failure::Explained { explanation },
+        None => otherwise,
+    }
 }
 
 fn git_failed_to_start(error: std::io::Error) -> Failure {

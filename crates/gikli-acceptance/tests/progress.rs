@@ -2,10 +2,10 @@
 //! meanwhile. Clone is the first of them.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use gikli_acceptance::{Sandbox, TestRepository, file_url};
+use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, file_url};
 use gikli_core::{Event, Failure, LongOperation, Progress, Repository, RunningOperation};
 
 /// How long the tests wait for the clone to start before failing. Generous, for slow CI machines.
@@ -98,20 +98,19 @@ const HOLDING: &str = "Übertragung wird angehalten";
 fn hold_clones(sandbox: &Sandbox) -> PathBuf {
     let release = sandbox.root().join("release-clone");
     let hook = sandbox.root().join("hold-clone.sh");
-    let forward = |path: &Path| path.to_string_lossy().replace('\\', "/");
     fs::write(
         &hook,
         format!(
             "printf '{HOLDING}:  50%% (1/2)\\r' >&2\n\
              while [ ! -f '{}' ]; do sleep 0.05; done\nexec \"$@\"\n",
-            forward(&release)
+            as_git_writes_it(&release)
         ),
     )
     .expect("write hook");
     // Read by git's upload-pack only from protected configuration, such as the global one.
     sandbox.configure(&format!(
         "[uploadpack]\n\tpackObjectsHook = sh '{}'\n",
-        forward(&hook)
+        as_git_writes_it(&hook)
     ));
     release
 }

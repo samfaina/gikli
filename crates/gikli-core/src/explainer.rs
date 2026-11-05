@@ -3,14 +3,15 @@
 //!
 //! Classification never reads git's translated sentences. It relies on what stays the same in
 //! every language: what git records in its trace of the run, the file names and the commands it
-//! quotes, and the state of the repository.
+//! quotes, and the state of the repository. ADR-0001 pins what gikli parses, but git's error output
+//! has no format to pin, which is why only these fixed parts of it count.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, Invocation};
-use crate::{Repository, canonicalize, processes};
+use crate::{Failure, Repository, canonicalize, processes};
 
 /// A failure explained in plain words. The UI words the message and the next step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -84,7 +85,7 @@ pub(crate) fn explain(
         return Some(Explanation {
             message: ExplainedMessage::HookFailed {
                 hook: hook.clone(),
-                output: invocation.hook_output(),
+                output: String::from_utf8_lossy(&invocation.stderr).into_owned(),
             },
             next_step: NextStep::FixHook,
             actions: vec![],
@@ -108,9 +109,9 @@ pub(crate) fn explain(
     }
     // git names the file in every language. It may be gone by now, with the operation that held it.
     if stderr.contains(INDEX_LOCK)
-        && let Some(lock) = index_lock(runner, folder)
+        && let Some(lock) = existing_index_lock(runner, folder)
     {
-        return Some(index_locked(runner, &repository, lock));
+        return Some(explain_index_lock(runner, &repository, lock));
     }
     if cfg!(windows) && runner.runs_natively() && stderr.contains(PATH_TOO_LONG) {
         return Some(Explanation {
@@ -122,6 +123,25 @@ pub(crate) fn explain(
     None
 }
 
+/// Removes the lock of the index of `repository`, unless a git operation may have started running
+/// there since the user was offered this. A lock already gone is fine.
+pub(crate) fn remove_stale_index_lock(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<(), Failure> {
+    let Some(lock) = existing_index_lock(runner, &repository.root) else {
+        return Ok(());
+    };
+    let explanation = explain_index_lock(runner, repository, lock.clone());
+    if explanation.next_step != NextStep::RemoveIndexLock {
+        return Err(Failure::Explained { explanation });
+    }
+    std::fs::remove_file(&lock).map_err(|error| Failure::IndexLockNotRemoved {
+        lock,
+        message: error.to_string(),
+    })
+}
+
 /// How git for Windows reports a path that is too long. It is the text of the system's error,
 /// which comes from Windows' C library in English, not from git's translations.
 const PATH_TOO_LONG: &str = "Filename too long";
@@ -131,7 +151,7 @@ const INDEX_LOCK: &str = "index.lock";
 
 /// The lock of the index of the repository `folder` is in, when there is one. Each linked worktree
 /// has an index, and a lock, of its own.
-pub(crate) fn index_lock(runner: &GitRunner, folder: &Path) -> Option<PathBuf> {
+fn existing_index_lock(runner: &GitRunner, folder: &Path) -> Option<PathBuf> {
     let git_dir = runner.git_dir(folder).ok().flatten()?;
     let lock = canonicalize(&git_dir).ok()?.join(INDEX_LOCK);
     lock.exists().then_some(lock)
@@ -140,11 +160,7 @@ pub(crate) fn index_lock(runner: &GitRunner, folder: &Path) -> Option<PathBuf> {
 /// The explanation of the index of `repository` being locked by `lock`. Removing the lock is
 /// offered only when gikli can tell that no other git operation is running there: removing the
 /// lock of a running one would corrupt the index.
-pub(crate) fn index_locked(
-    runner: &GitRunner,
-    repository: &Repository,
-    lock: PathBuf,
-) -> Explanation {
+fn explain_index_lock(runner: &GitRunner, repository: &Repository, lock: PathBuf) -> Explanation {
     let git_dir = lock.parent().unwrap_or(&repository.root);
     let stale =
         runner.runs_natively() && !processes::git_runs_in(&[repository.root.as_path(), git_dir]);
@@ -165,12 +181,13 @@ pub(crate) fn index_locked(
     }
 }
 
-/// The folder in the command git recommends when it refuses a repository for its owner, as
-/// `git config --global --add safe.directory <folder>`. Translations keep the command as it is.
+/// The folder in the command git recommends when it refuses a repository for its owner, on a line
+/// of its own. Translations keep the command as it is.
 fn untrusted_folder(stderr: &str) -> Option<String> {
-    let (_, folder) = stderr
-        .lines()
-        .find_map(|line| line.split_once("safe.directory "))?;
+    let folder = stderr.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("git config --global --add safe.directory ")
+    })?;
     Some(without_shell_quotes(folder.trim()))
 }
 

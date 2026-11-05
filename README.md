@@ -12,7 +12,9 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   real git runs in every test except the installation and version checks, which use a
   stand-in (`fake-git`) to play what the real one cannot: another version, a git the user
   installed off the PATH, or `wsl.exe` on a machine without WSL. Tests of WSL itself run on
-  Windows with WSL and a git inside it, and skip elsewhere.
+  Windows with WSL and a git inside it, and skip elsewhere. Tests of dubious ownership play
+  another owner with git's own `GIT_TEST_ASSUME_DIFFERENT_OWNER`, and skip on a git that does
+  not check ownership, such as 2.34.0. Tests of long paths run only on Windows.
 - `src-tauri`: the Tauri 2 shell. Each core command is a Tauri command that forwards to `Gikli`,
   and core events reach the UI as `gikli://event`. The shell adds only `startup_folder`, the
   folder to open at launch.
