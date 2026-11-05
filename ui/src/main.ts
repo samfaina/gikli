@@ -1,13 +1,17 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
 import {
+  addRepository,
   capabilities,
   checkGit,
+  createRepository,
   formatVersion,
+  ignoreRepository,
   isFailure,
   onCoreEvent,
   openProject,
   readChanges,
+  removeRepository,
   setChangeGrouping,
   setGitPath,
   setShowIgnoredFiles,
@@ -16,6 +20,7 @@ import {
   testGit,
   unwatchChanges,
   watchChanges,
+  windowForProject,
   type Capability,
   type Change,
   type ChangeNode,
@@ -30,6 +35,7 @@ import {
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
+const newRepositoryButton = element<HTMLButtonElement>("new-repository");
 const gitStatus = element<HTMLElement>("git-status");
 const projectView = element<HTMLElement>("project");
 const settingsButton = element<HTMLButtonElement>("toggle-settings");
@@ -42,6 +48,8 @@ const gitTestResult = element<HTMLElement>("git-test-result");
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
 openButton.disabled = true;
+newRepositoryButton.textContent = t("newRepository");
+newRepositoryButton.disabled = true;
 gitStatus.textContent = t("checkingGit");
 showMessage(t("noProject"));
 settingsButton.textContent = t("settings");
@@ -93,11 +101,42 @@ saveGitPathButton.addEventListener("click", async () => {
 openButton.addEventListener("click", async () => {
   const folder = await open({ directory: true, title: t("openFolderDialogTitle") });
   if (typeof folder === "string") {
-    await showProject(folder);
+    await openFolder(folder);
+  }
+});
+
+// In a window that shows a Project, a new Repository inside it joins it; any other opens as a Project.
+newRepositoryButton.addEventListener("click", async () => {
+  const folder = await open({ directory: true, title: t("newRepositoryDialogTitle") });
+  if (typeof folder !== "string") {
+    return;
+  }
+  newRepositoryButton.disabled = true;
+  try {
+    const repository = await createRepository(folder);
+    if (shownFolder === null) {
+      await openFolder(repository.root);
+      return;
+    }
+    try {
+      showProject(await addRepository(shownFolder, repository));
+    } catch (error) {
+      if (!isFailure(error) || error.kind !== "repositoryOutsideProject") {
+        throw error;
+      }
+      await openFolder(repository.root);
+    }
+  } catch (error) {
+    report(describeError(error));
+  } finally {
+    newRepositoryButton.disabled = false;
   }
 });
 
 void start();
+
+/** The folder of the Project this window shows, once it shows one. */
+let shownFolder: string | null = null;
 
 /** The Repositories shown, by root, each with the function that reads its changes again. */
 const shownRepositories = new Map<string, { repository: Repository; refresh: () => void }>();
@@ -119,9 +158,10 @@ async function start(): Promise<void> {
   // Even without a usable git, a folder under \\wsl$ opens with the git of its distribution;
   // any other folder reports why it cannot open.
   openButton.disabled = false;
+  newRepositoryButton.disabled = false;
   const folder = await startupFolder();
   if (folder !== null) {
-    await showProject(folder);
+    await openFolder(folder);
   }
 }
 
@@ -151,24 +191,109 @@ function describeGit(git: GitCheck): string {
   }
 }
 
-async function showProject(folder: string): Promise<void> {
+/** Opens `folder` as a Project, in this window or in a window of its own. */
+async function openFolder(folder: string): Promise<void> {
   let project: Project;
   try {
     project = await openProject(folder);
   } catch (error) {
-    showMessage(describeError(error));
+    report(describeError(error));
     return;
   }
-  // The Repositories of the Project shown before are no longer watched.
+  try {
+    const shown = await windowForProject(project.folder);
+    if (shown.kind === "here") {
+      showProject(project);
+    }
+  } catch (error) {
+    report(describeError(error));
+  }
+}
+
+/** Shows `project` in this window: the Repositories gikli offers to add, the ones that broke, the ignored ones, and the changes of the others. */
+function showProject(project: Project): void {
+  shownFolder = project.folder;
+  const name = project.folder.split(/[\\/]/).filter((part) => part !== "").pop() ?? project.folder;
+  document.title = t("windowTitle", { name });
+  // A Repository that leaves the view, removed or ignored, is no longer watched.
+  const shownRoots = new Set(project.repositories.map((repository) => repository.root));
   for (const { repository } of shownRepositories.values()) {
-    void unwatchChanges(repository);
+    if (!shownRoots.has(repository.root)) {
+      void unwatchChanges(repository);
+    }
   }
   shownRepositories.clear();
+  const options = document.createElement("div");
+  void viewOptions().then((view) => options.replaceWith(view));
+  const choose = (choice: typeof addRepository, repository: Repository) => choice(project.folder, repository);
   projectView.replaceChildren(
     line("project-folder", t("projectFolder", { folder: project.folder })),
-    await viewOptions(),
+    ...repositoryChoices("unregistered-repositories", t("unregisteredRepositoriesTitle"), project.unregisteredRepositories, (repository) => [
+      { testId: "add-repository", text: t("addRepository"), act: () => choose(addRepository, repository) },
+      { testId: "ignore-repository", text: t("ignoreRepository"), act: () => choose(ignoreRepository, repository) },
+    ]),
+    ...repositoryChoices("invalid-repositories", t("invalidRepositoriesTitle"), project.invalidRepositories, (repository) => [
+      { testId: "remove-repository", text: t("removeRepository"), act: () => choose(removeRepository, repository) },
+    ]),
+    options,
     ...project.repositories.map(repositoryView),
+    ...repositoryChoices("ignored-repositories", t("ignoredRepositoriesTitle"), project.ignoredRepositories, (repository) => [
+      { testId: "add-repository", text: t("addRepository"), act: () => choose(addRepository, repository) },
+    ]),
   );
+}
+
+/** A button that changes which Repositories the Project holds, and returns the Project after the change. */
+interface RepositoryChoice {
+  testId: string;
+  text: string;
+  act: () => Promise<Project>;
+}
+
+/**
+ * A titled list of `repositories`, each with the buttons `choices` gives it; nothing when the
+ * list is empty. A choice shows the Project again once made.
+ */
+function repositoryChoices(
+  testId: string,
+  title: string,
+  repositories: Repository[],
+  choices: (repository: Repository) => RepositoryChoice[],
+): HTMLElement[] {
+  if (repositories.length === 0) {
+    return [];
+  }
+  const section = document.createElement("section");
+  section.className = "repository-choices";
+  section.dataset.testid = testId;
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  const list = document.createElement("ul");
+  for (const repository of repositories) {
+    const item = document.createElement("li");
+    const root = document.createElement("span");
+    root.textContent = repository.root;
+    const buttons = choices(repository).map((choice) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.testid = choice.testId;
+      button.textContent = choice.text;
+      button.addEventListener("click", async () => {
+        buttons.forEach((other) => (other.disabled = true));
+        try {
+          showProject(await choice.act());
+        } catch (error) {
+          report(describeError(error));
+          buttons.forEach((other) => (other.disabled = false));
+        }
+      });
+      return button;
+    });
+    item.append(root, ...buttons);
+    list.append(item);
+  }
+  section.append(heading, list);
+  return [section];
 }
 
 /** The options of the changes view: grouping by folder and showing ignored files. */
@@ -435,6 +560,18 @@ function describeFailure(failure: Failure): string {
       return t("failureGitFailedToStart", { message: failure.message });
     case "settingsNotSaved":
       return t("failureSettingsNotSaved", { message: failure.message });
+    case "projectNotSaved":
+      return t("failureProjectNotSaved", { message: failure.message });
+    case "folderNotCreated":
+      return t("failureFolderNotCreated", { folder: failure.folder, message: failure.message });
+    case "repositoryExists":
+      return t("failureRepositoryExists", { folder: failure.folder });
+    case "repositoryNotCreated":
+      return t("failureRepositoryNotCreated", { folder: failure.folder });
+    case "repositoryOutsideProject":
+      return t("failureRepositoryOutsideProject", { folder: failure.folder });
+    case "notARepositoryRoot":
+      return t("failureNotARepositoryRoot", { folder: failure.folder });
     case "folderNotFound":
       return t("failureFolderNotFound", { folder: failure.folder });
     case "notInRepository":
@@ -448,6 +585,15 @@ function describeFailure(failure: Failure): string {
 
 function showMessage(text: string): void {
   projectView.replaceChildren(line("message", text));
+}
+
+/** Reports `text`: in place of the start message, or above the Project this window shows. */
+function report(text: string): void {
+  if (shownFolder === null) {
+    showMessage(text);
+  } else {
+    projectView.prepend(line("message", text));
+  }
 }
 
 function line(testId: string, text: string): HTMLParagraphElement {

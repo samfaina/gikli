@@ -47,8 +47,21 @@ export interface Repository {
 
 export interface Project {
   folder: string;
+  /** The registered Repositories that are valid repositories, ordered by root. */
   repositories: Repository[];
+  /** The registered Repositories that are no longer valid repositories (moved, deleted or broken). */
+  invalidRepositories: Repository[];
+  /** Repositories found at or inside the folder that are neither registered nor ignored: offer to add or ignore each. */
+  unregisteredRepositories: Repository[];
+  /** Repositories found at or inside the folder that the user ignored; they can still be added. */
+  ignoredRepositories: Repository[];
 }
+
+/** Where a Project shows: in the window that asked, in the window that already shows it, or in a new window. */
+export type ProjectWindow =
+  | { kind: "here" }
+  | { kind: "open"; window: string }
+  | { kind: "new"; window: string };
 
 export type ChangeStatus =
   | "modified"
@@ -110,6 +123,12 @@ export type Failure =
   | { kind: "gitUnrecognized" }
   | { kind: "gitFailedToStart"; message: string }
   | { kind: "settingsNotSaved"; message: string }
+  | { kind: "projectNotSaved"; message: string }
+  | { kind: "folderNotCreated"; folder: string; message: string }
+  | { kind: "repositoryExists"; folder: string }
+  | { kind: "repositoryNotCreated"; folder: string }
+  | { kind: "repositoryOutsideProject"; folder: string }
+  | { kind: "notARepositoryRoot"; folder: string }
   | { kind: "folderNotFound"; folder: string }
   | { kind: "notInRepository"; folder: string }
   | { kind: "changesUnreadable"; folder: string }
@@ -166,6 +185,34 @@ export function openProject(folder: string): Promise<Project> {
   return invoke("open_project", { folder });
 }
 
+/** Registers `repository`, at or inside the Project's folder, in the Project at `folder`. Rejects with a {@link Failure}. */
+export function addRepository(folder: string, repository: Repository): Promise<Project> {
+  return invoke("add_repository", { folder, repository });
+}
+
+/** Stops offering `repository` to the Project at `folder`. Rejects with a {@link Failure}. */
+export function ignoreRepository(folder: string, repository: Repository): Promise<Project> {
+  return invoke("ignore_repository", { folder, repository });
+}
+
+/** Unregisters `repository`, valid or not, from the Project at `folder`. Rejects with a {@link Failure}. */
+export function removeRepository(folder: string, repository: Repository): Promise<Project> {
+  return invoke("remove_repository", { folder, repository });
+}
+
+/** Creates a new Repository in `folder`, creating the folder if needed. Rejects with a {@link Failure}. */
+export function createRepository(folder: string): Promise<Repository> {
+  return invoke("create_repository", { folder });
+}
+
+/**
+ * Shows the Project at `folder` (a {@link Project.folder}) in its own window: this window when it
+ * shows no other Project, the window that already shows it, brought forward, or a new window.
+ */
+export function windowForProject(folder: string): Promise<ProjectWindow> {
+  return invoke("window_for_project", { folder });
+}
+
 /** Reads the uncommitted changes of `repository`; calling it again refreshes them. Rejects with a {@link Failure}. */
 export function readChanges(repository: Repository): Promise<ChangeSet> {
   return invoke("read_changes", { repository });
@@ -184,7 +231,7 @@ export function unwatchChanges(repository: Repository): Promise<void> {
   return invoke("unwatch_changes", { repository });
 }
 
-/** The folder passed on the command line, if any. */
+/** The folder this window opens at startup: the Project it was created for, or for the first window the folder passed on the command line. */
 export function startupFolder(): Promise<string | null> {
   return invoke("startup_folder");
 }

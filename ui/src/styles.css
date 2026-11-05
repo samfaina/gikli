@@ -261,3 +261,42 @@ button:disabled {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+
+/* Repositories the user can add, ignore or remove. */
+.repository-choices {
+  margin: 12px 0;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.repository-choices h2 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.repository-choices ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repository-choices li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.repository-choices li span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Registered Repositories that are no longer valid repositories. */
+.repository-choices[data-testid="invalid-repositories"] {
+  color: var(--warning-text);
+  background: var(--warning-background);
+}
