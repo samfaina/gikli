@@ -273,19 +273,32 @@ impl Gikli {
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes
-    /// to its files, gikli sends [`Event::FilesChanged`]. Watching it again changes nothing.
+    /// to its working tree or its git directory, gikli sends [`Event::FilesChanged`]. Watching
+    /// it again changes nothing.
     pub fn watch_changes(&self, repository: &Repository) -> Result<(), Failure> {
-        let mut watchers = lock(&self.watchers);
-        if !watchers.contains_key(&repository.root) {
-            let watcher = ChangesWatcher::start(repository.clone(), self.events.clone()).map_err(
-                |error| Failure::ChangesNotWatched {
-                    folder: repository.root.clone(),
-                    message: error.to_string(),
-                },
-            )?;
-            watchers.insert(repository.root.clone(), watcher);
+        if lock(&self.watchers).contains_key(&repository.root) {
+            return Ok(());
         }
+        let git_dir = self
+            .runner(&repository.root)?
+            .git_dir(&repository.root)
+            .map_err(git_failed_to_start)?
+            .map(|git_dir| canonicalize(&git_dir).unwrap_or(git_dir));
+        let watcher = ChangesWatcher::start(repository.clone(), git_dir, self.events.clone())
+            .map_err(|error| Failure::ChangesNotWatched {
+                folder: repository.root.clone(),
+                message: error.to_string(),
+            })?;
+        // Two calls at once may both start a watcher; the first one kept wins.
+        lock(&self.watchers)
+            .entry(repository.root.clone())
+            .or_insert(watcher);
         Ok(())
+    }
+
+    /// Stops watching `repository` for changes made outside gikli, when gikli watches it.
+    pub fn unwatch_changes(&self, repository: &Repository) {
+        lock(&self.watchers).remove(&repository.root);
     }
 
     /// What the git that runs in `repository` can do beyond the minimum gikli needs. A feature

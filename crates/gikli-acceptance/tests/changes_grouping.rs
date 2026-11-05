@@ -112,6 +112,7 @@ fn changes_are_shown_as_a_flat_list_when_the_user_chooses_it_and_stay_so() {
             file("src/ui/view.rs", ChangeStatus::Untracked),
         ]
     );
+    assert_eq!(repository.status_by_git().len(), 4);
 }
 
 /// Ignored files are not changes: a folder that holds nothing else is not highlighted.

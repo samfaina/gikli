@@ -14,6 +14,7 @@ import {
   settings,
   startupFolder,
   testGit,
+  unwatchChanges,
   watchChanges,
   type Capability,
   type Change,
@@ -98,8 +99,8 @@ openButton.addEventListener("click", async () => {
 
 void start();
 
-/** Reads the changes of each shown Repository again, by root. */
-const changeRefreshers = new Map<string, () => void>();
+/** The Repositories shown, by root, each with the function that reads its changes again. */
+const shownRepositories = new Map<string, { repository: Repository; refresh: () => void }>();
 
 void onCoreEvent((event) => {
   switch (event.event) {
@@ -108,7 +109,7 @@ void onCoreEvent((event) => {
       console.debug("git", ...event.payload.args, "→", event.payload.exitCode);
       break;
     case "filesChanged":
-      changeRefreshers.get(event.payload.repository.root)?.();
+      shownRepositories.get(event.payload.repository.root)?.refresh();
       break;
   }
 });
@@ -158,7 +159,11 @@ async function showProject(folder: string): Promise<void> {
     showMessage(describeError(error));
     return;
   }
-  changeRefreshers.clear();
+  // The Repositories of the Project shown before are no longer watched.
+  for (const { repository } of shownRepositories.values()) {
+    void unwatchChanges(repository);
+  }
+  shownRepositories.clear();
   projectView.replaceChildren(
     line("project-folder", t("projectFolder", { folder: project.folder })),
     await viewOptions(),
@@ -172,18 +177,18 @@ async function viewOptions(): Promise<HTMLElement> {
   const options = document.createElement("div");
   options.className = "view-options";
   options.append(
-    checkbox("group-by-folder", t("groupByFolder"), current.changeGrouping === "folder", (checked) =>
+    settingCheckbox("group-by-folder", t("groupByFolder"), current.changeGrouping === "folder", (checked) =>
       setChangeGrouping(checked ? "folder" : "flat"),
     ),
-    checkbox("show-ignored-files", t("showIgnoredFiles"), current.showIgnoredFiles, (checked) =>
+    settingCheckbox("show-ignored-files", t("showIgnoredFiles"), current.showIgnoredFiles, (checked) =>
       setShowIgnoredFiles(checked),
     ),
   );
   return options;
 }
 
-/** A labelled checkbox that saves its setting with `save`, then reads every Repository's changes again. */
-function checkbox(
+/** A labelled checkbox for a setting of the changes view: it saves the setting with `save`, then reads every shown Repository's changes again. */
+function settingCheckbox(
   testId: string,
   text: string,
   checked: boolean,
@@ -198,7 +203,7 @@ function checkbox(
     input.disabled = true;
     try {
       await save(input.checked);
-      for (const refresh of changeRefreshers.values()) {
+      for (const { refresh } of shownRepositories.values()) {
         refresh();
       }
     } catch (error) {
@@ -263,7 +268,7 @@ function repositoryView(repository: Repository): HTMLElement {
       refresh.disabled = false;
     }
   };
-  changeRefreshers.set(repository.root, () => void refreshChanges());
+  shownRepositories.set(repository.root, { repository, refresh: () => void refreshChanges() });
   refresh.addEventListener("click", () => void refreshChanges());
   changes.replaceChildren(line("message", t("readingChanges")));
   void refreshChanges();
@@ -410,6 +415,7 @@ const CONFLICT_LABELS: Record<ConflictKind, StringKey> = {
   deletedByThem: "conflictDeletedByThem",
 };
 
+/** The message for an error from the core: a {@link Failure}, or anything unexpected. */
 function describeError(error: unknown): string {
   return isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) });
 }

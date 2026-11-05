@@ -44,12 +44,15 @@ pub enum ChangeNode {
         /// Whether anything in the folder is a change, not only ignored files. The view
         /// highlights such folders.
         has_changes: bool,
+        /// The subfolders and files in the folder.
         children: Vec<ChangeNode>,
     },
+    /// A changed file.
     File(Change),
 }
 
 impl ChangeSet {
+    /// The `changes` of `repository`, with their rows arranged by `grouping`.
     pub(crate) fn new(
         repository: Repository,
         changes: Vec<Change>,
@@ -119,6 +122,7 @@ impl FolderContents {
 }
 
 impl ChangeNode {
+    /// Whether the row is, or holds, a change other than an ignored file.
     fn has_changes(&self) -> bool {
         match self {
             Self::Folder { has_changes, .. } => *has_changes,
@@ -218,12 +222,19 @@ pub enum ChangeStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConflictKind {
+    /// Both sides changed the file.
     BothModified,
+    /// Both sides added a file at this path.
     BothAdded,
+    /// Both sides deleted the file, which they had renamed differently.
     BothDeleted,
+    /// Only our side added the file.
     AddedByUs,
+    /// Only their side added the file.
     AddedByThem,
+    /// Our side deleted the file and theirs changed it.
     DeletedByUs,
+    /// Our side changed the file and theirs deleted it.
     DeletedByThem,
 }
 
@@ -247,7 +258,10 @@ impl ConflictKind {
 /// `show_ignored` is set.
 ///
 /// Every untracked file is listed on its own, not only the new folder that holds it, whatever
-/// `status.showUntrackedFiles` says. Renames are always detected, whatever `status.renames` says.
+/// `status.showUntrackedFiles` says. Renames are always detected, whatever `status.renames` says:
+/// the view shows every rename with its original path. Copies are detected only when
+/// `status.renames` is `copies`, as git does: looking for them costs more, so it is the user's
+/// choice.
 /// A folder git ignores as a whole is listed once, not file by file: it can hold a whole build.
 pub(crate) fn status_args(show_ignored: bool) -> Vec<&'static str> {
     let mut args = vec![
@@ -283,18 +297,13 @@ pub(crate) fn parse(output: &[u8]) -> Vec<Change> {
             Some((b'2', _)) => {
                 let original_path = records.next();
                 let mut fields = record.splitn(10, |byte| *byte == b' ').skip(1);
-                let status = match fields.next() {
-                    Some([b'C', _]) => ChangeStatus::Copied,
-                    _ => ChangeStatus::Renamed,
-                };
+                let xy = fields.next().unwrap_or_default();
                 let sub = fields.next().unwrap_or_default();
                 fields
                     .nth(6)
                     .zip(original_path)
-                    .map(|(path, original_path)| Change {
-                        original_path: Some(path_from_bytes(original_path)),
-                        ..Change::new(path, status).in_submodule(sub)
-                    })
+                    .and_then(|(path, original_path)| moved(xy, path, original_path))
+                    .map(|change| change.in_submodule(sub))
             }
             // `u XY sub m1 m2 m3 mW h1 h2 h3 path`: a conflicted file.
             Some((b'u', _)) => {
@@ -320,6 +329,27 @@ pub(crate) fn parse(output: &[u8]) -> Vec<Change> {
     }
     changes.sort_by(|left, right| left.path.cmp(&right.path));
     changes
+}
+
+/// The change of a file renamed or copied to `path` from `original_path`, from its `XY` field.
+/// An edit after the move or copy keeps it a rename or a copy. None when the file is no change.
+fn moved(xy: &[u8], path: &[u8], original_path: &[u8]) -> Option<Change> {
+    let [index, worktree] = xy else {
+        return None;
+    };
+    let status = match (index, worktree) {
+        // Renamed and then removed from disk: the file is gone from where the last commit had it.
+        (b'R', b'D') => return Some(Change::new(original_path, ChangeStatus::Deleted)),
+        // Copied and then removed from disk: in neither the last commit nor the working tree,
+        // like a file added and then deleted.
+        (b'C', b'D') => return None,
+        (b'C', _) => ChangeStatus::Copied,
+        _ => ChangeStatus::Renamed,
+    };
+    Some(Change {
+        original_path: Some(path_from_bytes(original_path)),
+        ..Change::new(path, status)
+    })
 }
 
 /// The status of a tracked file from its `XY` field: `X` compares the index with the last commit,

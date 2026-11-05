@@ -24,6 +24,7 @@ export interface Settings {
   gitPath: string | null;
   /** Whether the changes view lists the files git ignores. */
   showIgnoredFiles: boolean;
+  /** How the changes view arranges the changes. */
   changeGrouping: ChangeGrouping;
 }
 
@@ -73,7 +74,9 @@ export type ConflictKind =
 export interface SubmoduleState {
   /** Another commit is checked out than the one the Repository records. */
   commitChanged: boolean;
+  /** Files the submodule tracks have uncommitted changes. */
   hasTrackedChanges: boolean;
+  /** The submodule has new files it does not track. */
   hasUntrackedFiles: boolean;
 }
 
@@ -174,6 +177,11 @@ export function readChanges(repository: Repository): Promise<ChangeSet> {
  */
 export function watchChanges(repository: Repository): Promise<void> {
   return invoke("watch_changes", { repository });
+}
+
+/** Stops watching `repository` for changes made outside gikli. */
+export function unwatchChanges(repository: Repository): Promise<void> {
+  return invoke("unwatch_changes", { repository });
 }
 
 /** The folder passed on the command line, if any. */

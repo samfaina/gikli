@@ -89,6 +89,11 @@ fn watch_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), 
 }
 
 #[tauri::command]
+fn unwatch_changes(gikli: State<'_, Gikli>, repository: Repository) {
+    gikli.unwatch_changes(&repository);
+}
+
+#[tauri::command]
 fn startup_folder(startup: State<'_, StartupFolder>) -> Option<PathBuf> {
     startup.0.clone()
 }
@@ -122,6 +127,7 @@ fn main() {
             open_project,
             read_changes,
             watch_changes,
+            unwatch_changes,
             startup_folder
         ])
         .run(tauri::generate_context!())

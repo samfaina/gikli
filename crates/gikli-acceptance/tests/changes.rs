@@ -267,6 +267,48 @@ fn a_file_moved_with_git_mv_appears_as_renamed_with_its_original_path() {
     );
 }
 
+/// The move is the change that matters: a file edited after it was moved is still a rename.
+#[test]
+fn a_file_moved_with_git_mv_and_then_edited_appears_as_renamed() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("old.md", "one\ntwo\nthree\nfour\n");
+    repository.commit_all("Initial commit");
+    repository.git(&["mv", "old.md", "new.md"]);
+    repository.write("new.md", "one\ntwo\nthree\nfour\nfive\n");
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(change_set.changes, vec![renamed("new.md", "old.md")]);
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--find-renames"]),
+        "RM new.md\0old.md\0"
+    );
+}
+
+/// Moved and then removed from disk: in neither the working tree nor under its new path, the
+/// file is gone from where the last commit had it.
+#[test]
+fn a_file_moved_with_git_mv_and_then_removed_from_disk_appears_deleted_at_its_original_path() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("old.md", "hello\n");
+    repository.commit_all("Initial commit");
+    repository.git(&["mv", "old.md", "new.md"]);
+    repository.delete("new.md");
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        change_set.changes,
+        vec![change("old.md", ChangeStatus::Deleted)]
+    );
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--find-renames"]),
+        "RD new.md\0old.md\0"
+    );
+}
+
 /// git looks for copies only when the user's `status.renames` asks for them, and gikli keeps
 /// that setting.
 #[test]
@@ -372,6 +414,10 @@ fn ignored_files_do_not_appear_by_default() {
         vec![change("TODO.md", ChangeStatus::Untracked)]
     );
     assert!(!sandbox.gikli().settings().show_ignored_files);
+    assert_eq!(
+        repository.git(&["status", "--porcelain", "-z", "--ignored"]),
+        "?? TODO.md\0!! build.log\0!! target/\0"
+    );
 }
 
 /// An ignored folder appears once, as git reports it, not file by file.

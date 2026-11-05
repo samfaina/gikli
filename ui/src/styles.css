@@ -12,11 +12,11 @@
   /* File status colors: each status has its own, in light and in dark. */
   --status-modified: #1f5fbf;
   --status-added: #2a7a2a;
-  --status-deleted: #6e7781;
+  --status-deleted: #9b3d6b;
   --status-renamed: #00788a;
   --status-copied: #7a4fb5;
-  --status-untracked: #a0522d;
-  --status-ignored: #8a8a3a;
+  --status-untracked: #b35c00;
+  --status-ignored: #6f7a2a;
   --status-conflicted: #c4262e;
   --folder-with-changes: #1f5fbf;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -35,11 +35,11 @@
     --accent: #5fb89f;
     --status-modified: #6ea8ff;
     --status-added: #6cc66c;
-    --status-deleted: #9da0a8;
+    --status-deleted: #e07fb0;
     --status-renamed: #4fc6d6;
     --status-copied: #b996ea;
-    --status-untracked: #e0965f;
-    --status-ignored: #b8b86a;
+    --status-untracked: #f0a050;
+    --status-ignored: #b5c06a;
     --status-conflicted: #ff7b72;
     --folder-with-changes: #6ea8ff;
   }

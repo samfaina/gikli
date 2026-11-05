@@ -125,6 +125,37 @@ fn reading_the_changes_is_not_announced_as_a_change() {
     assert_eq!(next_announcement(&events, &watched, SILENCE), None);
 }
 
+/// A linked worktree keeps its index and HEAD in a git directory outside its working tree.
+#[test]
+fn staging_a_file_from_a_terminal_in_a_linked_worktree_is_announced() {
+    let sandbox = Sandbox::new();
+    let main = committed_repository(&sandbox);
+    let worktree = main.linked_worktree("feature");
+    worktree.write("TODO.md", "todo\n");
+    let (gikli, watched, events) = watch(&sandbox, &worktree);
+
+    worktree.git(&["add", "TODO.md"]);
+
+    assert!(next_announcement(&events, &watched, ANNOUNCEMENT_DEADLINE).is_some());
+    let change_set = gikli.read_changes(&watched).expect("read changes");
+    assert_eq!(change_set.changes[0].status, ChangeStatus::Added);
+    assert_eq!(worktree.status_by_git(), vec!["A  TODO.md"]);
+    assert!(worktree.root().join(".git").is_file());
+}
+
+#[test]
+fn a_repository_no_longer_watched_is_not_announced() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    let (gikli, watched, events) = watch(&sandbox, &repository);
+
+    gikli.unwatch_changes(&watched);
+    repository.write("README.md", "hello, world\n");
+
+    assert_eq!(next_announcement(&events, &watched, SILENCE), None);
+    assert_eq!(repository.status_by_git(), vec![" M README.md"]);
+}
+
 #[test]
 fn watching_a_repository_twice_announces_each_change_once() {
     let sandbox = Sandbox::new();
