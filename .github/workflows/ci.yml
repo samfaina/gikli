@@ -129,91 +129,22 @@ jobs:
         run: npm run typecheck
 
       - name: Install tauri-driver
-        if: runner.os != 'macOS'
+        if: runner.os == 'Linux'
         run: cargo install tauri-driver --locked
-
-      - name: Show the WebView2 Runtime and Edge versions
-        if: runner.os == 'Windows'
-        run: |
-          $clients = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients'
-          "WebView2 Runtime: $((Get-ItemProperty "$clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -ErrorAction SilentlyContinue).pv)"
-          "Edge: $((Get-ItemProperty "$clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}" -ErrorAction SilentlyContinue).pv)"
-
-      - name: Smoke test
-        if: runner.os == 'Windows'
-        run: npm run test:e2e
-
-      # Runs only when the smoke test failed: launches the app on its own with remote debugging,
-      # then through msedgedriver --verbose, and prints what each did.
-      - name: Diagnose the smoke test
-        if: failure() && runner.os == 'Windows'
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $temp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
-          $app = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'debug\gikli.exe'
-          "User: $(whoami); session: $([System.Diagnostics.Process]::GetCurrentProcess().SessionId); interactive: $([Environment]::UserInteractive)"
-          "App exists: $(Test-Path $app); elevated: $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
-          function Test-DevTools($label) {
-            Start-Sleep 15
-            $listening = try { (Invoke-RestMethod http://127.0.0.1:9222/json/version).Browser } catch { "nothing: $_" }
-            "$label -> DevTools on 9222: $listening"
-            Get-CimInstance Win32_Process -Filter "Name = 'gikli.exe'" | ForEach-Object { taskkill /T /F /PID $_.ProcessId | Out-Null }
-            Start-Sleep 2
-          }
-          $version = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}').pv
-          "WebView2: $version"
-          foreach ($key in 'HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge\WebView2') {
-            if (Test-Path $key) { "Policy $key"; Get-Item $key | Out-String; Get-ChildItem $key -Recurse | Out-String }
-          }
-          Get-ChildItem Env: | Where-Object Name -match 'WEBVIEW2' | Out-String
-          Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" -ErrorAction SilentlyContinue | ForEach-Object Name
-
-          "--- The app on its own, with remote debugging"
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
-          $process = Start-Process $app -PassThru -RedirectStandardOutput "$temp\gikli.out" -RedirectStandardError "$temp\gikli.err"
-          Start-Sleep 20
-          try { Invoke-RestMethod http://127.0.0.1:9222/json/version | ConvertTo-Json } catch { "DevTools: $_" }
-          "Exited: $($process.HasExited) $($process.ExitCode)"
-          $webviews = Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" | Where-Object CommandLine -match 'webview-exe-name=gikli.exe'
-          $webviews | Where-Object CommandLine -notmatch '--type=' | ForEach-Object { "Browser process $($_.ProcessId): $($_.CommandLine)" }
-          Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -in $webviews.ProcessId | Format-Table LocalAddress, LocalPort, OwningProcess -AutoSize | Out-String
-          if (-not $process.HasExited) { taskkill /T /F /PID $process.Id }
-          "stdout:"; Get-Content "$temp\gikli.out"; "stderr:"; Get-Content "$temp\gikli.err"
-          Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-
-          "--- The app without elevation, with the variable"
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
-          runas /trustlevel:0x20000 "$app"
-          Test-DevTools 'runas /trustlevel:0x20000'
-          Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-
-          "--- The app with the AdditionalBrowserArguments policy"
-          $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
-          New-Item $policy -Force | Out-Null
-          New-ItemProperty $policy -Name 'gikli.exe' -Value '--remote-debugging-port=9222' -Force | Out-Null
-          Start-Process $app | Out-Null
-          Test-DevTools 'policy'
-          Remove-Item $policy -Recurse -Force
-
-          "--- The app through msedgedriver --verbose"
-          $driver = node --input-type=module -e "import { download } from 'edgedriver'; console.log(await download(process.argv[1], process.argv[2]))" $version "$temp\gikli-diagnosis-msedgedriver\$version" | Select-Object -Last 1
-          "Driver: $driver"
-          & $driver --version
-          $log = "$temp\msedgedriver.log"
-          $driverProcess = Start-Process $driver -ArgumentList '--port=9515', '--verbose', "--log-path=$log" -PassThru
-          Start-Sleep 3
-          $body = @{ capabilities = @{ alwaysMatch = @{ browserName = 'webview2'; 'ms:edgeOptions' = @{ binary = $app; webviewOptions = @{} } } } } | ConvertTo-Json -Depth 6
-          try { Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9515/session -Body $body -ContentType 'application/json' -TimeoutSec 120 | ConvertTo-Json -Depth 4 } catch { "Session: $_" }
-          taskkill /T /F /PID $driverProcess.Id
-          Get-Content $log | Select-Object -Last 150
 
       - name: Smoke test
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum npm run test:e2e
 
       - name: Smoke test (skipped)
-        if: runner.os == 'macOS'
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          REASON: >-
+            ${{ runner.os == 'macOS'
+              && 'tauri-driver does not support macOS'
+              || 'on the GitHub-hosted Windows runner, WebView2 ignores the WEBVIEW2_* variables and msedgedriver never finds DevToolsActivePort (issue #54)' }}
         run: |
-          message="tauri-driver does not support macOS, so the end-to-end smoke test did not run on this job."
+          message="The end-to-end smoke test did not run on this job: $REASON."
           echo "::warning title=Smoke test skipped::$message"
           echo "**Smoke test skipped:** $message" >> "$GITHUB_STEP_SUMMARY"
