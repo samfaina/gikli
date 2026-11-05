@@ -29,7 +29,8 @@ export type Failure =
   | { kind: "gitTooOld"; version: GitVersion; minimum: GitVersion }
   | { kind: "gitUnrecognized" }
   | { kind: "gitFailedToStart"; message: string }
-  | { kind: "folderNotFound"; folder: string };
+  | { kind: "folderNotFound"; folder: string }
+  | { kind: "notInRepository"; folder: string };
 
 export interface OperationLogEntry {
   folder: string;

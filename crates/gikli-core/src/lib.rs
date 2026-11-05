@@ -84,8 +84,14 @@ pub enum Failure {
     GitFailedToStart {
         message: String,
     },
+    /// There is no folder at that path.
     #[serde(rename_all = "camelCase")]
     FolderNotFound {
+        folder: PathBuf,
+    },
+    /// git found no repository at or above the folder, so there is no Project to open.
+    #[serde(rename_all = "camelCase")]
+    NotInRepository {
         folder: PathBuf,
     },
 }
@@ -112,8 +118,7 @@ impl Gikli {
             .clone()
     }
 
-    /// Opens `folder` as a Project and detects the Repository it is in. A folder outside any
-    /// repository opens as a Project with no Repositories.
+    /// Opens `folder` as a Project and detects the Repository it is in.
     pub fn open_project(&self, folder: &Path) -> Result<Project, Failure> {
         let runner = self.runner()?;
         let folder = dunce::canonicalize(folder).map_err(|_| Failure::FolderNotFound {
@@ -122,19 +127,22 @@ impl Gikli {
         if !folder.is_dir() {
             return Err(Failure::FolderNotFound { folder });
         }
-        let toplevel = runner.run(
-            &folder,
-            &["rev-parse", "--path-format=absolute", "--show-toplevel"],
-        )?;
-        let mut repositories = Vec::new();
-        if toplevel.success {
-            let root = toplevel.stdout_path();
-            let root = dunce::canonicalize(&root).unwrap_or(root);
-            repositories.push(Repository { root });
+        let toplevel = runner
+            .run(
+                &folder,
+                &["rev-parse", "--path-format=absolute", "--show-toplevel"],
+            )
+            .map_err(|error| Failure::GitFailedToStart {
+                message: error.to_string(),
+            })?;
+        if !toplevel.success {
+            return Err(Failure::NotInRepository { folder });
         }
+        let root = toplevel.stdout_path();
+        let root = dunce::canonicalize(&root).unwrap_or(root);
         Ok(Project {
             folder,
-            repositories,
+            repositories: vec![Repository { root }],
         })
     }
 
@@ -151,14 +159,6 @@ impl Gikli {
             } => Err(Failure::GitTooOld { version, minimum }),
             GitCheck::Unrecognized { .. } => Err(Failure::GitUnrecognized),
             GitCheck::NotFound { .. } => Err(Failure::GitNotFound),
-        }
-    }
-}
-
-impl From<std::io::Error> for Failure {
-    fn from(error: std::io::Error) -> Self {
-        Failure::GitFailedToStart {
-            message: error.to_string(),
         }
     }
 }

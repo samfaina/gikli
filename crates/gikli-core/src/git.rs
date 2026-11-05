@@ -17,8 +17,19 @@ use crate::version::GitVersion;
 use crate::{GitCheck, MINIMUM_GIT_VERSION};
 
 /// Configuration that only changes presentation, pinned on every invocation.
+/// Per-command color settings override `color.ui`, so each one is pinned too.
 const PINNED_CONFIG: &[&str] = &[
     "color.ui=false",
+    "color.advice=false",
+    "color.branch=false",
+    "color.diff=false",
+    "color.grep=false",
+    "color.interactive=false",
+    "color.push=false",
+    "color.remote=false",
+    "color.showBranch=false",
+    "color.status=false",
+    "color.transport=false",
     "core.quotePath=false",
     "diff.noprefix=false",
     "diff.mnemonicPrefix=false",
@@ -28,7 +39,8 @@ const PINNED_CONFIG: &[&str] = &[
 ];
 
 /// Variables that would point git at another repository or index than the one gikli opened.
-/// They leak in when gikli is started from a git hook or a shell that set them.
+/// They leak in when gikli is started from a git hook or a shell that set them. Variables that
+/// carry the user's configuration (`GIT_CONFIG_COUNT` and the like) are kept.
 const REDIRECTING_VARIABLES: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -38,7 +50,6 @@ const REDIRECTING_VARIABLES: &[&str] = &[
     "GIT_COMMON_DIR",
     "GIT_NAMESPACE",
     "GIT_PREFIX",
-    "GIT_CONFIG_PARAMETERS",
 ];
 
 /// Runs the user's git executable and records each run in the operation log.

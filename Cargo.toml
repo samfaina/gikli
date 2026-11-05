@@ -5,7 +5,7 @@ members = ["crates/gikli-core", "crates/gikli-acceptance", "src-tauri"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "UNLICENSED"
+license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]

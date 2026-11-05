@@ -8,9 +8,12 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
 - `crates/gikli-core`: the core. It runs the user's git (ADR-0001) and exposes the application
   interface, `Gikli`: the commands the UI sends and the events it listens to.
 - `crates/gikli-acceptance`: the test harness and the tests. Tests drive `Gikli` and check every
-  outcome a second way with plain git, in throwaway repositories and local bare remotes.
-- `src-tauri`: the Tauri 2 shell. Each Tauri command forwards to one `Gikli` command, and core
-  events reach the UI as `gikli://event`.
+  outcome a second way with plain git, in throwaway repositories and local bare remotes. The
+  real git runs in every test except the installation checks, which put a stand-in git
+  (`fake-git`) on the PATH to play a version the real one cannot.
+- `src-tauri`: the Tauri 2 shell. Each core command is a Tauri command that forwards to `Gikli`,
+  and core events reach the UI as `gikli://event`. The shell adds only `startup_folder`, the
+  folder to open at launch.
 - `ui`: the TypeScript UI. Every string it shows is in `ui/src/strings/en.ts`, and the theme
   follows the operating system's light or dark setting.
 - `e2e`: the end-to-end smoke test, which launches the app through WebDriver.

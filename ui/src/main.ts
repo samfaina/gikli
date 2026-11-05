@@ -4,6 +4,7 @@ import {
   checkGit,
   formatVersion,
   isFailure,
+  onCoreEvent,
   openProject,
   startupFolder,
   type Failure,
@@ -30,6 +31,13 @@ openButton.addEventListener("click", async () => {
 });
 
 void start();
+
+// The operation log view does not exist yet; until then, git commands show in the devtools console.
+void onCoreEvent((event) => {
+  if (event.event === "operationLogged") {
+    console.debug("git", ...event.payload.args, "→", event.payload.exitCode);
+  }
+});
 
 async function start(): Promise<void> {
   const git = await checkGit();
@@ -76,11 +84,9 @@ async function showProject(folder: string): Promise<void> {
   }
   projectView.replaceChildren(
     line("project-folder", t("projectFolder", { folder: project.folder })),
-    ...(project.repositories.length === 0
-      ? [line("not-a-repository", t("notARepository"))]
-      : project.repositories.map((repository) =>
-          line("repository-root", t("repositoryRoot", { root: repository.root })),
-        )),
+    ...project.repositories.map((repository) =>
+      line("repository-root", t("repositoryRoot", { root: repository.root })),
+    ),
   );
 }
 
@@ -99,6 +105,8 @@ function describeFailure(failure: Failure): string {
       return t("failureGitFailedToStart", { message: failure.message });
     case "folderNotFound":
       return t("failureFolderNotFound", { folder: failure.folder });
+    case "notInRepository":
+      return t("failureNotInRepository", { folder: failure.folder });
   }
 }
 

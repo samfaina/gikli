@@ -1,5 +1,8 @@
 //! A stand-in for git that tests put on the PATH to play an installation gikli cannot use.
 //!
+//! This is the one exception to "tests run the real git": the real git cannot play a version
+//! older than 2.34 or one whose version cannot be read. Use it only for those installation checks.
+//!
 //! It answers `--version` with the text in `fake-git-version` next to it, records every
 //! invocation in `fake-git-invocations`, and fails anything else.
 
