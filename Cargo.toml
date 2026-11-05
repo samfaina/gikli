@@ -14,4 +14,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dunce = "1"
 notify = "8"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 tempfile = "3"

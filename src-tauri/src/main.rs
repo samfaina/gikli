@@ -10,9 +10,9 @@
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeGrouping, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment,
-    Notification, NotificationAction, NotificationOutcome, OperationLogEntry, Project,
-    ProjectWindow, Repository, RunningOperation, Settings,
+    CapabilityState, ChangeGrouping, ChangeSet, Failure, FailureAction, Gikli, GitCheck,
+    HostEnvironment, Notification, NotificationAction, NotificationOutcome, OperationLogEntry,
+    Project, ProjectWindow, Repository, RunningOperation, Settings,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -98,6 +98,11 @@ fn act_on_notification(
     action: NotificationAction,
 ) -> Result<NotificationOutcome, Failure> {
     gikli.act_on_notification(id, &action)
+}
+
+#[tauri::command(async)]
+fn take_failure_action(gikli: State<'_, Gikli>, action: FailureAction) -> Result<(), Failure> {
+    gikli.take_failure_action(&action)
 }
 
 #[tauri::command]
@@ -204,6 +209,15 @@ fn read_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<Chang
 }
 
 #[tauri::command(async)]
+fn add_files(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+) -> Result<(), Failure> {
+    gikli.add_files(&repository, &paths)
+}
+
+#[tauri::command(async)]
 fn watch_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
     gikli.watch_changes(&repository)
 }
@@ -263,6 +277,7 @@ fn main() {
             notifications,
             act_on_notification,
             dismiss_notification,
+            take_failure_action,
             capabilities,
             open_project,
             add_repository,
@@ -273,6 +288,7 @@ fn main() {
             running_operations,
             window_for_project,
             read_changes,
+            add_files,
             watch_changes,
             unwatch_changes,
             startup_folder

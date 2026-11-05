@@ -11,6 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::host::HostEnvironment;
 use crate::operation_log::{OperationLog, OperationLogEntry};
@@ -53,6 +54,9 @@ const REDIRECTING_VARIABLES: &[&str] = &[
     "GIT_COMMON_DIR",
     "GIT_NAMESPACE",
     "GIT_PREFIX",
+    // A git started from a hook nests its trace under that hook's, and gikli reads only the
+    // trace of the git it started.
+    "GIT_TRACE2_PARENT_SID",
 ];
 
 /// The git a runner starts.
@@ -137,10 +141,18 @@ pub(crate) struct GitRunner {
 pub(crate) struct Invocation {
     pub success: bool,
     pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    /// The hook that failed in this run, as git's trace of the run names it.
+    pub failed_hook: Option<String>,
 }
 
-/// Variables that cross into WSL, so git there runs without a terminal as it does natively.
-const WSL_SHARED_VARIABLES: &[&str] = &["GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS"];
+/// Variables that cross into WSL, so git there runs without a terminal as it does natively, and
+/// traces each run to a file gikli can read: `/p` translates the path of the file.
+const WSL_SHARED_VARIABLES: &[&str] = &[
+    "GIT_TERMINAL_PROMPT",
+    "GIT_OPTIONAL_LOCKS",
+    "GIT_TRACE2_EVENT/p",
+];
 
 impl GitRunner {
     pub fn new(program: GitProgram, mut host: HostEnvironment, log: Arc<OperationLog>) -> Self {
@@ -163,11 +175,17 @@ impl GitRunner {
         Self { program, host, log }
     }
 
+    /// Whether git runs as a process of this machine, one gikli can see. The git inside WSL does
+    /// not.
+    pub fn runs_natively(&self) -> bool {
+        matches!(self.program, GitProgram::Native(_))
+    }
+
     /// Runs git with `args` in `folder`.
     pub fn run(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
-        let (mut command, entry) = self.command(folder, args);
+        let (mut command, entry, trace) = self.command(folder, args);
         let output = command.output();
-        self.finish(entry, output)
+        self.finish(entry, output, trace)
     }
 
     /// Runs git with `args` in `folder`, as [`Self::run`] does, and passes each line of progress
@@ -179,7 +197,7 @@ impl GitRunner {
         args: &[&str],
         report: &dyn Fn(Progress),
     ) -> std::io::Result<Invocation> {
-        let (mut command, entry) = self.command(folder, args);
+        let (mut command, entry, trace) = self.command(folder, args);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = command.spawn().and_then(|mut child| {
             let mut stdout = child.stdout.take().expect("stdout is piped");
@@ -197,11 +215,12 @@ impl GitRunner {
                 stderr,
             })
         });
-        self.finish(entry, output)
+        self.finish(entry, output, trace)
     }
 
-    /// The command that runs git with `args` in `folder`, and its operation log entry so far.
-    fn command(&self, folder: &Path, args: &[&str]) -> (Command, OperationLogEntry) {
+    /// The command that runs git with `args` in `folder`, its operation log entry so far, and
+    /// where git traces the run.
+    fn command(&self, folder: &Path, args: &[&str]) -> (Command, OperationLogEntry, RunTrace) {
         let mut command_line = vec!["--no-pager"];
         for setting in PINNED_CONFIG {
             command_line.extend(["-c", setting]);
@@ -215,6 +234,9 @@ impl GitRunner {
             .envs(self.host.vars())
             .stdin(Stdio::null());
         hide_console_window(&mut command);
+        detach_from_terminal(&mut command);
+        let trace = RunTrace::new();
+        command.env("GIT_TRACE2_EVENT", &trace.file);
         let entry = OperationLogEntry {
             id: 0,
             folder: folder.to_path_buf(),
@@ -224,7 +246,7 @@ impl GitRunner {
             stderr: String::new(),
             error: None,
         };
-        (command, entry)
+        (command, entry, trace)
     }
 
     /// Records the run described by `entry`, which ended with `output`, or could not start.
@@ -232,6 +254,7 @@ impl GitRunner {
         &self,
         mut entry: OperationLogEntry,
         output: std::io::Result<Output>,
+        trace: RunTrace,
     ) -> std::io::Result<Invocation> {
         let Output {
             status,
@@ -252,6 +275,8 @@ impl GitRunner {
         Ok(Invocation {
             success: status.success(),
             stdout,
+            stderr,
+            failed_hook: trace.failed_hook(),
         })
     }
 
@@ -313,6 +338,79 @@ impl Invocation {
     pub fn stdout_text(&self) -> String {
         String::from_utf8_lossy(&self.stdout).into_owned()
     }
+
+    /// This run of `git clone`, with only what a hook wrote in its error output, as far as that
+    /// can be told: without the line that names the folder, the first one, in the user's language,
+    /// and without the progress of git and of the remote.
+    pub fn without_clone_reports(&self) -> Self {
+        let stderr = String::from_utf8_lossy(&self.stderr);
+        let mut kept = String::new();
+        for line in stderr.split_inclusive('\n').skip(1) {
+            let text = line.trim_end_matches(['\r', '\n']);
+            // git redraws a progress line after a carriage return.
+            let last_drawn = text.rsplit('\r').next().unwrap_or(text);
+            if !last_drawn.starts_with("remote: ") && Progress::parse(last_drawn).is_none() {
+                kept.push_str(last_drawn);
+                kept.push('\n');
+            }
+        }
+        Self {
+            success: self.success,
+            stdout: self.stdout.clone(),
+            stderr: kept.into_bytes(),
+            failed_hook: self.failed_hook.clone(),
+        }
+    }
+}
+
+/// git's trace of one run, in the event format of trace2, in a file of its own. Unlike git's
+/// messages, it is the same in every language, and it is the only place that tells a hook failed:
+/// git itself says nothing about it.
+struct RunTrace {
+    file: PathBuf,
+}
+
+/// Tells apart the trace files of the runs of this process.
+static NEXT_TRACE: AtomicU64 = AtomicU64::new(0);
+
+impl RunTrace {
+    fn new() -> Self {
+        let number = NEXT_TRACE.fetch_add(1, Ordering::Relaxed);
+        let name = format!("gikli-trace-{}-{number}.json", std::process::id());
+        Self {
+            file: std::env::temp_dir().join(name),
+        }
+    }
+
+    /// The hook that ended with an error in the run, as the git gikli started saw it. A git the
+    /// hook started traces to the same file, under a session nested with `/`.
+    fn failed_hook(&self) -> Option<String> {
+        let trace = std::fs::read_to_string(&self.file).ok()?;
+        let events: Vec<serde_json::Value> = trace
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .filter(|event: &serde_json::Value| {
+                event["sid"].as_str().is_some_and(|sid| !sid.contains('/'))
+            })
+            .collect();
+        events.iter().find_map(|started| {
+            let hook = started["hook_name"].as_str()?;
+            let failed = events.iter().any(|ended| {
+                ended["event"] == "child_exit"
+                    && ended["child_id"] == started["child_id"]
+                    && ended["code"] != 0
+            });
+            failed.then(|| hook.to_owned())
+        })
+    }
+}
+
+impl Drop for RunTrace {
+    fn drop(&mut self) {
+        // Absent when git traced nothing; left behind when a process the hook started still
+        // holds it. The temporary folder takes care of it then.
+        let _ = std::fs::remove_file(&self.file);
+    }
 }
 
 #[cfg(unix)]
@@ -337,6 +435,30 @@ fn hide_console_window(command: &mut Command) {
 
 #[cfg(not(windows))]
 fn hide_console_window(_command: &mut Command) {}
+
+/// Runs git in a session of its own, with no controlling terminal. A hook that opens `/dev/tty`
+/// then fails at once, even when gikli was started from a terminal, where it would otherwise wait
+/// for an answer nobody knows it asked for.
+#[cfg(unix)]
+fn detach_from_terminal(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `setsid` is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// On Windows, `/dev/tty` fails by itself in a hook, as no terminal is attached. A native program
+/// that reads the console directly (`CONIN$`) is the exception: the shell that runs the hook gives
+/// it a hidden console, whatever flags git starts with, and it waits there until it is killed.
+/// gikli keeps answering meanwhile, and cannot tell it from a hook that takes long.
+#[cfg(not(unix))]
+fn detach_from_terminal(_command: &mut Command) {}
 
 /// Finds git and checks its version. The order is the `configured` path when there is one, then
 /// git on PATH, then on Windows the git inside WSL.

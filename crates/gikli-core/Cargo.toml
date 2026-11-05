@@ -11,3 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 dunce.workspace = true
 notify.workspace = true
+sysinfo.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

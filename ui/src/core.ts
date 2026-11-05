@@ -119,7 +119,38 @@ export interface ChangeSet {
   nodes: ChangeNode[];
 }
 
+/** What went wrong, in a failure the core explains. */
+export type ExplainedMessage =
+  /** `output` is what the hook wrote. */
+  | { kind: "hookFailed"; hook: string; output: string }
+  /** `folder` is written as git writes it. */
+  | { kind: "dubiousOwnership"; folder: string }
+  | { kind: "indexLocked"; lock: string }
+  | { kind: "longPaths" };
+
+/** What the user can do next, in a failure the core explains. */
+export type NextStep =
+  | "fixHook"
+  | "trustFolder"
+  | "removeIndexLock"
+  | "waitForOtherGitOperation"
+  | "enableLongPaths";
+
+/** Something gikli can do about a failure, once the user has confirmed. */
+export type FailureAction =
+  | { action: "trustFolder"; repository: Repository; folder: string }
+  | { action: "removeIndexLock"; repository: Repository };
+
+/** A failure explained in plain words. git's raw output stays in the operation log. */
+export interface Explanation {
+  message: ExplainedMessage;
+  nextStep: NextStep;
+  /** What gikli can do about it, in the order to offer them. */
+  actions: FailureAction[];
+}
+
 export type Failure =
+  | { kind: "explained"; explanation: Explanation }
   | { kind: "gitNotFound" }
   | { kind: "gitTooOld"; version: GitVersion; minimum: GitVersion }
   | { kind: "gitUnrecognized" }
@@ -133,6 +164,9 @@ export type Failure =
   | { kind: "notARepositoryRoot"; folder: string }
   | { kind: "folderNotFound"; folder: string }
   | { kind: "notInRepository"; folder: string }
+  | { kind: "filesNotAdded"; folder: string }
+  | { kind: "indexLockNotRemoved"; lock: string; message: string }
+  | { kind: "folderNotTrusted"; folder: string }
   | { kind: "changesUnreadable"; folder: string }
   | { kind: "changesNotWatched"; folder: string; message: string }
   | { kind: "cloneFailed"; url: string; folder: string }
@@ -267,6 +301,11 @@ export function dismissNotification(id: number): Promise<void> {
   return invoke("dismiss_notification", { id });
 }
 
+/** Takes one of the actions of an {@link Explanation}, after asking the user to confirm. Rejects with a {@link Failure}. */
+export function takeFailureAction(action: FailureAction): Promise<void> {
+  return invoke("take_failure_action", { action });
+}
+
 /** The long operations running, with their last progress, for a window that opens while they run. */
 export function runningOperations(): Promise<RunningOperation[]> {
   return invoke("running_operations");
@@ -321,6 +360,11 @@ export function windowForProject(folder: string): Promise<ProjectWindow> {
 /** Reads the uncommitted changes of `repository`; calling it again refreshes them. Rejects with a {@link Failure}. */
 export function readChanges(repository: Repository): Promise<ChangeSet> {
   return invoke("read_changes", { repository });
+}
+
+/** Adds `paths`, relative to the Repository root and taken literally, to the git index. Rejects with a {@link Failure}. */
+export function addFiles(repository: Repository, paths: string[]): Promise<void> {
+  return invoke("add_files", { repository, paths });
 }
 
 /**
