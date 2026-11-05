@@ -11,11 +11,13 @@ use std::path::PathBuf;
 
 use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment, Project,
-    Repository, Settings,
+    ProjectWindow, Repository, Settings,
 };
-use tauri::{Emitter, Manager, State};
+use tauri::{
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
+};
 
-/// The folder opened as a Project at startup: the one given on the command line
+/// The folder the first window opens as a Project at startup: the one given on the command line
 /// (`gikli <folder>`), or else the one in `GIKLI_PROJECT_FOLDER`. The variable exists for
 /// launchers that cannot pass arguments, such as WebDriver with WebView2 on Windows.
 struct StartupFolder(Option<PathBuf>);
@@ -79,6 +81,63 @@ fn open_project(gikli: State<'_, Gikli>, folder: PathBuf) -> Result<Project, Fai
 }
 
 #[tauri::command(async)]
+fn add_repository(
+    gikli: State<'_, Gikli>,
+    folder: PathBuf,
+    repository: Repository,
+) -> Result<Project, Failure> {
+    gikli.add_repository(&folder, &repository)
+}
+
+#[tauri::command(async)]
+fn ignore_repository(
+    gikli: State<'_, Gikli>,
+    folder: PathBuf,
+    repository: Repository,
+) -> Result<Project, Failure> {
+    gikli.ignore_repository(&folder, &repository)
+}
+
+#[tauri::command(async)]
+fn create_repository(gikli: State<'_, Gikli>, folder: PathBuf) -> Result<Repository, Failure> {
+    gikli.create_repository(&folder)
+}
+
+/// Shows the Project at `folder` in its own window: the calling window when it shows no other
+/// Project, the window that already shows it, brought to the front, or a new window. Async, as
+/// creating a window from a synchronous command deadlocks on Windows.
+#[tauri::command(async)]
+fn window_for_project(
+    app: AppHandle,
+    window: Window,
+    gikli: State<'_, Gikli>,
+    folder: PathBuf,
+) -> tauri::Result<ProjectWindow> {
+    let shown = gikli.window_for_project(window.label(), &folder);
+    match &shown {
+        ProjectWindow::Here => {}
+        ProjectWindow::Open { window } => {
+            if let Some(open) = app.get_webview_window(window) {
+                open.unminimize()?;
+                open.set_focus()?;
+            }
+        }
+        ProjectWindow::New { window } => {
+            let created = WebviewWindowBuilder::new(&app, window, WebviewUrl::default())
+                .title("gikli")
+                .inner_size(960.0, 640.0)
+                .min_inner_size(480.0, 320.0)
+                .build();
+            if let Err(error) = created {
+                gikli.window_closed(window);
+                return Err(error);
+            }
+        }
+    }
+    Ok(shown)
+}
+
+#[tauri::command(async)]
 fn read_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<ChangeSet, Failure> {
     gikli.read_changes(&repository)
 }
@@ -93,9 +152,19 @@ fn unwatch_changes(gikli: State<'_, Gikli>, repository: Repository) {
     gikli.unwatch_changes(&repository);
 }
 
+/// The folder the calling window opens as a Project when it starts: the one it was created for,
+/// or for the first window the one given at startup.
 #[tauri::command]
-fn startup_folder(startup: State<'_, StartupFolder>) -> Option<PathBuf> {
-    startup.0.clone()
+fn startup_folder(
+    window: Window,
+    gikli: State<'_, Gikli>,
+    startup: State<'_, StartupFolder>,
+) -> Option<PathBuf> {
+    gikli.project_in_window(window.label()).or_else(|| {
+        (window.label() == "main")
+            .then(|| startup.0.clone())
+            .flatten()
+    })
 }
 
 fn main() {
@@ -103,8 +172,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(StartupFolder::from_process())
         .setup(|app| {
-            let settings_file = app.path().app_config_dir()?.join("settings.json");
-            let gikli = Gikli::new(HostEnvironment::current(), settings_file);
+            let gikli = Gikli::new(HostEnvironment::current(), &app.path().app_config_dir()?);
             let events = gikli.subscribe();
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -116,6 +184,11 @@ fn main() {
             app.manage(gikli);
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let WindowEvent::Destroyed = event {
+                window.state::<Gikli>().window_closed(window.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             check_git,
             test_git,
@@ -125,6 +198,10 @@ fn main() {
             set_change_grouping,
             capabilities,
             open_project,
+            add_repository,
+            ignore_repository,
+            create_repository,
+            window_for_project,
             read_changes,
             watch_changes,
             unwatch_changes,

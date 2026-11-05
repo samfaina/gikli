@@ -77,15 +77,15 @@ impl Sandbox {
         self.gikli_in(self.host_environment())
     }
 
-    /// gikli, running in `host`. Every gikli of one sandbox shares the sandbox's settings file,
-    /// as every start of the app shares the user's.
+    /// gikli, running in `host`. Every gikli of one sandbox shares the sandbox's configuration
+    /// folder, as every start of the app shares the user's.
     pub fn gikli_in(&self, host: HostEnvironment) -> Gikli {
-        Gikli::new(host, self.settings_file())
+        Gikli::new(host, &self.config_folder())
     }
 
-    /// Where gikli keeps its application settings in this sandbox.
-    pub fn settings_file(&self) -> PathBuf {
-        self.root.join("gikli-settings").join("settings.json")
+    /// Where gikli keeps its application settings and its Projects in this sandbox.
+    pub fn config_folder(&self) -> PathBuf {
+        self.root.join("gikli-settings")
     }
 
     /// A plain folder that is not inside any repository.
@@ -111,6 +111,11 @@ impl Sandbox {
         let repository = self.repository_handle(self.folder(name));
         repository.git(&["init", "--quiet"]);
         repository
+    }
+
+    /// A handle to the repository at `root`, created by something other than the sandbox.
+    pub fn existing_repository(&self, root: &Path) -> TestRepository {
+        self.repository_handle(root.to_path_buf())
     }
 
     /// A new bare repository that acts as a remote, created with `git init --bare`.

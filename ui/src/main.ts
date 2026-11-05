@@ -1,9 +1,12 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
 import {
+  addRepository,
   capabilities,
   checkGit,
+  createRepository,
   formatVersion,
+  ignoreRepository,
   isFailure,
   onCoreEvent,
   openProject,
@@ -14,8 +17,8 @@ import {
   settings,
   startupFolder,
   testGit,
-  unwatchChanges,
   watchChanges,
+  windowForProject,
   type Capability,
   type Change,
   type ChangeNode,
@@ -30,6 +33,7 @@ import {
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
+const newRepositoryButton = element<HTMLButtonElement>("new-repository");
 const gitStatus = element<HTMLElement>("git-status");
 const projectView = element<HTMLElement>("project");
 const settingsButton = element<HTMLButtonElement>("toggle-settings");
@@ -42,6 +46,8 @@ const gitTestResult = element<HTMLElement>("git-test-result");
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
 openButton.disabled = true;
+newRepositoryButton.textContent = t("newRepository");
+newRepositoryButton.disabled = true;
 gitStatus.textContent = t("checkingGit");
 showMessage(t("noProject"));
 settingsButton.textContent = t("settings");
@@ -93,11 +99,35 @@ saveGitPathButton.addEventListener("click", async () => {
 openButton.addEventListener("click", async () => {
   const folder = await open({ directory: true, title: t("openFolderDialogTitle") });
   if (typeof folder === "string") {
-    await showProject(folder);
+    await openFolder(folder);
+  }
+});
+
+// In a window that shows a Project, the new Repository joins it; otherwise it opens as a Project.
+newRepositoryButton.addEventListener("click", async () => {
+  const folder = await open({ directory: true, title: t("newRepositoryDialogTitle") });
+  if (typeof folder !== "string") {
+    return;
+  }
+  newRepositoryButton.disabled = true;
+  try {
+    const repository = await createRepository(folder);
+    if (shownFolder === null) {
+      await openFolder(repository.root);
+    } else {
+      showProject(await addRepository(shownFolder, repository));
+    }
+  } catch (error) {
+    report(describeError(error));
+  } finally {
+    newRepositoryButton.disabled = false;
   }
 });
 
 void start();
+
+/** The folder of the Project this window shows, once it shows one. */
+let shownFolder: string | null = null;
 
 /** The Repositories shown, by root, each with the function that reads its changes again. */
 const shownRepositories = new Map<string, { repository: Repository; refresh: () => void }>();
@@ -119,9 +149,10 @@ async function start(): Promise<void> {
   // Even without a usable git, a folder under \\wsl$ opens with the git of its distribution;
   // any other folder reports why it cannot open.
   openButton.disabled = false;
+  newRepositoryButton.disabled = false;
   const folder = await startupFolder();
   if (folder !== null) {
-    await showProject(folder);
+    await openFolder(folder);
   }
 }
 
@@ -151,24 +182,83 @@ function describeGit(git: GitCheck): string {
   }
 }
 
-async function showProject(folder: string): Promise<void> {
+/** Opens `folder` as a Project, in this window or in a window of its own. */
+async function openFolder(folder: string): Promise<void> {
   let project: Project;
   try {
     project = await openProject(folder);
   } catch (error) {
-    showMessage(describeError(error));
+    report(describeError(error));
     return;
   }
-  // The Repositories of the Project shown before are no longer watched.
-  for (const { repository } of shownRepositories.values()) {
-    void unwatchChanges(repository);
+  try {
+    const shown = await windowForProject(project.folder);
+    if (shown.kind === "here") {
+      showProject(project);
+    }
+  } catch (error) {
+    report(describeError(error));
   }
+}
+
+/** Shows `project` in this window: the Repositories gikli offers to add, the ones that broke, and the changes of the others. */
+function showProject(project: Project): void {
+  shownFolder = project.folder;
+  const name = project.folder.split(/[\\/]/).filter((part) => part !== "").pop() ?? project.folder;
+  document.title = t("windowTitle", { name });
   shownRepositories.clear();
+  const options = document.createElement("div");
+  void viewOptions().then((view) => options.replaceWith(view));
   projectView.replaceChildren(
     line("project-folder", t("projectFolder", { folder: project.folder })),
-    await viewOptions(),
+    ...(project.unregisteredRepositories.length > 0 ? [unregisteredView(project)] : []),
+    options,
+    ...project.invalidRepositories.map((repository) =>
+      line("invalid-repository", t("invalidRepository", { root: repository.root })),
+    ),
     ...project.repositories.map(repositoryView),
   );
+}
+
+/** The Repositories found in the Project that are neither registered nor ignored, each with buttons to add or ignore it. */
+function unregisteredView(project: Project): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "unregistered-repositories";
+  section.dataset.testid = "unregistered-repositories";
+  const title = document.createElement("h2");
+  title.textContent = t("unregisteredRepositoriesTitle");
+  const list = document.createElement("ul");
+  for (const repository of project.unregisteredRepositories) {
+    const item = document.createElement("li");
+    item.dataset.testid = "unregistered-repository";
+    const text = document.createElement("span");
+    text.textContent = t("unregisteredRepository", { root: repository.root });
+    const add = document.createElement("button");
+    add.type = "button";
+    add.dataset.testid = "add-repository";
+    add.textContent = t("addRepository");
+    const ignore = document.createElement("button");
+    ignore.type = "button";
+    ignore.dataset.testid = "ignore-repository";
+    ignore.textContent = t("ignoreRepository");
+    const decide = async (choice: typeof addRepository): Promise<void> => {
+      add.disabled = true;
+      ignore.disabled = true;
+      try {
+        showProject(await choice(project.folder, repository));
+      } catch (error) {
+        report(describeError(error));
+        add.disabled = false;
+        ignore.disabled = false;
+      }
+    };
+    add.addEventListener("click", () => void decide(addRepository));
+    ignore.addEventListener("click", () => void decide(ignoreRepository));
+    item.append(text, add, ignore);
+    list.append(item);
+  }
+  section.append(title, list);
+  return section;
 }
 
 /** The options of the changes view: grouping by folder and showing ignored files. */
@@ -435,6 +525,16 @@ function describeFailure(failure: Failure): string {
       return t("failureGitFailedToStart", { message: failure.message });
     case "settingsNotSaved":
       return t("failureSettingsNotSaved", { message: failure.message });
+    case "projectNotSaved":
+      return t("failureProjectNotSaved", { message: failure.message });
+    case "folderNotCreated":
+      return t("failureFolderNotCreated", { folder: failure.folder, message: failure.message });
+    case "repositoryExists":
+      return t("failureRepositoryExists", { folder: failure.folder });
+    case "repositoryNotCreated":
+      return t("failureRepositoryNotCreated", { folder: failure.folder });
+    case "notARepositoryRoot":
+      return t("failureNotARepositoryRoot", { folder: failure.folder });
     case "folderNotFound":
       return t("failureFolderNotFound", { folder: failure.folder });
     case "notInRepository":
@@ -448,6 +548,15 @@ function describeFailure(failure: Failure): string {
 
 function showMessage(text: string): void {
   projectView.replaceChildren(line("message", text));
+}
+
+/** Reports `text`: in place of the start message, or above the Project this window shows. */
+function report(text: string): void {
+  if (shownFolder === null) {
+    showMessage(text);
+  } else {
+    projectView.prepend(line("message", text));
+  }
 }
 
 function line(testId: string, text: string): HTMLParagraphElement {

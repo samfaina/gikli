@@ -261,3 +261,44 @@ button:disabled {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+
+/* Repositories found in the Project that the user has not added or ignored yet. */
+.unregistered-repositories {
+  margin: 12px 0;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.unregistered-repositories h2 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.unregistered-repositories ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.unregistered-repositories li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.unregistered-repositories li span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A registered Repository that is no longer a valid repository. */
+.project p[data-testid="invalid-repository"] {
+  color: var(--warning-text);
+  background: var(--warning-background);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
