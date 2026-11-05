@@ -32,11 +32,13 @@ jobs:
           - name: macOS
             os: macos-latest
             git: preinstalled
+          # Pinned: the Tauri prerequisites below use Ubuntu 24.04 package names, and 26.04
+          # renamed webkit2gtk-driver to webkitgtk-webdriver.
           - name: Linux (latest git)
-            os: ubuntu-latest
+            os: ubuntu-24.04
             git: latest
           - name: Linux (minimum git)
-            os: ubuntu-latest
+            os: ubuntu-24.04
             git: minimum
     steps:
       - uses: actions/checkout@v4
@@ -129,6 +131,13 @@ jobs:
       - name: Install tauri-driver
         if: runner.os != 'macOS'
         run: cargo install tauri-driver --locked
+
+      - name: Show the WebView2 Runtime and Edge versions
+        if: runner.os == 'Windows'
+        run: |
+          $clients = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients'
+          "WebView2 Runtime: $((Get-ItemProperty "$clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -ErrorAction SilentlyContinue).pv)"
+          "Edge: $((Get-ItemProperty "$clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}" -ErrorAction SilentlyContinue).pv)"
 
       - name: Smoke test
         if: runner.os == 'Windows'

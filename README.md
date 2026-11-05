@@ -40,7 +40,7 @@ npm test               # all of the above checks
 ```
 
 The smoke test needs `tauri-driver` (`cargo install tauri-driver --locked`). On Windows it
-downloads the Microsoft Edge WebDriver that matches the installed Edge on first run. On Linux it
+downloads the Microsoft Edge WebDriver that matches the installed WebView2 Runtime on first run. On Linux it
 needs `webkit2gtk-driver` (WebKitWebDriver). tauri-driver does not support macOS, so there the
 smoke test does not run.
 
