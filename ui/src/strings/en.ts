@@ -68,7 +68,7 @@ export const en = {
   checkingGit: "Looking for git…",
   failureGitNotFound: "git is not available, so the folder cannot be opened.",
   failureGitTooOld:
-    "git {version} is older than {minimum}, so gikli runs no operations.",
+    "git {version} is older than {minimum}, so gikli runs no operations. Update git to {minimum} or newer.",
   failureGitUnrecognized: "gikli cannot use this git, so the folder cannot be opened.",
   failureGitFailedToStart: "git could not be started: {message}",
   failureSettingsNotSaved: "The settings could not be saved: {message}",
@@ -85,6 +85,28 @@ export const en = {
   failureChangesNotWatched:
     "gikli cannot watch {folder} for changes made outside it ({message}). Use Refresh to see them.",
   failureCloneFailed: "git could not clone {url} into {folder}. The operation log shows git's output.",
+  failureFilesNotAdded: "git could not add the files in {folder}. The operation log shows git's output.",
+  failureIndexLockNotRemoved: "gikli could not remove {lock}: {message}",
+  failureFolderNotTrusted: "git could not add {folder} to your trusted folders. The operation log shows git's output.",
+  failureHookFailed: "The {hook} hook failed and stopped the operation. This is what it wrote:",
+  failureDubiousOwnership: "git refuses to work in {folder} because the folder belongs to another user.",
+  failureIndexLocked:
+    "The git index of this Repository is locked by {lock}. Another git operation is using it, or one stopped without cleaning up.",
+  failureLongPaths: "A path in this Repository is longer than Windows allows by default.",
+  nextStepFixHook:
+    "Fix what the hook reports, then try again. gikli runs hooks without a terminal, so a hook that asks for input has to work without one.",
+  nextStepTrustFolder: "If you know where this folder comes from, you can trust it.",
+  nextStepRemoveIndexLock: "No other git operation is running here, so the lock is stale. You can remove it, then try again.",
+  nextStepWaitForOtherGitOperation:
+    "Wait for the other git operation to finish, then try again. If the lock stays, make sure no git is running in this Repository, including inside WSL, where gikli cannot see it, and delete the file.",
+  nextStepEnableLongPaths:
+    "Turn on long paths with git config --global core.longpaths true, then try again. gikli leaves this setting to you.",
+  trustFolder: "Trust This Folder…",
+  removeIndexLock: "Remove the Lock…",
+  confirmTrustFolder:
+    "Trust {folder}? This adds it to safe.directory in your global git configuration, and git will then run this repository's hooks and settings as your own.",
+  confirmRemoveIndexLock: "Remove the lock of the git index of {repository}? Do this only if no git operation is running there.",
+  failureActionDone: "Done. You can try again.",
   failureNotificationGone: "This notification is no longer available.",
   failureNotificationActionNotOffered: "This notification does not offer that action.",
   operationLog: "Operation Log",

@@ -5,11 +5,13 @@
 
 mod capability;
 mod events;
+mod explainer;
 mod git;
 mod host;
 mod notifications;
 mod operation_log;
 mod operations;
+mod processes;
 mod project;
 mod settings;
 mod status;
@@ -27,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 pub use capability::{Capability, CapabilityState};
 pub use events::Event;
+pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use host::HostEnvironment;
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
@@ -39,7 +42,7 @@ pub use version::GitVersion;
 pub use window::ProjectWindow;
 
 use events::EventBus;
-use git::{GitProgram, GitRunner};
+use git::{GitProgram, GitRunner, Invocation};
 use notifications::Notifications;
 use operation_log::OperationLog;
 use operations::LongOperations;
@@ -147,6 +150,10 @@ pub struct Repository {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Failure {
+    /// git failed for a reason gikli knows, and can say in plain words what to do about it.
+    Explained {
+        explanation: Explanation,
+    },
     GitNotFound,
     GitTooOld {
         version: GitVersion,
@@ -216,6 +223,23 @@ pub enum Failure {
     #[serde(rename_all = "camelCase")]
     NotARepositoryRoot {
         folder: PathBuf,
+    },
+    /// git could not add the files to the Repository at `folder`. The operation log holds git's
+    /// output.
+    #[serde(rename_all = "camelCase")]
+    FilesNotAdded {
+        folder: PathBuf,
+    },
+    /// The lock of the index could not be removed.
+    #[serde(rename_all = "camelCase")]
+    IndexLockNotRemoved {
+        lock: PathBuf,
+        message: String,
+    },
+    /// git could not add `folder` to the folders the user trusts. The operation log holds git's
+    /// output.
+    FolderNotTrusted {
+        folder: String,
     },
     /// git could not read the changes of the Repository at `folder`, for example because it is
     /// no longer a repository. The operation log holds git's output.
@@ -397,6 +421,44 @@ impl Gikli {
         Ok(NotificationOutcome::ProjectChanged(project))
     }
 
+    /// Takes `action`, one of the actions of an [`Explanation`]. The UI asks the user to confirm
+    /// first: explaining a failure never changes anything by itself.
+    pub fn take_failure_action(&self, action: &FailureAction) -> Result<(), Failure> {
+        match action {
+            FailureAction::TrustFolder { repository, folder } => {
+                let runner = self.runner(&repository.root)?;
+                let invocation = runner
+                    .run(
+                        &repository.root,
+                        &["config", "--global", "--add", "safe.directory", folder],
+                    )
+                    .map_err(git_failed_to_start)?;
+                if !invocation.success {
+                    return Err(explained(&runner, &repository.root, &invocation).unwrap_or(
+                        Failure::FolderNotTrusted {
+                            folder: folder.clone(),
+                        },
+                    ));
+                }
+                Ok(())
+            }
+            FailureAction::RemoveIndexLock { repository } => {
+                let runner = self.runner(&repository.root)?;
+                let Some(lock) = explainer::index_lock(&runner, &repository.root) else {
+                    return Ok(());
+                };
+                let explanation = explainer::index_locked(&runner, repository, lock.clone());
+                if explanation.actions.is_empty() {
+                    return Err(Failure::Explained { explanation });
+                }
+                std::fs::remove_file(&lock).map_err(|error| Failure::IndexLockNotRemoved {
+                    lock,
+                    message: error.to_string(),
+                })
+            }
+        }
+    }
+
     /// Removes the notification `id` without acting on it. Nothing happens when it is already
     /// gone.
     pub fn dismiss_notification(&self, id: u64) {
@@ -544,7 +606,8 @@ impl Gikli {
             .run(&folder, &["init"])
             .map_err(git_failed_to_start)?;
         if !invocation.success {
-            return Err(Failure::RepositoryNotCreated { folder });
+            return Err(explained(&runner, &folder, &invocation)
+                .unwrap_or(Failure::RepositoryNotCreated { folder }));
         }
         Ok(Repository { root: folder })
     }
@@ -586,10 +649,15 @@ impl Gikli {
             })
             .map_err(git_failed_to_start)?;
         if !invocation.success {
-            return Err(Failure::CloneFailed {
-                url: url.to_owned(),
-                folder: target,
-            });
+            // git starts the output of a clone by naming the folder, in the user's language.
+            return Err(
+                explained(&runner, parent, &invocation.after_first_line()).unwrap_or(
+                    Failure::CloneFailed {
+                        url: url.to_owned(),
+                        folder: target,
+                    },
+                ),
+            );
         }
         self.open_project(&target)
     }
@@ -612,6 +680,27 @@ impl Gikli {
         })
     }
 
+    /// Adds `paths`, relative to the root of `repository` and taken literally, to the git index.
+    pub fn add_files(&self, repository: &Repository, paths: &[String]) -> Result<(), Failure> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let runner = self.runner(&repository.root)?;
+        let mut args = vec!["--literal-pathspecs", "add", "--"];
+        args.extend(paths.iter().map(String::as_str));
+        let invocation = runner
+            .run(&repository.root, &args)
+            .map_err(git_failed_to_start)?;
+        if !invocation.success {
+            return Err(explained(&runner, &repository.root, &invocation).unwrap_or(
+                Failure::FilesNotAdded {
+                    folder: repository.root.clone(),
+                },
+            ));
+        }
+        Ok(())
+    }
+
     /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
     pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
         let runner = self.runner(&repository.root)?;
@@ -623,9 +712,11 @@ impl Gikli {
             )
             .map_err(git_failed_to_start)?;
         if !invocation.success {
-            return Err(Failure::ChangesUnreadable {
-                folder: repository.root.clone(),
-            });
+            return Err(explained(&runner, &repository.root, &invocation).unwrap_or(
+                Failure::ChangesUnreadable {
+                    folder: repository.root.clone(),
+                },
+            ));
         }
         Ok(ChangeSet::new(
             repository.clone(),
@@ -823,6 +914,12 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The failure of `invocation`, which failed in `folder`, when the failure explainer knows it.
+fn explained(runner: &GitRunner, folder: &Path, invocation: &Invocation) -> Option<Failure> {
+    explainer::explain(runner, folder, invocation)
+        .map(|explanation| Failure::Explained { explanation })
 }
 
 fn git_failed_to_start(error: std::io::Error) -> Failure {

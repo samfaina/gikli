@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 
 import {
   actOnNotification,
@@ -24,6 +24,7 @@ import {
   setShowIgnoredFiles,
   settings,
   startupFolder,
+  takeFailureAction,
   testGit,
   unwatchChanges,
   watchChanges,
@@ -37,7 +38,11 @@ import {
   type Failure,
   type GitCheck,
   type CoreEvent,
+  type ExplainedMessage,
+  type Explanation,
+  type FailureAction,
   type LongOperation,
+  type NextStep,
   type Notification,
   type NotificationAction,
   type OperationLogEntry,
@@ -100,7 +105,7 @@ softWrapInput.addEventListener("change", async () => {
     showSoftWrap(saved.operationLogSoftWrap);
   } catch (error) {
     softWrapInput.checked = !softWrapInput.checked;
-    report(describeError(error));
+    report(error);
   } finally {
     softWrapInput.disabled = false;
   }
@@ -176,7 +181,7 @@ newRepositoryButton.addEventListener("click", async () => {
       await openFolder(repository.root);
     }
   } catch (error) {
-    report(describeError(error));
+    report(error);
   } finally {
     newRepositoryButton.disabled = false;
   }
@@ -298,7 +303,7 @@ async function openFolder(folder: string): Promise<void> {
   try {
     project = await openProject(folder);
   } catch (error) {
-    report(describeError(error));
+    report(error);
     return;
   }
   try {
@@ -307,7 +312,7 @@ async function openFolder(folder: string): Promise<void> {
       showProject(project);
     }
   } catch (error) {
-    report(describeError(error));
+    report(error);
   }
 }
 
@@ -385,7 +390,7 @@ function repositoryChoices(
         try {
           showProject(await choice.act());
         } catch (error) {
-          report(describeError(error));
+          report(error);
           buttons.forEach((other) => (other.disabled = false));
         }
       });
@@ -435,7 +440,7 @@ function settingCheckbox(
       }
     } catch (error) {
       input.checked = !input.checked;
-      projectView.prepend(line("message", describeError(error)));
+      projectView.prepend(errorView(error));
     } finally {
       input.disabled = false;
     }
@@ -487,7 +492,7 @@ function repositoryView(repository: Repository): HTMLElement {
         try {
           changes.replaceChildren(changeList(await readChanges(repository)));
         } catch (error) {
-          changes.replaceChildren(line("message", describeError(error)));
+          changes.replaceChildren(errorView(error, () => void refreshChanges()));
         }
       } while (readAgain);
     } finally {
@@ -784,7 +789,7 @@ function notificationView(notification: Notification): HTMLElement {
             break;
         }
       } catch (error) {
-        report(describeError(error));
+        report(error);
         buttons.forEach((other) => (other.disabled = false));
       }
     });
@@ -855,6 +860,98 @@ function describeOperation(operation: LongOperation): string {
   }
 }
 
+/**
+ * What to show for an error from the core. An explained failure offers what gikli can do about it;
+ * `retry`, if given, runs once it is done.
+ */
+function errorView(error: unknown, retry?: () => void): HTMLElement {
+  return isFailure(error) && error.kind === "explained"
+    ? explanationView(error.explanation, retry)
+    : line("message", describeError(error));
+}
+
+function explanationView(explanation: Explanation, retry?: () => void): HTMLElement {
+  const view = document.createElement("div");
+  view.className = "failure-explanation";
+  view.dataset.testid = "failure-explanation";
+  view.dataset.message = explanation.message.kind;
+  const message = document.createElement("p");
+  message.textContent = describeExplainedMessage(explanation.message);
+  view.append(message);
+  if (explanation.message.kind === "hookFailed") {
+    const output = document.createElement("pre");
+    output.dataset.testid = "hook-output";
+    output.textContent = explanation.message.output;
+    view.append(output);
+  }
+  const nextStep = document.createElement("p");
+  nextStep.textContent = t(NEXT_STEPS[explanation.nextStep]);
+  view.append(nextStep);
+  const buttons = explanation.actions.map((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.testid = "failure-action";
+    button.dataset.action = action.action;
+    button.textContent = t(FAILURE_ACTION_LABELS[action.action]);
+    button.addEventListener("click", async () => {
+      if (!(await confirm(describeConfirmation(action), { kind: "warning" }))) {
+        return;
+      }
+      buttons.forEach((other) => (other.disabled = true));
+      try {
+        await takeFailureAction(action);
+        view.replaceWith(line("message", t("failureActionDone")));
+        retry?.();
+      } catch (error) {
+        view.replaceWith(errorView(error, retry));
+      }
+    });
+    return button;
+  });
+  if (buttons.length > 0) {
+    const actions = document.createElement("div");
+    actions.className = "notification-actions";
+    actions.append(...buttons);
+    view.append(actions);
+  }
+  return view;
+}
+
+function describeExplainedMessage(message: ExplainedMessage): string {
+  switch (message.kind) {
+    case "hookFailed":
+      return t("failureHookFailed", { hook: message.hook });
+    case "dubiousOwnership":
+      return t("failureDubiousOwnership", { folder: message.folder });
+    case "indexLocked":
+      return t("failureIndexLocked", { lock: message.lock });
+    case "longPaths":
+      return t("failureLongPaths");
+  }
+}
+
+const NEXT_STEPS: Record<NextStep, StringKey> = {
+  fixHook: "nextStepFixHook",
+  trustFolder: "nextStepTrustFolder",
+  removeIndexLock: "nextStepRemoveIndexLock",
+  waitForOtherGitOperation: "nextStepWaitForOtherGitOperation",
+  enableLongPaths: "nextStepEnableLongPaths",
+};
+
+const FAILURE_ACTION_LABELS: Record<FailureAction["action"], StringKey> = {
+  trustFolder: "trustFolder",
+  removeIndexLock: "removeIndexLock",
+};
+
+function describeConfirmation(action: FailureAction): string {
+  switch (action.action) {
+    case "trustFolder":
+      return t("confirmTrustFolder", { folder: action.folder });
+    case "removeIndexLock":
+      return t("confirmRemoveIndexLock", { repository: action.repository.root });
+  }
+}
+
 /** The message for an error from the core: a {@link Failure}, or anything unexpected. */
 function describeError(error: unknown): string {
   return isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) });
@@ -862,6 +959,8 @@ function describeError(error: unknown): string {
 
 function describeFailure(failure: Failure): string {
   switch (failure.kind) {
+    case "explained":
+      return `${describeExplainedMessage(failure.explanation.message)} ${t(NEXT_STEPS[failure.explanation.nextStep])}`;
     case "gitNotFound":
       return t("failureGitNotFound");
     case "gitTooOld":
@@ -897,6 +996,12 @@ function describeFailure(failure: Failure): string {
       return t("failureChangesNotWatched", { folder: failure.folder, message: failure.message });
     case "cloneFailed":
       return t("failureCloneFailed", { url: failure.url, folder: failure.folder });
+    case "filesNotAdded":
+      return t("failureFilesNotAdded", { folder: failure.folder });
+    case "indexLockNotRemoved":
+      return t("failureIndexLockNotRemoved", { lock: failure.lock, message: failure.message });
+    case "folderNotTrusted":
+      return t("failureFolderNotTrusted", { folder: failure.folder });
     case "notificationGone":
       return t("failureNotificationGone");
     case "notificationActionNotOffered":
@@ -908,12 +1013,12 @@ function showMessage(text: string): void {
   projectView.replaceChildren(line("message", text));
 }
 
-/** Reports `text`: in place of the start message, or above the Project this window shows. */
-function report(text: string): void {
+/** Reports an error from the core: in place of the start message, or above the Project this window shows. */
+function report(error: unknown): void {
   if (shownFolder === null) {
-    showMessage(text);
+    projectView.replaceChildren(errorView(error));
   } else {
-    projectView.prepend(line("message", text));
+    projectView.prepend(errorView(error));
   }
 }
 

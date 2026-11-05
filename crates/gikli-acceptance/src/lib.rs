@@ -9,10 +9,13 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 
 use gikli_core::{Gikli, HostEnvironment};
 use tempfile::TempDir;
+
+/// Makes git take every repository for someone else's.
+const OWNED_BY_SOMEONE_ELSE: &str = "GIT_TEST_ASSUME_DIFFERENT_OWNER";
 
 /// A temporary folder with its own git configuration, holding the repositories of one test.
 pub struct Sandbox {
@@ -70,6 +73,25 @@ impl Sandbox {
         let mut config = fs::read_to_string(&path).expect("read sandbox git configuration");
         config.push_str(text);
         fs::write(path, config).expect("write sandbox git configuration");
+    }
+
+    /// Installs `script` as the hook `name` of every repository in the sandbox, as a user would
+    /// with `core.hooksPath` in `~/.gitconfig`.
+    pub fn hook(&self, name: &str, script: &str) {
+        let folder = self.folder("hooks");
+        let path = folder.join(name);
+        // `wait_until_runnable` starts the script to find out whether it can run.
+        fs::write(
+            &path,
+            format!("#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\n{script}\n"),
+        )
+        .expect("write hook");
+        make_executable(&path);
+        wait_until_runnable(&path);
+        self.configure(&format!(
+            "[core]\n\thooksPath = {}\n",
+            folder.to_string_lossy().replace('\\', "/")
+        ));
     }
 
     /// gikli, running in the sandbox's environment.
@@ -206,6 +228,23 @@ impl Sandbox {
         dunce::canonicalize(&executable).expect("canonicalize git's path")
     }
 
+    /// The sandbox's environment, where git speaks `language` as far as its translations are
+    /// installed. `LANGUAGE` is what selects them, in any locale but the plain C one.
+    pub fn host_speaking(&self, language: &str) -> HostEnvironment {
+        let mut host = self.host_environment();
+        host.set("LANGUAGE", language);
+        host.set("LC_ALL", "C.UTF-8");
+        host
+    }
+
+    /// The sandbox's environment, where the real git takes every repository for someone else's:
+    /// the variable git's own tests use, as a test cannot own a folder as another user.
+    pub fn host_where_repositories_belong_to_someone_else(&self) -> HostEnvironment {
+        let mut host = self.host_environment();
+        host.set(OWNED_BY_SOMEONE_ELSE, "1");
+        host
+    }
+
     /// An environment whose PATH holds no git at all.
     pub fn host_without_git(&self) -> HostEnvironment {
         self.host_with_path(&self.folder("empty-bin"))
@@ -235,6 +274,16 @@ impl Drop for Sandbox {
         }
     }
 }
+
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("make hook executable");
+}
+
+/// On Windows, git runs a hook through its own shell whatever the file's permissions.
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) {}
 
 /// Waits until a freshly copied executable can run.
 ///
@@ -270,6 +319,13 @@ macro_rules! fake_git {
     };
 }
 
+/// A `file://` URL for `folder`, so git clones through its transport, as from a server, instead of
+/// copying the folder.
+pub fn file_url(folder: &Path) -> String {
+    let path = folder.to_string_lossy().replace('\\', "/");
+    format!("file:///{}", path.trim_start_matches('/'))
+}
+
 /// A stand-in git, or `wsl.exe`, installed by the sandbox.
 pub struct FakeGit {
     bin: PathBuf,
@@ -289,6 +345,17 @@ impl FakeGit {
             .lines()
             .map(|line| line.split('\u{1f}').map(str::to_owned).collect())
             .collect()
+    }
+}
+
+/// A plain git that runs until this is dropped.
+pub struct RunningGit(Child);
+
+impl Drop for RunningGit {
+    fn drop(&mut self) {
+        // Closing its input ends it, along with the git the wrapper on Windows starts.
+        drop(self.0.stdin.take());
+        let _ = self.0.wait();
     }
 }
 
@@ -313,6 +380,27 @@ impl TestRepository {
     /// succeeded.
     pub fn git_succeeds(&self, args: &[&str]) -> bool {
         git_output(&self.root, &self.env, args).status.success()
+    }
+
+    /// Whether plain git refuses this repository when it takes it for someone else's.
+    pub fn refused_for_ownership_by_git(&self) -> bool {
+        let mut env = self.env.clone();
+        env.push((OWNED_BY_SOMEONE_ELSE.into(), "1".into()));
+        !git_output(&self.root, &env, ["status"]).status.success()
+    }
+
+    /// A plain git running in the repository until the result is dropped, as a git the user
+    /// started in a terminal. It waits for input it never gets.
+    pub fn running_git(&self) -> RunningGit {
+        let child = Command::new("git")
+            .args(["cat-file", "--batch"])
+            .current_dir(&self.root)
+            .envs(self.env.iter().map(|(name, value)| (name, value)))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("start git");
+        RunningGit(child)
     }
 
     /// Writes a file in the working tree, creating its folders.

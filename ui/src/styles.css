@@ -328,6 +328,18 @@ button:disabled {
   color: var(--warning-text);
 }
 
+/* A failure explained in plain words, with the output of a hook when there is one. */
+.failure-explanation p {
+  margin: 0 0 4px;
+}
+
+.failure-explanation pre {
+  margin: 0 0 4px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .notification-actions {
   display: flex;
   gap: 6px;
