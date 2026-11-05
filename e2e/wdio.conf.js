@@ -115,7 +115,9 @@ export const config = {
       const { download } = await import("edgedriver");
       const version = webView2Version();
       console.log(`WebView2 Runtime ${version}; using the Edge WebDriver for it.`);
-      args.push("--native-driver", await download(version));
+      // One folder per version: edgedriver reuses whatever driver its folder holds.
+      const cache = path.join(os.tmpdir(), "gikli-msedgedriver", version);
+      args.push("--native-driver", await download(version, cache));
     }
     const driver = path.join(os.homedir(), ".cargo", "bin", `tauri-driver${exe}`);
     tauriDriver = spawn(fs.existsSync(driver) ? driver : "tauri-driver", args, {

@@ -143,6 +143,44 @@ jobs:
         if: runner.os == 'Windows'
         run: npm run test:e2e
 
+      # Runs only when the smoke test failed: launches the app on its own with remote debugging,
+      # then through msedgedriver --verbose, and prints what each did.
+      - name: Diagnose the smoke test
+        if: failure() && runner.os == 'Windows'
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $temp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+          $app = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'debug\gikli.exe'
+          "User: $(whoami); session: $([System.Diagnostics.Process]::GetCurrentProcess().SessionId); interactive: $([Environment]::UserInteractive)"
+          "App exists: $(Test-Path $app)"
+          $version = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}').pv
+          "WebView2: $version"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application" -ErrorAction SilentlyContinue | ForEach-Object Name
+
+          "--- The app on its own, with remote debugging"
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
+          $process = Start-Process $app -PassThru -RedirectStandardOutput "$temp\gikli.out" -RedirectStandardError "$temp\gikli.err"
+          Start-Sleep 20
+          try { Invoke-RestMethod http://127.0.0.1:9222/json/version | ConvertTo-Json } catch { "DevTools: $_" }
+          "Exited: $($process.HasExited) $($process.ExitCode)"
+          Get-Process | Where-Object Name -match 'gikli|msedgewebview2' | Format-Table Name, Id, SessionId -AutoSize | Out-String
+          Get-ChildItem "$env:LOCALAPPDATA\dev.gikli.app" -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object FullName
+          if (-not $process.HasExited) { taskkill /T /F /PID $process.Id }
+          "stdout:"; Get-Content "$temp\gikli.out"; "stderr:"; Get-Content "$temp\gikli.err"
+          Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+
+          "--- The app through msedgedriver --verbose"
+          $driver = node --input-type=module -e "import { download } from 'edgedriver'; console.log(await download(process.argv[1], process.argv[2]))" $version "$temp\gikli-diagnosis-msedgedriver\$version"
+          "Driver: $driver"
+          & $driver --version
+          $log = "$temp\msedgedriver.log"
+          $driverProcess = Start-Process $driver -ArgumentList '--port=9515', '--verbose', "--log-path=$log" -PassThru
+          Start-Sleep 3
+          $body = @{ capabilities = @{ alwaysMatch = @{ browserName = 'webview2'; 'ms:edgeOptions' = @{ binary = $app; webviewOptions = @{} } } } } | ConvertTo-Json -Depth 6
+          try { Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9515/session -Body $body -ContentType 'application/json' -TimeoutSec 120 | ConvertTo-Json -Depth 4 } catch { "Session: $_" }
+          taskkill /T /F /PID $driverProcess.Id
+          Get-Content $log | Select-Object -Last 150
+
       - name: Smoke test
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum npm run test:e2e
