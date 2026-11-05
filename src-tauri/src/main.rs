@@ -10,8 +10,9 @@
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeGrouping, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment, Project,
-    ProjectWindow, Repository, Settings,
+    CapabilityState, ChangeGrouping, ChangeSet, Failure, Gikli, GitCheck, HostEnvironment,
+    Notification, NotificationAction, NotificationOutcome, OperationLogEntry, Project,
+    ProjectWindow, Repository, RunningOperation, Settings,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -67,6 +68,43 @@ fn set_change_grouping(
     gikli.set_change_grouping(grouping)
 }
 
+#[tauri::command]
+fn set_operation_log_soft_wrap(
+    gikli: State<'_, Gikli>,
+    soft_wrap: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_operation_log_soft_wrap(soft_wrap)
+}
+
+#[tauri::command]
+fn operation_log(gikli: State<'_, Gikli>) -> Vec<OperationLogEntry> {
+    gikli.operation_log()
+}
+
+#[tauri::command]
+fn clear_operation_log(gikli: State<'_, Gikli>) {
+    gikli.clear_operation_log();
+}
+
+#[tauri::command]
+fn notifications(gikli: State<'_, Gikli>) -> Vec<Notification> {
+    gikli.notifications()
+}
+
+#[tauri::command(async)]
+fn act_on_notification(
+    gikli: State<'_, Gikli>,
+    id: u64,
+    action: NotificationAction,
+) -> Result<NotificationOutcome, Failure> {
+    gikli.act_on_notification(id, &action)
+}
+
+#[tauri::command]
+fn dismiss_notification(gikli: State<'_, Gikli>, id: u64) {
+    gikli.dismiss_notification(id);
+}
+
 #[tauri::command(async)]
 fn capabilities(
     gikli: State<'_, Gikli>,
@@ -105,6 +143,20 @@ fn remove_repository(
     repository: Repository,
 ) -> Result<Project, Failure> {
     gikli.remove_repository(&folder, &repository)
+}
+
+#[tauri::command]
+fn running_operations(gikli: State<'_, Gikli>) -> Vec<RunningOperation> {
+    gikli.running_operations()
+}
+
+#[tauri::command(async)]
+fn clone_repository(
+    gikli: State<'_, Gikli>,
+    url: String,
+    folder: PathBuf,
+) -> Result<Project, Failure> {
+    gikli.clone_repository(&url, &folder)
 }
 
 #[tauri::command(async)]
@@ -205,12 +257,20 @@ fn main() {
             settings,
             set_show_ignored_files,
             set_change_grouping,
+            set_operation_log_soft_wrap,
+            operation_log,
+            clear_operation_log,
+            notifications,
+            act_on_notification,
+            dismiss_notification,
             capabilities,
             open_project,
             add_repository,
             ignore_repository,
             remove_repository,
             create_repository,
+            clone_repository,
+            running_operations,
             window_for_project,
             read_changes,
             watch_changes,

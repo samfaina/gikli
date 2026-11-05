@@ -13,7 +13,8 @@
       <button id="open-folder" type="button" data-testid="open-folder"></button>
       <button id="new-repository" type="button" data-testid="new-repository"></button>
       <span id="git-status" class="git-status" data-testid="git-status"></span>
-      <button id="toggle-settings" class="toolbar-end" type="button" data-testid="toggle-settings" aria-expanded="false" aria-controls="settings"></button>
+      <button id="toggle-operation-log" class="toolbar-end" type="button" data-testid="toggle-operation-log" aria-expanded="false" aria-controls="operation-log"></button>
+      <button id="toggle-settings" type="button" data-testid="toggle-settings" aria-expanded="false" aria-controls="settings"></button>
     </header>
     <section id="settings" class="settings" data-testid="settings" hidden>
       <label id="git-path-label" for="git-path"></label>
@@ -25,6 +26,16 @@
       <p id="git-path-hint" class="hint"></p>
       <p id="git-test-result" class="git-test-result" data-testid="git-test-result" role="status"></p>
     </section>
+    <section id="notifications" class="notifications" data-testid="notifications" aria-live="polite" hidden></section>
     <main id="project" class="project" data-testid="project"></main>
+    <section id="operation-log" class="operation-log" data-testid="operation-log" hidden>
+      <div class="operation-log-header">
+        <h2 id="operation-log-title"></h2>
+        <label><input id="operation-log-soft-wrap" type="checkbox" data-testid="operation-log-soft-wrap" /><span id="operation-log-soft-wrap-label"></span></label>
+        <button id="clear-operation-log" type="button" data-testid="clear-operation-log"></button>
+      </div>
+      <div id="operation-log-entries" class="operation-log-entries" data-testid="operation-log-entries" tabindex="0"></div>
+    </section>
+    <footer id="operations" class="operations" data-testid="operations" role="status" hidden></footer>
   </body>
 </html>

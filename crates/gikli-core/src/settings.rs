@@ -19,6 +19,8 @@ pub struct Settings {
     pub show_ignored_files: bool,
     /// How the changes view arranges the changes.
     pub change_grouping: ChangeGrouping,
+    /// Whether the operation log wraps long lines to its width, instead of scrolling sideways.
+    pub operation_log_soft_wrap: bool,
 }
 
 impl Settings {

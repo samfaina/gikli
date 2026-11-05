@@ -7,6 +7,9 @@ mod capability;
 mod events;
 mod git;
 mod host;
+mod notifications;
+mod operation_log;
+mod operations;
 mod project;
 mod settings;
 mod status;
@@ -23,8 +26,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 pub use capability::{Capability, CapabilityState};
-pub use events::{Event, OperationLogEntry};
+pub use events::Event;
 pub use host::HostEnvironment;
+pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
+pub use operation_log::OperationLogEntry;
+pub use operations::{LongOperation, Progress, RunningOperation};
 pub use settings::Settings;
 pub use status::{
     Change, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, ConflictKind, SubmoduleState,
@@ -34,6 +40,9 @@ pub use window::ProjectWindow;
 
 use events::EventBus;
 use git::{GitProgram, GitRunner};
+use notifications::Notifications;
+use operation_log::OperationLog;
+use operations::LongOperations;
 use project::{ProjectRegistry, RememberedProject};
 use watch::ChangesWatcher;
 use window::ProjectWindows;
@@ -56,6 +65,9 @@ pub struct Gikli {
     /// The watcher of each Repository whose changes gikli watches, by root.
     watchers: Mutex<HashMap<PathBuf, ChangesWatcher>>,
     events: Arc<EventBus>,
+    log: Arc<OperationLog>,
+    notifications: Notifications,
+    operations: LongOperations,
 }
 
 /// The oldest git gikli works with.
@@ -185,6 +197,21 @@ pub enum Failure {
     RepositoryOutsideProject {
         folder: PathBuf,
     },
+    /// git could not clone `url` into `folder`. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    CloneFailed {
+        url: String,
+        folder: PathBuf,
+    },
+    /// The notification is gone: the user already acted on it or dismissed it, or what it said
+    /// no longer holds.
+    NotificationGone {
+        id: u64,
+    },
+    /// The notification `id` does not offer the action asked for.
+    NotificationActionNotOffered {
+        id: u64,
+    },
     /// `folder` is not the root of a repository, so it cannot be a Repository of a Project.
     #[serde(rename_all = "camelCase")]
     NotARepositoryRoot {
@@ -211,6 +238,7 @@ impl Gikli {
     pub fn new(host: HostEnvironment, config_folder: &Path) -> Self {
         let settings_file = config_folder.join("settings.json");
         let projects_file = config_folder.join("projects.json");
+        let events = Arc::<EventBus>::default();
         Self {
             host,
             settings: Mutex::new(Settings::load(&settings_file)),
@@ -221,7 +249,10 @@ impl Gikli {
             git: Mutex::default(),
             wsl_git: Mutex::default(),
             watchers: Mutex::default(),
-            events: Arc::default(),
+            log: Arc::new(OperationLog::new(events.clone())),
+            notifications: Notifications::new(events.clone()),
+            operations: LongOperations::new(events.clone()),
+            events,
         }
     }
 
@@ -231,12 +262,23 @@ impl Gikli {
         self.events.subscribe()
     }
 
+    /// The git commands gikli ran, oldest first, with their raw output: the last
+    /// thousand of them. Each new one also arrives as [`Event::OperationLogged`].
+    pub fn operation_log(&self) -> Vec<OperationLogEntry> {
+        self.log.entries()
+    }
+
+    /// Empties the operation log. Every listener receives [`Event::OperationLogCleared`].
+    pub fn clear_operation_log(&self) {
+        self.log.clear();
+    }
+
     /// Looks for git and checks that gikli can use it.
     pub fn check_git(&self) -> GitCheck {
         let mut git = lock(&self.git);
         git.get_or_insert_with(|| {
             let configured = lock(&self.settings).git_path.clone();
-            git::check(configured, &self.host, &self.events)
+            git::check(configured, &self.host, &self.log)
         })
         .clone()
     }
@@ -256,6 +298,11 @@ impl Gikli {
     /// Groups the changes view by folder or shows it as a flat list.
     pub fn set_change_grouping(&self, grouping: ChangeGrouping) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.change_grouping = grouping)
+    }
+
+    /// Turns soft wrap of the operation log on or off.
+    pub fn set_operation_log_soft_wrap(&self, soft_wrap: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.operation_log_soft_wrap = soft_wrap)
     }
 
     /// The application settings.
@@ -284,7 +331,7 @@ impl Gikli {
             executable.to_path_buf(),
             GitSource::Configured,
             &self.host,
-            &self.events,
+            &self.log,
         )
     }
 
@@ -316,7 +363,76 @@ impl Gikli {
                 folder: project.folder,
             });
         }
+        self.notifications.withdraw_settled(&project);
+        self.raise_project_notifications(&project);
         Ok(project)
+    }
+
+    /// The notifications raised and not yet acted on or dismissed, oldest first. Each new one also
+    /// arrives as [`Event::NotificationRaised`].
+    pub fn notifications(&self) -> Vec<Notification> {
+        self.notifications.raised()
+    }
+
+    /// Takes `action`, one of the actions of the notification `id`. Once taken, the notification
+    /// goes away with [`Event::NotificationRemoved`]; when the action fails, it stays.
+    pub fn act_on_notification(
+        &self,
+        id: u64,
+        action: &NotificationAction,
+    ) -> Result<NotificationOutcome, Failure> {
+        let notification = self.notifications.offering(id, action)?;
+        let folder = &notification.project;
+        let project = match action {
+            NotificationAction::AddRepository { repository } => {
+                self.add_repository(folder, repository)?
+            }
+            NotificationAction::IgnoreRepository { repository } => {
+                self.ignore_repository(folder, repository)?
+            }
+            NotificationAction::RemoveRepository { repository } => {
+                self.remove_repository(folder, repository)?
+            }
+        };
+        Ok(NotificationOutcome::ProjectChanged(project))
+    }
+
+    /// Removes the notification `id` without acting on it. Nothing happens when it is already
+    /// gone.
+    pub fn dismiss_notification(&self, id: u64) {
+        self.notifications.dismiss(id);
+    }
+
+    /// Raises a notification for each Repository of `project` that needs the user: one found and
+    /// not registered, to add or ignore it, and one registered and no longer valid, to remove it.
+    fn raise_project_notifications(&self, project: &Project) {
+        for repository in &project.unregistered_repositories {
+            self.notifications.raise(
+                &project.folder,
+                NotificationKind::UnregisteredRepository {
+                    repository: repository.clone(),
+                },
+                vec![
+                    NotificationAction::AddRepository {
+                        repository: repository.clone(),
+                    },
+                    NotificationAction::IgnoreRepository {
+                        repository: repository.clone(),
+                    },
+                ],
+            );
+        }
+        for repository in &project.invalid_repositories {
+            self.notifications.raise(
+                &project.folder,
+                NotificationKind::InvalidRepository {
+                    repository: repository.clone(),
+                },
+                vec![NotificationAction::RemoveRepository {
+                    repository: repository.clone(),
+                }],
+            );
+        }
     }
 
     /// Registers `repository`, found at or inside the Project's folder, in the Project at
@@ -388,7 +504,9 @@ impl Gikli {
             *projects = changed;
             remembered
         };
-        place.project(&remembered)
+        let project = place.project(&remembered)?;
+        self.notifications.withdraw_settled(&project);
+        Ok(project)
     }
 
     /// Where the Project at `folder`, as [`Project::folder`] gives it, shows when the window
@@ -429,6 +547,51 @@ impl Gikli {
             return Err(Failure::RepositoryNotCreated { folder });
         }
         Ok(Repository { root: folder })
+    }
+
+    /// The long operations running, with the last progress of each, for a view that opens while
+    /// they run. Their progress then arrives as events.
+    pub fn running_operations(&self) -> Vec<RunningOperation> {
+        self.operations.running()
+    }
+
+    /// Clones the repository at `url` into `folder`, which must not exist or be empty, and opens
+    /// it as a Project. The clone runs as a [`LongOperation`] that reports its progress; the
+    /// rest of the core keeps answering meanwhile.
+    pub fn clone_repository(&self, url: &str, folder: &Path) -> Result<Project, Failure> {
+        let runner = self.runner(folder)?;
+        let target = std::path::absolute(folder).map_err(|_| Failure::FolderNotFound {
+            folder: folder.to_path_buf(),
+        })?;
+        let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+            return Err(Failure::CloneFailed {
+                url: url.to_owned(),
+                folder: target,
+            });
+        };
+        std::fs::create_dir_all(parent).map_err(|error| Failure::FolderNotCreated {
+            folder: parent.to_path_buf(),
+            message: error.to_string(),
+        })?;
+        // The folder goes by its name inside its parent, a path git inside WSL reads too.
+        let name = name.to_string_lossy();
+        let operation = LongOperation::Clone {
+            url: url.to_owned(),
+            folder: target.clone(),
+        };
+        let invocation = self
+            .operations
+            .run(operation, |report| {
+                runner.run_reporting(parent, &["clone", "--progress", "--", url, &name], report)
+            })
+            .map_err(git_failed_to_start)?;
+        if !invocation.success {
+            return Err(Failure::CloneFailed {
+                url: url.to_owned(),
+                folder: target,
+            });
+        }
+        self.open_project(&target)
     }
 
     /// The Project folder `folder`, in its absolute form, with the runner for it.
@@ -510,11 +673,7 @@ impl Gikli {
     /// The runner for an operation in `folder`, available only with a usable git.
     fn runner(&self, folder: &Path) -> Result<GitRunner, Failure> {
         let (program, _) = self.git_for(folder)?;
-        Ok(GitRunner::new(
-            program,
-            self.host.clone(),
-            self.events.clone(),
-        ))
+        Ok(GitRunner::new(program, self.host.clone(), self.log.clone()))
     }
 
     /// The git that runs in `folder`, with its version: the git of the WSL distribution for a
@@ -540,7 +699,7 @@ impl Gikli {
     fn check_wsl_git(&self, share: &WslShare) -> GitCheck {
         lock(&self.wsl_git)
             .entry(share.clone())
-            .or_insert_with(|| git::check_wsl(share, &self.host, &self.events))
+            .or_insert_with(|| git::check_wsl(share, &self.host, &self.log))
             .clone()
     }
 }
@@ -658,7 +817,9 @@ fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     })
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+/// Locks `mutex`, even when a thread panicked while holding it, so one failed command does not
+/// stop every later one.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

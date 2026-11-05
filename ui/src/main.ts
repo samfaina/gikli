@@ -1,19 +1,26 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
 import {
+  actOnNotification,
   addRepository,
   capabilities,
   checkGit,
+  clearOperationLog,
+  dismissNotification,
   createRepository,
   formatVersion,
   ignoreRepository,
   isFailure,
+  notifications,
   onCoreEvent,
   openProject,
+  operationLog,
   readChanges,
   removeRepository,
+  runningOperations as runningOperationsOfCore,
   setChangeGrouping,
   setGitPath,
+  setOperationLogSoftWrap,
   setShowIgnoredFiles,
   settings,
   startupFolder,
@@ -29,8 +36,14 @@ import {
   type ConflictKind,
   type Failure,
   type GitCheck,
+  type CoreEvent,
+  type LongOperation,
+  type Notification,
+  type NotificationAction,
+  type OperationLogEntry,
   type Project,
   type Repository,
+  type RunningOperation,
 } from "./core";
 import { t, type StringKey } from "./strings";
 
@@ -44,6 +57,13 @@ const gitPathInput = element<HTMLInputElement>("git-path");
 const testGitButton = element<HTMLButtonElement>("test-git");
 const saveGitPathButton = element<HTMLButtonElement>("save-git-path");
 const gitTestResult = element<HTMLElement>("git-test-result");
+const operationLogButton = element<HTMLButtonElement>("toggle-operation-log");
+const operationLogPanel = element<HTMLElement>("operation-log");
+const operationLogEntries = element<HTMLElement>("operation-log-entries");
+const softWrapInput = element<HTMLInputElement>("operation-log-soft-wrap");
+const clearOperationLogButton = element<HTMLButtonElement>("clear-operation-log");
+const notificationsView = element<HTMLElement>("notifications");
+const operationsView = element<HTMLElement>("operations");
 
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
@@ -58,6 +78,35 @@ element<HTMLElement>("git-path-hint").textContent = t("gitPathHint");
 gitPathInput.placeholder = t("gitPathPlaceholder");
 testGitButton.textContent = t("testGit");
 saveGitPathButton.textContent = t("saveGitPath");
+operationLogButton.textContent = t("operationLog");
+element<HTMLElement>("operation-log-title").textContent = t("operationLogTitle");
+element<HTMLElement>("operation-log-soft-wrap-label").textContent = t("softWrap");
+clearOperationLogButton.textContent = t("clearOperationLog");
+notificationsView.setAttribute("aria-label", t("notificationsTitle"));
+
+operationLogButton.addEventListener("click", () => {
+  const opening = operationLogPanel.hidden;
+  operationLogPanel.hidden = !opening;
+  operationLogButton.setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    operationLogEntries.scrollTop = operationLogEntries.scrollHeight;
+  }
+});
+
+softWrapInput.addEventListener("change", async () => {
+  softWrapInput.disabled = true;
+  try {
+    const saved = await setOperationLogSoftWrap(softWrapInput.checked);
+    showSoftWrap(saved.operationLogSoftWrap);
+  } catch (error) {
+    softWrapInput.checked = !softWrapInput.checked;
+    report(describeError(error));
+  } finally {
+    softWrapInput.disabled = false;
+  }
+});
+
+clearOperationLogButton.addEventListener("click", () => void clearOperationLog());
 
 settingsButton.addEventListener("click", async () => {
   const opening = settingsPanel.hidden;
@@ -141,19 +190,71 @@ let shownFolder: string | null = null;
 /** The Repositories shown, by root, each with the function that reads its changes again. */
 const shownRepositories = new Map<string, { repository: Repository; refresh: () => void }>();
 
-void onCoreEvent((event) => {
+/** Applies one event from the core to this window. */
+function handleCoreEvent(event: CoreEvent): void {
   switch (event.event) {
-    // The operation log view does not exist yet; until then, git commands show in the devtools console.
     case "operationLogged":
-      console.debug("git", ...event.payload.args, "→", event.payload.exitCode);
+      appendLogEntry(event.payload);
+      break;
+    case "operationLogCleared":
+      clearLogEntries(event.payload.before);
+      break;
+    case "notificationRaised":
+      shownNotifications.set(event.payload.id, event.payload);
+      showNotifications();
+      break;
+    case "notificationRemoved":
+      removedNotifications.add(event.payload.id);
+      shownNotifications.delete(event.payload.id);
+      showNotifications();
+      break;
+    case "operationStarted":
+      runningOperations.set(event.payload.id, { id: event.payload.id, operation: event.payload.operation, progress: null });
+      showOperations();
+      break;
+    case "operationProgress": {
+      const running = runningOperations.get(event.payload.id);
+      if (running !== undefined) {
+        running.progress = event.payload.progress;
+        showOperations();
+      }
+      break;
+    }
+    case "operationFinished":
+      finishedOperations.add(event.payload.id);
+      runningOperations.delete(event.payload.id);
+      showOperations();
       break;
     case "filesChanged":
       shownRepositories.get(event.payload.repository.root)?.refresh();
       break;
   }
-});
+}
 
 async function start(): Promise<void> {
+  // Listen first, then read what the core already holds: nothing happens between the two unseen.
+  // What an event removed while the reads ran stays removed.
+  await onCoreEvent(handleCoreEvent);
+  const [current, logged, raised, running] = await Promise.all([
+    settings(),
+    operationLog(),
+    notifications(),
+    runningOperationsOfCore(),
+  ]);
+  showSoftWrap(current.operationLogSoftWrap);
+  mergeLogEntries(logged);
+  for (const notification of raised) {
+    if (!removedNotifications.has(notification.id) && !shownNotifications.has(notification.id)) {
+      shownNotifications.set(notification.id, notification);
+    }
+  }
+  showNotifications();
+  for (const operation of running) {
+    if (!finishedOperations.has(operation.id) && !runningOperations.has(operation.id)) {
+      runningOperations.set(operation.id, { ...operation });
+    }
+  }
+  showOperations();
   showGit(await checkGit());
   // Even without a usable git, a folder under \\wsl$ opens with the git of its distribution;
   // any other folder reports why it cannot open.
@@ -213,6 +314,7 @@ async function openFolder(folder: string): Promise<void> {
 /** Shows `project` in this window: the Repositories gikli offers to add, the ones that broke, the ignored ones, and the changes of the others. */
 function showProject(project: Project): void {
   shownFolder = project.folder;
+  showNotifications();
   const name = project.folder.split(/[\\/]/).filter((part) => part !== "").pop() ?? project.folder;
   document.title = t("windowTitle", { name });
   // A Repository that leaves the view, removed or ignored, is no longer watched.
@@ -540,6 +642,219 @@ const CONFLICT_LABELS: Record<ConflictKind, StringKey> = {
   deletedByThem: "conflictDeletedByThem",
 };
 
+/** How many operation log entries a window shows, as many as the core keeps. */
+const SHOWN_LOG_ENTRIES = 1000;
+
+/** The ids of the operation log entries this window shows, oldest first, matching the views in {@link operationLogEntries}. */
+const shownLogIds: number[] = [];
+
+/** Entries with a lower id were cleared: a late read of the log must not bring them back. */
+let logClearedBefore = 0;
+
+/** Adds a new entry at the end of the operation log view, unless the view already shows it. */
+function appendLogEntry(entry: OperationLogEntry): void {
+  const last = shownLogIds[shownLogIds.length - 1];
+  if (entry.id < logClearedBefore || (last !== undefined && entry.id <= last)) {
+    return;
+  }
+  const atEnd =
+    operationLogEntries.scrollTop + operationLogEntries.clientHeight >= operationLogEntries.scrollHeight - 4;
+  if (shownLogIds.length === 0) {
+    operationLogEntries.replaceChildren();
+  }
+  shownLogIds.push(entry.id);
+  operationLogEntries.append(logEntryView(entry));
+  while (shownLogIds.length > SHOWN_LOG_ENTRIES) {
+    shownLogIds.shift();
+    operationLogEntries.firstElementChild?.remove();
+  }
+  // Follows new commands, unless the user scrolled up to read older ones.
+  if (atEnd) {
+    operationLogEntries.scrollTop = operationLogEntries.scrollHeight;
+  }
+}
+
+/** Puts `entries`, read from the core, before the entries that arrived as events meanwhile. */
+function mergeLogEntries(entries: OperationLogEntry[]): void {
+  const first = shownLogIds[0];
+  const older = entries.filter((entry) => entry.id >= logClearedBefore && (first === undefined || entry.id < first));
+  const room = Math.max(0, SHOWN_LOG_ENTRIES - shownLogIds.length);
+  const kept = older.slice(Math.max(0, older.length - room));
+  if (kept.length > 0) {
+    if (shownLogIds.length === 0) {
+      operationLogEntries.replaceChildren();
+    }
+    shownLogIds.unshift(...kept.map((entry) => entry.id));
+    operationLogEntries.prepend(...kept.map(logEntryView));
+    operationLogEntries.scrollTop = operationLogEntries.scrollHeight;
+  }
+  if (shownLogIds.length === 0) {
+    showLogEmpty();
+  }
+}
+
+/** Drops every entry whose id is below `before`, as the user cleared the log. */
+function clearLogEntries(before: number): void {
+  logClearedBefore = Math.max(logClearedBefore, before);
+  while (shownLogIds.length > 0 && shownLogIds[0]! < logClearedBefore) {
+    shownLogIds.shift();
+    operationLogEntries.firstElementChild?.remove();
+  }
+  if (shownLogIds.length === 0) {
+    showLogEmpty();
+  }
+}
+
+function showLogEmpty(): void {
+  operationLogEntries.replaceChildren(line("operation-log-empty", t("operationLogEmpty")));
+}
+
+function logEntryView(entry: OperationLogEntry): HTMLElement {
+  const view = document.createElement("div");
+  view.className = "log-entry";
+  view.dataset.testid = "log-entry";
+  const failed = entry.error !== null || entry.exitCode !== 0;
+  view.classList.toggle("failed", failed);
+  const command = document.createElement("pre");
+  command.className = "log-command";
+  command.textContent = t("operationLogCommand", { folder: entry.folder, args: entry.args.join(" ") });
+  view.append(command);
+  const output = entry.stdout + entry.stderr;
+  if (output !== "") {
+    const text = document.createElement("pre");
+    text.className = "log-output";
+    text.textContent = output;
+    view.append(text);
+  }
+  if (failed) {
+    const result = document.createElement("pre");
+    result.className = "log-result";
+    result.textContent =
+      entry.error !== null
+        ? t("operationLogNotStarted", { error: entry.error })
+        : entry.exitCode === null
+          ? t("operationLogEndedBySignal")
+          : t("operationLogExitCode", { code: String(entry.exitCode) });
+    view.append(result);
+  }
+  return view;
+}
+
+/** Wraps long lines of the operation log to its width, or lets them scroll sideways. */
+function showSoftWrap(softWrap: boolean): void {
+  softWrapInput.checked = softWrap;
+  operationLogEntries.classList.toggle("soft-wrap", softWrap);
+}
+
+/** The notifications raised, by id, for every Project: this window shows the ones about its own. */
+const shownNotifications = new Map<number, Notification>();
+
+/** The notifications removed since this window started listening, so a late read does not bring them back. */
+const removedNotifications = new Set<number>();
+
+/** Shows the notifications about the Project this window shows, each with its actions and a way to dismiss it. */
+function showNotifications(): void {
+  const mine = [...shownNotifications.values()]
+    .filter((notification) => notification.project === shownFolder)
+    .sort((first, second) => first.id - second.id);
+  notificationsView.hidden = mine.length === 0;
+  notificationsView.replaceChildren(...mine.map(notificationView));
+}
+
+function notificationView(notification: Notification): HTMLElement {
+  const view = document.createElement("div");
+  view.className = "notification";
+  view.dataset.testid = "notification";
+  view.dataset.kind = notification.kind.kind;
+  const message = document.createElement("p");
+  message.textContent = describeNotification(notification);
+  const buttons = notification.actions.map((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.testid = "notification-action";
+    button.dataset.action = action.action;
+    button.textContent = t(ACTION_LABELS[action.action]);
+    button.addEventListener("click", async () => {
+      buttons.forEach((other) => (other.disabled = true));
+      try {
+        const outcome = await actOnNotification(notification.id, action);
+        switch (outcome.outcome) {
+          case "projectChanged":
+            showProject(outcome.payload);
+            break;
+        }
+      } catch (error) {
+        report(describeError(error));
+        buttons.forEach((other) => (other.disabled = false));
+      }
+    });
+    return button;
+  });
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.dataset.testid = "dismiss-notification";
+  dismiss.textContent = t("dismissNotification");
+  dismiss.addEventListener("click", () => void dismissNotification(notification.id));
+  const actions = document.createElement("div");
+  actions.className = "notification-actions";
+  actions.append(...buttons, dismiss);
+  view.append(message, actions);
+  return view;
+}
+
+function describeNotification(notification: Notification): string {
+  switch (notification.kind.kind) {
+    case "unregisteredRepository":
+      return t("notificationUnregisteredRepository", { root: notification.kind.repository.root });
+    case "invalidRepository":
+      return t("notificationInvalidRepository", { root: notification.kind.repository.root });
+  }
+}
+
+const ACTION_LABELS: Record<NotificationAction["action"], StringKey> = {
+  addRepository: "addRepository",
+  ignoreRepository: "ignoreRepository",
+  removeRepository: "removeRepository",
+};
+
+/** The long operations running, by id, with the last progress each reported. Every window shows them all. */
+const runningOperations = new Map<number, RunningOperation>();
+
+/** The long operations finished since this window started listening, so a late read does not show them again. */
+const finishedOperations = new Set<number>();
+
+/** Shows each running long operation with its progress, in the status area, without blocking the views. */
+function showOperations(): void {
+  operationsView.hidden = runningOperations.size === 0;
+  operationsView.replaceChildren(
+    ...[...runningOperations.values()].map(({ operation, progress }) => {
+      const view = document.createElement("div");
+      view.className = "operation";
+      view.dataset.testid = "operation";
+      const name = describeOperation(operation);
+      const text = document.createElement("span");
+      text.textContent =
+        progress === null
+          ? t("operationStarting", { operation: name })
+          : t("operationProgress", { operation: name, phase: progress.phase, percent: String(progress.percent) });
+      const bar = document.createElement("progress");
+      bar.max = 100;
+      if (progress !== null) {
+        bar.value = progress.percent;
+      }
+      view.append(text, bar);
+      return view;
+    }),
+  );
+}
+
+function describeOperation(operation: LongOperation): string {
+  switch (operation.kind) {
+    case "clone":
+      return t("operationClone", { url: operation.url });
+  }
+}
+
 /** The message for an error from the core: a {@link Failure}, or anything unexpected. */
 function describeError(error: unknown): string {
   return isFailure(error) ? describeFailure(error) : t("unexpectedError", { message: String(error) });
@@ -580,6 +895,12 @@ function describeFailure(failure: Failure): string {
       return t("failureChangesUnreadable", { folder: failure.folder });
     case "changesNotWatched":
       return t("failureChangesNotWatched", { folder: failure.folder, message: failure.message });
+    case "cloneFailed":
+      return t("failureCloneFailed", { url: failure.url, folder: failure.folder });
+    case "notificationGone":
+      return t("failureNotificationGone");
+    case "notificationActionNotOffered":
+      return t("failureNotificationActionNotOffered");
   }
 }
 
