@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::events::{Event, EventBus, OperationLogEntry};
 use crate::host::HostEnvironment;
 use crate::version::GitVersion;
-use crate::wsl::{self, WslShare};
+use crate::wsl::WslShare;
 use crate::{GitCheck, GitSource, MINIMUM_GIT_VERSION};
 
 /// Configuration that only changes presentation, pinned on every invocation.
@@ -77,6 +77,51 @@ impl GitProgram {
             },
         }
     }
+
+    /// The command that starts git in `folder`, before its arguments.
+    fn command(&self, folder: &Path) -> Command {
+        match self {
+            Self::Native(executable) => {
+                let mut command = Command::new(executable);
+                command.current_dir(folder);
+                command
+            }
+            Self::Wsl { wsl, share } => {
+                let mut command = Command::new(wsl);
+                if let Some(share) = share {
+                    command.args(["--distribution", &share.distribution]);
+                }
+                // A folder inside the distribution goes as its Linux path; wsl.exe translates
+                // any other Windows path itself.
+                match WslShare::of(folder) {
+                    Some((_, linux_path)) => command.args(["--cd", &linux_path]),
+                    None => command.arg("--cd").arg(folder),
+                };
+                command.args(["--exec", "git"]);
+                command
+            }
+        }
+    }
+
+    /// The arguments that ask git for the root of the repository a folder is in.
+    fn toplevel_args(&self) -> &'static [&'static str] {
+        match self {
+            Self::Native(_) => &["rev-parse", "--path-format=absolute", "--show-toplevel"],
+            // git inside WSL prints Linux paths, and where a Windows drive appears inside WSL
+            // depends on the distribution's settings. The way up from the folder, as `../`
+            // steps, needs no translation.
+            Self::Wsl { .. } => &["rev-parse", "--show-cdup"],
+        }
+    }
+
+    /// The root of the repository `folder` is in, from the output of [`Self::toplevel_args`].
+    fn toplevel(&self, folder: &Path, output: &[u8]) -> PathBuf {
+        let output = output.strip_suffix(b"\n").unwrap_or(output);
+        match self {
+            Self::Native(_) => path_from_bytes(output),
+            Self::Wsl { .. } => folder.join(String::from_utf8_lossy(output).as_ref()),
+        }
+    }
 }
 
 /// Runs the user's git and records each run in the operation log.
@@ -128,27 +173,7 @@ impl GitRunner {
         }
         command_line.extend(args);
 
-        let mut command = match &self.program {
-            GitProgram::Native(executable) => {
-                let mut command = Command::new(executable);
-                command.current_dir(folder);
-                command
-            }
-            GitProgram::Wsl { wsl, share } => {
-                let mut command = Command::new(wsl);
-                if let Some(share) = share {
-                    command.args(["--distribution", &share.distribution]);
-                }
-                // A folder inside the distribution goes as its Linux path; wsl.exe translates
-                // any other Windows path itself.
-                match WslShare::of(folder) {
-                    Some((_, linux_path)) => command.args(["--cd", &linux_path]),
-                    None => command.arg("--cd").arg(folder),
-                };
-                command.args(["--exec", "git"]);
-                command
-            }
-        };
+        let mut command = self.program.command(folder);
         command
             .args(&command_line)
             .env_clear()
@@ -168,22 +193,14 @@ impl GitRunner {
             stdout: output.stdout,
         })
     }
-}
 
-impl GitRunner {
-    /// The standard output of `invocation` as a path, without the line ending git adds, and
-    /// as Windows sees it when git ran inside WSL.
-    pub fn stdout_path(&self, invocation: &Invocation) -> PathBuf {
-        let bytes = invocation
-            .stdout
-            .strip_suffix(b"\n")
-            .unwrap_or(&invocation.stdout);
-        match &self.program {
-            GitProgram::Native(_) => path_from_bytes(bytes),
-            GitProgram::Wsl { share, .. } => {
-                wsl::windows_path(&String::from_utf8_lossy(bytes), share.as_ref())
-            }
-        }
+    /// The root of the repository `folder` is in, as Windows sees it, or None when `folder` is
+    /// not in a repository.
+    pub fn toplevel(&self, folder: &Path) -> std::io::Result<Option<PathBuf>> {
+        let invocation = self.run(folder, self.program.toplevel_args())?;
+        Ok(invocation
+            .success
+            .then(|| self.program.toplevel(folder, &invocation.stdout)))
     }
 }
 
@@ -264,9 +281,9 @@ pub(crate) fn check_executable(
     host: &HostEnvironment,
     events: &Arc<EventBus>,
 ) -> GitCheck {
-    if !executable.is_file() {
+    let Some(executable) = executable_file(&executable) else {
         return GitCheck::Missing { executable };
-    }
+    };
     let program = GitProgram::found(executable.clone(), source);
     check_program(program, executable, source, host, events)
 }
@@ -300,6 +317,22 @@ fn check_program(
             version,
         },
     }
+}
+
+/// The file `path` names: `path` itself, or on Windows `path` with `.exe` when the user left it
+/// out, as a terminal allows.
+fn executable_file(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    let suffix = std::env::consts::EXE_SUFFIX;
+    if suffix.is_empty() || path.extension().is_some() {
+        return None;
+    }
+    let mut with_suffix = path.as_os_str().to_owned();
+    with_suffix.push(suffix);
+    let with_suffix = PathBuf::from(with_suffix);
+    with_suffix.is_file().then_some(with_suffix)
 }
 
 /// Finds the executable `program` in the folders of PATH.

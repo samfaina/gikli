@@ -164,3 +164,23 @@ fn clearing_the_path_to_git_goes_back_to_the_path() {
     assert!(reported_by_git.starts_with(&format!("git version {version}")));
     assert_eq!(sandbox.gikli().settings().git_path, None);
 }
+
+/// On Windows the user may leave out `.exe`, as they would in a terminal.
+#[cfg(windows)]
+#[test]
+fn a_path_to_git_without_exe_finds_the_executable() {
+    let sandbox = Sandbox::new();
+    let custom = sandbox.fake_git_in("custom-git", fake_git!(), "2.40.1");
+    let without_exe = custom.executable().with_extension("");
+
+    let check = sandbox.gikli().test_git(&without_exe);
+
+    assert_eq!(
+        check,
+        GitCheck::Ready {
+            executable: custom.executable().to_path_buf(),
+            source: GitSource::Configured,
+            version: GitVersion::new(2, 40, 1),
+        }
+    );
+}

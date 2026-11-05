@@ -211,16 +211,9 @@ impl Gikli {
         if !folder.is_dir() {
             return Err(Failure::FolderNotFound { folder });
         }
-        let toplevel = runner
-            .run(
-                &folder,
-                &["rev-parse", "--path-format=absolute", "--show-toplevel"],
-            )
-            .map_err(git_failed_to_start)?;
-        if !toplevel.success {
+        let Some(root) = runner.toplevel(&folder).map_err(git_failed_to_start)? else {
             return Err(Failure::NotInRepository { folder });
-        }
-        let root = runner.stdout_path(&toplevel);
+        };
         let root = canonicalize(&root).unwrap_or(root);
         Ok(Project {
             folder,
@@ -311,7 +304,7 @@ fn usable(check: GitCheck) -> Result<(PathBuf, GitSource, GitVersion), Failure> 
 fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     let canonical = dunce::canonicalize(path)?;
     Ok(match WslShare::of(&canonical) {
-        Some((share, linux_path)) => wsl::windows_path(&linux_path, Some(&share)),
+        Some((share, linux_path)) => share.windows_path(&linux_path),
         None => canonical,
     })
 }

@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use gikli_acceptance::{Sandbox, WslRepository, fake_git, real_wsl};
-use gikli_core::{Change, ChangeStatus, GitCheck, GitSource, GitVersion, Repository};
+use gikli_core::{
+    Change, ChangeStatus, GitCheck, GitSource, GitVersion, HostEnvironment, Repository,
+};
 
 #[test]
 fn without_native_git_gikli_uses_wsl_git() {
@@ -109,21 +111,20 @@ fn a_repository_under_wsl_share_opens_and_works_through_wsl_git() {
     };
     repository.write("notes.txt", "from Windows\n");
     let sandbox = Sandbox::new();
-    let (mut host, _native) = sandbox.host_with_fake_git(fake_git!(), "2.45.2");
-    let wsl = real_wsl().expect("WSL is installed");
-    let path = std::env::join_paths([
-        PathBuf::from(host.get("PATH").expect("PATH is set")),
-        folder_of(&wsl).to_path_buf(),
-    ])
-    .expect("join PATH");
-    host.set("PATH", path);
-    let gikli = sandbox.gikli_in(host);
+    let gikli = sandbox.gikli_in(host_with_stand_in_git_and_real_wsl(&sandbox));
+    let subfolder = repository.folder("src");
 
-    let project = gikli.open_project(repository.root()).expect("open project");
+    let project = gikli.open_project(&subfolder).expect("open project");
     let change_set = gikli
         .read_changes(&project.repositories[0])
         .expect("read changes");
 
+    assert_eq!(
+        project.repositories,
+        vec![Repository {
+            root: repository.toplevel_by_git()
+        }]
+    );
     assert_eq!(
         project.repositories,
         vec![Repository {
@@ -138,4 +139,32 @@ fn a_repository_under_wsl_share_opens_and_works_through_wsl_git() {
         }]
     );
     assert_eq!(repository.status_by_git(), vec!["?? notes.txt"]);
+}
+
+#[test]
+fn a_repository_under_wsl_localhost_keeps_that_form() {
+    let Some(repository) = WslRepository::create() else {
+        eprintln!("skipped: no WSL with git on this machine");
+        return;
+    };
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli_in(host_with_stand_in_git_and_real_wsl(&sandbox));
+    let localhost = repository.root_under("wsl.localhost");
+
+    let project = gikli.open_project(&localhost).expect("open project");
+
+    assert_eq!(project.repositories, vec![Repository { root: localhost }]);
+}
+
+/// An environment whose PATH holds the stand-in git, then the real `wsl.exe`.
+fn host_with_stand_in_git_and_real_wsl(sandbox: &Sandbox) -> HostEnvironment {
+    let (mut host, _native) = sandbox.host_with_fake_git(fake_git!(), "2.45.2");
+    let wsl = real_wsl().expect("WSL is installed");
+    let path = std::env::join_paths([
+        PathBuf::from(host.get("PATH").expect("PATH is set")),
+        folder_of(&wsl).to_path_buf(),
+    ])
+    .expect("join PATH");
+    host.set("PATH", path);
+    host
 }

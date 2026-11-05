@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    /// The git executable to use. When unset, gikli looks for git itself.
+    /// The git executable to use. When unset, gikli looks for git itself. A folder under
+    /// `\\wsl$` always uses the git of its WSL distribution.
     pub git_path: Option<PathBuf>,
 }
 

@@ -100,22 +100,20 @@ void onCoreEvent((event) => {
 });
 
 async function start(): Promise<void> {
-  const git = await checkGit();
-  showGit(git);
-  if (git.status !== "ready") {
-    return;
-  }
+  showGit(await checkGit());
+  // Even without a usable git, a folder under \\wsl$ opens with the git of its distribution;
+  // any other folder reports why it cannot open.
+  openButton.disabled = false;
   const folder = await startupFolder();
   if (folder !== null) {
     await showProject(folder);
   }
 }
 
-/** Shows the git gikli uses. Folders open only with a usable one. */
+/** Shows the git gikli uses. */
 function showGit(git: GitCheck): void {
   gitStatus.classList.toggle("warning", git.status !== "ready");
   gitStatus.textContent = describeGit(git);
-  openButton.disabled = git.status !== "ready";
 }
 
 /** The git gikli found or tested: its version, or what is wrong with it. */

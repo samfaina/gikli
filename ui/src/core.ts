@@ -91,6 +91,7 @@ export function setGitPath(path: string | null): Promise<GitCheck> {
   return invoke("set_git_path", { path });
 }
 
+/** The application settings. */
 export function settings(): Promise<Settings> {
   return invoke("settings");
 }

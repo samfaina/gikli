@@ -147,9 +147,7 @@ impl Sandbox {
     /// every invocation. `stand_in` is the path of the `fake-git` binary: pass [`fake_git!`].
     pub fn host_with_fake_git(&self, stand_in: &str, version: &str) -> (HostEnvironment, FakeGit) {
         let fake = self.fake_git_in("fake-bin", stand_in, version);
-        let mut host = self.host_environment();
-        host.set("PATH", fake.bin.clone());
-        (host, fake)
+        (self.host_with_path(&fake.bin), fake)
     }
 
     /// An environment whose PATH holds no git, only a stand-in `wsl` whose git reports
@@ -157,18 +155,14 @@ impl Sandbox {
     /// `fake-git` binary: pass [`fake_git!`].
     pub fn host_with_fake_wsl(&self, stand_in: &str, version: &str) -> (HostEnvironment, FakeGit) {
         let fake = self.fake_program_in("fake-wsl", "wsl", stand_in, version);
-        let mut host = self.host_environment();
-        host.set("PATH", fake.bin.clone());
-        (host, fake)
+        (self.host_with_path(&fake.bin), fake)
     }
 
     /// On Windows with WSL and a git inside it: an environment whose PATH holds the real
     /// `wsl.exe` and no native git. None elsewhere, so the test that asks can skip.
     pub fn host_with_real_wsl_only(&self) -> Option<HostEnvironment> {
         let wsl = real_wsl()?;
-        let mut host = self.host_environment();
-        host.set("PATH", wsl.parent()?);
-        Some(host)
+        Some(self.host_with_path(wsl.parent()?))
     }
 
     /// A stand-in git that reports `version`, installed in the folder `name` and on no PATH, as
@@ -209,8 +203,13 @@ impl Sandbox {
 
     /// An environment whose PATH holds no git at all.
     pub fn host_without_git(&self) -> HostEnvironment {
+        self.host_with_path(&self.folder("empty-bin"))
+    }
+
+    /// The sandbox's environment with `folder` as the only folder on the PATH.
+    fn host_with_path(&self, folder: &Path) -> HostEnvironment {
         let mut host = self.host_environment();
-        host.set("PATH", self.folder("empty-bin"));
+        host.set("PATH", folder);
         host
     }
 }
@@ -257,7 +256,8 @@ fn wait_until_runnable(executable: &Path) {
 #[cfg(not(unix))]
 fn wait_until_runnable(_executable: &Path) {}
 
-/// Path of the stand-in git binary built with these tests, for [`Sandbox::host_with_fake_git`].
+/// Path of the stand-in git binary built with these tests, for [`Sandbox::host_with_fake_git`],
+/// [`Sandbox::host_with_fake_wsl`] and [`Sandbox::fake_git_in`].
 #[macro_export]
 macro_rules! fake_git {
     () => {
@@ -265,7 +265,7 @@ macro_rules! fake_git {
     };
 }
 
-/// A stand-in git installed by [`Sandbox::host_with_fake_git`].
+/// A stand-in git, or `wsl.exe`, installed by the sandbox.
 pub struct FakeGit {
     bin: PathBuf,
     executable: PathBuf,
@@ -408,8 +408,8 @@ pub fn real_wsl() -> Option<PathBuf> {
 /// removed when dropped.
 pub struct WslRepository {
     wsl: PathBuf,
+    distribution: String,
     linux_root: String,
-    root: PathBuf,
 }
 
 impl WslRepository {
@@ -417,16 +417,16 @@ impl WslRepository {
     /// or None without WSL and a git inside it.
     pub fn create() -> Option<Self> {
         let wsl = real_wsl()?;
-        let distribution = wsl_output(&wsl, None, &["printenv", "WSL_DISTRO_NAME"]);
-        let distribution = distribution.trim();
+        let distribution = wsl_output(&wsl, None, &["printenv", "WSL_DISTRO_NAME"])
+            .trim()
+            .to_owned();
         let linux_root = wsl_output(&wsl, None, &["mktemp", "-d", "/tmp/gikli-test-XXXXXX"])
             .trim()
             .to_owned()
             + "/app";
-        let windows_path = linux_root.replace('/', r"\");
         let repository = Self {
-            root: PathBuf::from(format!(r"\\wsl$\{distribution}{windows_path}")),
             wsl,
+            distribution,
             linux_root,
         };
         wsl_output(
@@ -439,8 +439,36 @@ impl WslRepository {
     }
 
     /// The repository root as Windows sees it, under `\\wsl$`.
-    pub fn root(&self) -> &Path {
-        &self.root
+    pub fn root(&self) -> PathBuf {
+        self.root_under("wsl$")
+    }
+
+    /// The repository root through the share `server`: `wsl$` or `wsl.localhost`.
+    pub fn root_under(&self, server: &str) -> PathBuf {
+        self.windows_path(server, &self.linux_root)
+    }
+
+    /// The repository root as plain git inside WSL reports it, seen through `\\wsl$`.
+    pub fn toplevel_by_git(&self) -> PathBuf {
+        let toplevel = self.git(&["rev-parse", "--show-toplevel"]);
+        self.windows_path("wsl$", toplevel.trim_end())
+    }
+
+    /// Creates a folder inside the working tree and returns its path under `\\wsl$`.
+    pub fn folder(&self, path: &str) -> PathBuf {
+        let folder = self.root().join(path);
+        fs::create_dir_all(&folder).expect("create folder");
+        folder
+    }
+
+    /// `linux_path` inside the distribution, through the share `server`.
+    fn windows_path(&self, server: &str, linux_path: &str) -> PathBuf {
+        let mut path = format!(r"\\{server}\{}", self.distribution);
+        for name in linux_path.split('/').filter(|name| !name.is_empty()) {
+            path.push('\\');
+            path.push_str(name);
+        }
+        PathBuf::from(path)
     }
 
     /// Runs plain git inside WSL in the repository and returns its standard output.
@@ -452,7 +480,7 @@ impl WslRepository {
 
     /// Writes a file in the working tree, through the `\\wsl$` share.
     pub fn write(&self, path: &str, contents: &str) {
-        fs::write(self.root.join(path), contents).expect("write file");
+        fs::write(self.root().join(path), contents).expect("write file");
     }
 
     /// The uncommitted changes as plain git inside WSL reports them, in the form of
