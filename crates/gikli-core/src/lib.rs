@@ -17,6 +17,7 @@ mod project;
 mod prompts;
 mod settings;
 mod status;
+mod trace;
 mod url_passwords;
 mod version;
 mod watch;
