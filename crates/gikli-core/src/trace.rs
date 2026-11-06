@@ -2,7 +2,7 @@
 //!
 //! The trace is the only place that tells which hook runs or failed, in every language. git also
 //! writes every command line to it, which can hold a password in a URL that git does not hide
-//! (git before 2.44 hides none, and no git hides one that reads as a port). So no file ever holds
+//! (an older git hides none, and no git hides one that reads as a port). So no file ever holds
 //! the trace, and git writes it to something that keeps no data.
 //!
 //! A git that a hook starts inherits the target, and git keeps quiet when it cannot reach its
@@ -185,8 +185,13 @@ const CHUNK_SIZE: usize = 16 * 1024;
 /// a command line. It runs git without a trace when it cannot make the FIFO.
 ///
 /// The folder goes as soon as git has connected, which it does before it starts anything, so a git
-/// a hook starts can neither connect nor create a file there. The marker on the FIFO tells the
-/// forwarder that git ended, as a process a hook started can keep the FIFO open.
+/// a hook starts can neither connect nor create a file there. It moves first, as removing it leaves
+/// a moment with the folder there and the FIFO gone, in which git would create a file. The marker
+/// on the FIFO tells the forwarder that git ended, as a process a hook started can keep the FIFO
+/// open.
+///
+/// A trace whose fields came in another order would lose the name of a hook here, or fail to parse,
+/// and never carry a command line.
 pub(crate) const WSL_FORWARDER: &str = r#"marker=$1; shift
 dir=$(mktemp -d 2>/dev/null) && mkfifo "$dir/trace" 2>/dev/null && exec 3<>"$dir/trace" || {
   [ -z "$dir" ] || rm -rf "$dir"
@@ -195,7 +200,7 @@ dir=$(mktemp -d 2>/dev/null) && mkfifo "$dir/trace" 2>/dev/null && exec 3<>"$dir
 (
   connected=
   while IFS= read -r line; do
-    [ -n "$connected" ] || { rm -rf "$dir"; connected=1; }
+    [ -n "$connected" ] || { mv "$dir" "$dir.gone"; rm -rf "$dir" "$dir.gone"; connected=1; }
     [ "$line" != "$marker" ] || break
     sid=${line#*'"sid":"'}
     case ${sid%%'"'*} in */*) continue ;; esac
@@ -212,7 +217,7 @@ GIT_TRACE2_EVENT=$dir/trace "$@" 3>&-
 status=$?
 printf '%s\n' "$marker" >&3
 wait
-rm -rf "$dir"
+rm -rf "$dir" "$dir.gone"
 exit $status
 "#;
 
@@ -306,9 +311,10 @@ mod platform {
     /// How many instances of the pipe there are. git 2.51 uses up two: it asks whether its target
     /// is a folder, which connects and leaves that instance unusable, and then connects for good.
     /// It starts nothing before that, so the git gikli started always finds these free. The rest
-    /// are a margin for a git that asks once more. A git that a hook starts and that connects to
-    /// one does no harm: it writes under a nested session, and when the pipe goes away its next
-    /// write fails, which ends its trace and nothing else.
+    /// are a margin, as another version may ask once more, and running out costs only the name of
+    /// a failed hook. A git that a hook starts and that connects to one does no harm: it writes
+    /// under a nested session, and when the pipe goes away its next write fails, which ends its
+    /// trace and nothing else.
     const INSTANCES: usize = 4;
 
     /// What one instance holds before git waits for gikli to read.

@@ -558,14 +558,21 @@ struct RunTrace {
     /// What git's trace of the run has said so far, without its command lines. Empty for a run
     /// without a trace, which then reports no hook.
     hooks: Arc<Mutex<HookRuns>>,
-    /// Reads the trace of a git on this machine.
-    reader: Option<TraceReader>,
-    /// Finds the trace of the git inside WSL in its error output.
-    forwarded: Option<ForwardedEvents>,
+    source: TraceSource,
     /// What git gets as its target for the trace.
     git_target: OsString,
     /// The empty file gikli's credential helper creates when a remote refuses the credentials.
     refused_credentials_file: PathBuf,
+}
+
+/// Where the trace of a run reaches gikli.
+enum TraceSource {
+    /// The run has no trace.
+    None,
+    /// A git on this machine writes to a reader.
+    Reader(TraceReader),
+    /// The git inside WSL has its events forwarded on its error output.
+    Forwarded(ForwardedEvents),
 }
 
 impl RunTrace {
@@ -573,27 +580,29 @@ impl RunTrace {
     /// its work all the same, and gikli does not fall back to a file.
     fn new(program: &GitProgram, can_read: bool) -> Self {
         let hooks = Arc::new(Mutex::new(HookRuns::default()));
-        let mut reader = None;
-        let mut forwarded = None;
+        let mut source = TraceSource::None;
         let mut git_target = OsString::from(trace::NO_TRACE);
         if can_read {
             match program {
                 GitProgram::Native(_) => {
-                    if let Ok((started, target)) = TraceReader::start(hooks.clone()) {
-                        reader = Some(started);
+                    if let Ok((reader, target)) = TraceReader::start(hooks.clone()) {
+                        source = TraceSource::Reader(reader);
                         git_target = target;
                     }
                 }
                 // The forwarder gives git its target, and git runs with this one without it.
-                GitProgram::Wsl { .. } => forwarded = ForwardedEvents::new(hooks.clone()).ok(),
+                GitProgram::Wsl { .. } => {
+                    if let Ok(forwarded) = ForwardedEvents::new(hooks.clone()) {
+                        source = TraceSource::Forwarded(forwarded);
+                    }
+                }
             }
         }
         let refused_credentials_file =
             std::env::temp_dir().join(format!("{}.refused", trace::new_run_name()));
         Self {
             hooks,
-            reader,
-            forwarded,
+            source,
             git_target,
             refused_credentials_file,
         }
@@ -601,29 +610,32 @@ impl RunTrace {
 
     /// The marker of the events the git inside WSL forwards in its error output.
     fn forwarding_marker(&self) -> Option<&str> {
-        self.forwarded.as_ref().map(ForwardedEvents::marker)
+        match &self.source {
+            TraceSource::Forwarded(forwarded) => Some(forwarded.marker()),
+            _ => None,
+        }
     }
 
     /// `stderr`, a piece of git's error output, without the events in it.
     fn take_events_from(&mut self, stderr: &[u8]) -> Vec<u8> {
-        match &mut self.forwarded {
-            Some(forwarded) => forwarded.take_from(stderr),
-            None => stderr.to_vec(),
+        match &mut self.source {
+            TraceSource::Forwarded(forwarded) => forwarded.take_from(stderr),
+            _ => stderr.to_vec(),
         }
     }
 
     /// What is left of git's error output now that it has ended.
     fn stderr_ended(&mut self) -> Vec<u8> {
-        self.forwarded
-            .as_mut()
-            .map(ForwardedEvents::finish)
-            .unwrap_or_default()
+        match &mut self.source {
+            TraceSource::Forwarded(forwarded) => forwarded.finish(),
+            _ => Vec::new(),
+        }
     }
 
     /// Takes what is left of the trace, once git has ended. A process a hook started that is still
     /// running does not hold this back.
     fn run_ended(&mut self) {
-        if let Some(reader) = &mut self.reader {
+        if let TraceSource::Reader(reader) = &mut self.source {
             reader.finish();
         }
     }

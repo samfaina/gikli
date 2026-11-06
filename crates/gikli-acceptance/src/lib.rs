@@ -735,10 +735,21 @@ impl WslRepository {
         fs::write(self.root().join(path), contents).expect("write file");
     }
 
-    /// Makes `name`, next to the repository, another way to reach it.
-    pub fn link_next_to_it(&self, name: &str) {
+    /// The place `name` beside the repository, as git inside WSL sees it. The folder they share
+    /// goes when this is dropped.
+    pub fn linux_path_beside(&self, name: &str) -> String {
         let parent = self.linux_root.trim_end_matches("/app");
-        let link = format!("{parent}/{name}");
+        format!("{parent}/{name}")
+    }
+
+    /// The place `name` beside the repository, as Windows sees it under `\\wsl$`.
+    pub fn windows_path_beside(&self, name: &str) -> PathBuf {
+        self.windows_path("wsl$", &self.linux_path_beside(name))
+    }
+
+    /// Makes `name`, beside the repository, another way to reach the repository.
+    pub fn link_beside(&self, name: &str) {
+        let link = self.linux_path_beside(name);
         wsl_output(&self.wsl, None, &["ln", "-s", &self.linux_root, &link]);
     }
 

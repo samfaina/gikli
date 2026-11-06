@@ -1,12 +1,12 @@
 //! gikli reads git's trace of a run as git writes it, and keeps it in memory: git writes every
-//! command line to the trace, and those can hold a password in a URL. git hides the password of a
-//! URL it can read only from 2.44 on, and never one that reads as a port.
+//! command line to the trace, and those can hold a password in a URL. An older git hides no
+//! password there, and no git hides one that reads as a port.
 //!
 //! A hook sees where the trace goes in the variable a git it starts inherits, so these tests look
 //! there from inside the run and again after it.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gikli_acceptance::{HttpRemote, Sandbox, TestRepository, as_git_writes_it, file_url};
@@ -34,11 +34,12 @@ fn remote_named_with_a_commit(sandbox: &Sandbox, name: &str) -> TestRepository {
 
 /// A remote over HTTP, and a URL of it with the password in it.
 struct RemoteWithPasswordInUrl {
+    remote: TestRepository,
     _server: HttpRemote,
     url: String,
 }
 
-/// git reads the password of this URL, and from 2.44 on hides it in the trace.
+/// git reads the password of this URL, and a recent one hides it in the trace.
 fn url_git_can_read(sandbox: &Sandbox) -> RemoteWithPasswordInUrl {
     let remote = remote_named_with_a_commit(sandbox, "remote.git");
     let server = sandbox.http_remote(&remote, USERNAME, PASSWORD);
@@ -46,6 +47,7 @@ fn url_git_can_read(sandbox: &Sandbox) -> RemoteWithPasswordInUrl {
         .url()
         .replacen("http://", &format!("http://{USERNAME}:{PASSWORD}@"), 1);
     RemoteWithPasswordInUrl {
+        remote,
         _server: server,
         url,
     }
@@ -61,6 +63,7 @@ fn url_git_takes_for_a_path(sandbox: &Sandbox) -> RemoteWithPasswordInUrl {
     ));
     let url = server.url();
     RemoteWithPasswordInUrl {
+        remote,
         _server: server,
         url,
     }
@@ -114,17 +117,38 @@ impl TraceWatch {
     }
 }
 
+/// Checks with plain git that `target` holds what `remote` holds.
+fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
+    assert_eq!(
+        sandbox
+            .existing_repository(target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
+}
+
+/// The name of the hook `result` says failed, and what it wrote.
+fn failed_hook_of<T: std::fmt::Debug>(result: &Result<T, Failure>) -> (&str, &str) {
+    let Err(Failure::Explained { explanation }) = result else {
+        panic!("got {result:?}");
+    };
+    let ExplainedMessage::HookFailed { hook, output } = &explanation.message else {
+        panic!("got {:?}", explanation.message);
+    };
+    (hook, output)
+}
+
 fn assert_clone_leaves_the_password_in_no_file(url_of: fn(&Sandbox) -> RemoteWithPasswordInUrl) {
     let sandbox = Sandbox::new();
     let remote = url_of(&sandbox);
     let watch = TraceWatch::new(&sandbox);
     sandbox.hook("post-checkout", &watch.script());
+    let target = sandbox.root().join("clone");
     let gikli = sandbox.gikli();
 
-    gikli
-        .clone_repository(&remote.url, &sandbox.root().join("clone"))
-        .expect("clone");
+    gikli.clone_repository(&remote.url, &target).expect("clone");
 
+    assert_cloned(&sandbox, &remote.remote, &target);
     watch.assert_no_file_holds_the_password();
 }
 
@@ -138,8 +162,8 @@ fn a_clone_of_a_password_holding_a_slash_leaves_it_in_no_file() {
     assert_clone_leaves_the_password_in_no_file(url_git_takes_for_a_path);
 }
 
-/// gikli has no fetch of its own yet, so a hook fetches inside a run gikli started. The git of the
-/// hook writes to the trace of that run just as a fetch gikli starts would.
+/// gikli has no fetch of its own yet, so a hook fetches inside a run gikli started. That git
+/// inherits the target of the trace, and writes its command lines there if it reaches it.
 fn assert_fetch_leaves_the_password_in_no_file(url_of: fn(&Sandbox) -> RemoteWithPasswordInUrl) {
     let sandbox = Sandbox::new();
     let remote = url_of(&sandbox);
@@ -213,12 +237,12 @@ fn a_program_that_outlives_the_run_is_not_waited_for_and_leaves_no_file() {
             url = remote.url,
         ),
     );
+    let target = sandbox.root().join("clone");
     let gikli = sandbox.gikli();
 
-    gikli
-        .clone_repository(&remote.url, &sandbox.root().join("clone"))
-        .expect("clone");
+    gikli.clone_repository(&remote.url, &target).expect("clone");
 
+    assert_cloned(&sandbox, &remote.remote, &target);
     assert!(!finished.exists(), "the run waited for the program");
     fs::write(&release, "").expect("release the program");
     wait_until("the program to finish", || finished.exists());
@@ -244,12 +268,7 @@ fn a_failing_hook_of_a_git_inside_a_hook_is_not_the_one_reported() {
 
     let result = gikli.clone_repository(&file_url(remote.root()), &sandbox.root().join("clone"));
 
-    let Err(Failure::Explained { explanation }) = &result else {
-        panic!("got {result:?}");
-    };
-    let ExplainedMessage::HookFailed { hook, output } = &explanation.message else {
-        panic!("got {:?}", explanation.message);
-    };
+    let (hook, output) = failed_hook_of(&result);
     assert_eq!(hook, "post-checkout");
     assert!(output.contains("Lint found 2 problems"), "{output}");
     let events: Vec<Event> = events.try_iter().collect();
@@ -258,6 +277,27 @@ fn a_failing_hook_of_a_git_inside_a_hook_is_not_the_one_reported() {
         gikli.operation_log(),
         gikli.notifications(),
     ));
+}
+
+/// git writes one event for each setting `trace2.configParams` names, here far more than a pipe
+/// holds, before it starts anything. A reader that stopped draining would hold git up for good, and
+/// one that lost events would not name the hook.
+#[test]
+fn a_trace_longer_than_a_pipe_holds_is_read_to_its_end() {
+    let sandbox = Sandbox::new();
+    let remote = remote_named_with_a_commit(&sandbox, "remote.git");
+    let settings: String = (0..1000)
+        .map(|number| format!("\tkey{number} = long-enough-for-1000-of-these-to-fill-a-pipe\n"))
+        .collect();
+    sandbox.configure(&format!(
+        "[trace2]\n\tconfigParams = gikli.*\n[gikli]\n{settings}"
+    ));
+    sandbox.hook("post-checkout", "exit 3");
+    let gikli = sandbox.gikli();
+
+    let result = gikli.clone_repository(&file_url(remote.root()), &sandbox.root().join("clone"));
+
+    assert_eq!(failed_hook_of(&result).0, "post-checkout");
 }
 
 fn assert_holds_no_trace(text: &str) {
@@ -271,27 +311,27 @@ fn assert_holds_no_trace(text: &str) {
 fn what_a_hook_captures_of_a_git_it_starts_holds_no_trace_and_no_password() {
     let sandbox = Sandbox::new();
     let remote = url_git_takes_for_a_path(&sandbox);
-    let merged = sandbox.root().join("merged-output");
-    let errors = sandbox.root().join("error-output");
+    let merged_file = sandbox.root().join("merged-output");
+    let errors_file = sandbox.root().join("error-output");
     sandbox.hook(
         "post-checkout",
         &format!(
             "git ls-remote '{url}' > '{merged}' 2>&1\ngit ls-remote '{url}' 2> '{errors}' > /dev/null",
             url = remote.url,
-            merged = as_git_writes_it(&merged),
-            errors = as_git_writes_it(&errors),
+            merged = as_git_writes_it(&merged_file),
+            errors = as_git_writes_it(&errors_file),
         ),
     );
+    let target = sandbox.root().join("clone");
     let gikli = sandbox.gikli();
 
-    gikli
-        .clone_repository(&remote.url, &sandbox.root().join("clone"))
-        .expect("clone");
+    gikli.clone_repository(&remote.url, &target).expect("clone");
 
-    let merged = fs::read_to_string(merged).expect("the hook ran");
+    assert_cloned(&sandbox, &remote.remote, &target);
+    let merged = fs::read_to_string(merged_file).expect("the hook ran");
     assert!(merged.contains("refs/heads/main"), "{merged}");
     assert_holds_no_trace(&merged);
-    let errors = fs::read_to_string(errors).expect("the hook ran");
+    let errors = fs::read_to_string(errors_file).expect("the hook ran");
     assert_eq!(errors, "");
 }
 
@@ -322,10 +362,11 @@ fn without_a_reader_git_still_runs_and_no_trace_file_appears() {
         .clone_repository(&file_url(remote.root()), &target)
         .expect("clone");
 
-    assert!(target.join(".git").exists());
+    assert!(!configured_trace.exists());
     assert_eq!(watch.targets(), ["0"]);
     watch.assert_no_file_holds_the_password();
-    assert!(!configured_trace.exists());
+    // The plain git of this check does write that trace.
+    assert_cloned(&sandbox, &remote, &target);
 }
 
 /// Without a trace, gikli cannot name the hook, and what a failed clone reports says what happened.
@@ -358,14 +399,12 @@ mod wsl {
     use gikli_acceptance::WslRepository;
     use gikli_core::{Gikli, HostEnvironment};
 
-    /// A repository inside WSL with a commit, to clone with hooks that live next to it.
+    /// A repository inside WSL with a commit, to clone with hooks that live beside it.
     struct WslSetup {
         sandbox: Sandbox,
         source: WslRepository,
         /// `source`, in a folder whose name reads as the password.
         url: String,
-        /// The folder of `source` as git inside WSL sees it.
-        linux_root: String,
     }
 
     impl WslSetup {
@@ -383,44 +422,19 @@ mod wsl {
                 "-m",
                 "First commit",
             ]);
-            let linux_root = source
-                .git(&["rev-parse", "--show-toplevel"])
-                .trim()
-                .to_owned();
-            source.link_next_to_it(&format!("{PASSWORD}@v2"));
-            let parent = linux_root.trim_end_matches("/app");
-            let url = format!("file://{parent}/{PASSWORD}@v2");
+            let alias = format!("{PASSWORD}@v2");
+            source.link_beside(&alias);
+            let url = format!("file://{}", source.linux_path_beside(&alias));
             Some(Self {
                 sandbox: Sandbox::new(),
                 source,
                 url,
-                linux_root,
             })
         }
 
-        /// The folder hooks live in, inside WSL.
-        fn hooks_folder(&self) -> String {
-            format!("{}/hooks", self.linux_root.trim_end_matches("/app"))
-        }
-
         fn hook(&self, name: &str, script: &str) {
-            self.source
-                .write_script(&format!("{}/{name}", self.hooks_folder()), script);
-        }
-
-        /// Where a clone goes, as Windows sees it.
-        fn target(&self) -> PathBuf {
-            self.source.root().parent().expect("a parent").join("clone")
-        }
-
-        /// A file next to the repository, as git inside WSL sees it.
-        fn linux_file(&self, name: &str) -> String {
-            format!("{}/{name}", self.linux_root.trim_end_matches("/app"))
-        }
-
-        /// The same file, as Windows sees it.
-        fn windows_file(&self, name: &str) -> PathBuf {
-            self.source.root().parent().expect("a parent").join(name)
+            let path = self.source.linux_path_beside(&format!("hooks/{name}"));
+            self.source.write_script(&path, script);
         }
 
         /// An environment with no native git, whose git inside WSL uses the hooks of this setup.
@@ -432,7 +446,7 @@ mod wsl {
             let mut shared = OsString::from("GIT_CONFIG_COUNT:GIT_CONFIG_KEY_0:GIT_CONFIG_VALUE_0");
             host.set("GIT_CONFIG_COUNT", "1");
             host.set("GIT_CONFIG_KEY_0", "core.hooksPath");
-            host.set("GIT_CONFIG_VALUE_0", self.hooks_folder());
+            host.set("GIT_CONFIG_VALUE_0", self.source.linux_path_beside("hooks"));
             for (name, value) in also_shared {
                 shared.push(":");
                 shared.push(name);
@@ -442,34 +456,54 @@ mod wsl {
             host
         }
 
-        /// gikli with `host`, cloning `url` to the target.
+        /// gikli with `host`, cloning `url` beside the repository.
         fn clone(&self, host: HostEnvironment) -> (Result<gikli_core::Project, Failure>, Gikli) {
             let gikli = self.sandbox.gikli_in(host);
-            let result = gikli.clone_repository(&self.url, &self.target());
+            let target = self.source.windows_path_beside("clone");
+            let result = gikli.clone_repository(&self.url, &target);
             (result, gikli)
         }
-    }
 
-    /// What a hook writes down of the trace, inside WSL.
-    fn watch_script(setup: &WslSetup) -> String {
-        format!(
-            "printf '%s\\n' \"$GIT_TRACE2_EVENT\" >> '{targets}'\n\
-             if [ -f \"$GIT_TRACE2_EVENT\" ]; then cat \"$GIT_TRACE2_EVENT\" >> '{contents}'; fi",
-            targets = setup.linux_file("trace-targets"),
-            contents = setup.linux_file("trace-contents"),
-        )
-    }
-
-    fn assert_no_file_holds_the_password(setup: &WslSetup) {
-        let targets =
-            fs::read_to_string(setup.windows_file("trace-targets")).expect("the hook ran");
-        let during = fs::read_to_string(setup.windows_file("trace-contents")).unwrap_or_default();
-        assert!(!during.contains(PASSWORD), "during the run: {during}");
-        for target in targets.lines() {
-            assert!(
-                !setup.source.file_exists(target),
-                "the trace went to the file {target}"
+        /// Checks with plain git that the clone holds what the repository holds.
+        fn assert_cloned(&self) {
+            let clone = self.source.linux_path_beside("clone");
+            assert_eq!(
+                self.source.git(&["-C", &clone, "rev-parse", "HEAD"]),
+                self.source.git(&["rev-parse", "HEAD"])
             );
+        }
+
+        /// The lines of a hook that note where the trace goes and what a file there holds.
+        fn watch_script(&self) -> String {
+            format!(
+                "printf '%s\\n' \"$GIT_TRACE2_EVENT\" >> '{targets}'\n\
+                 if [ -f \"$GIT_TRACE2_EVENT\" ]; then cat \"$GIT_TRACE2_EVENT\" >> '{contents}'; fi",
+                targets = self.source.linux_path_beside("trace-targets"),
+                contents = self.source.linux_path_beside("trace-contents"),
+            )
+        }
+
+        fn output_of_hook(&self, name: &str) -> String {
+            fs::read_to_string(self.source.windows_path_beside(name)).expect("the hook ran")
+        }
+
+        /// Checks that no file holding the password was where the trace goes, then or now.
+        fn assert_no_file_holds_the_password(&self) {
+            let contents = self.source.windows_path_beside("trace-contents");
+            let during = fs::read_to_string(contents).unwrap_or_default();
+            assert!(!during.contains(PASSWORD), "during the run: {during}");
+            for target in self.output_of_hook("trace-targets").lines() {
+                assert!(
+                    !self.source.file_exists(target),
+                    "the trace went to the file {target}"
+                );
+            }
+        }
+
+        /// Checks that the clone worked and that git got no target for a trace.
+        fn assert_cloned_without_a_trace(&self) {
+            self.assert_cloned();
+            assert_eq!(self.output_of_hook("trace-targets"), "0\n");
         }
     }
 
@@ -480,32 +514,38 @@ mod wsl {
             return;
         };
         setup.hook(
+            "reference-transaction",
+            "if [ -n \"$GIKLI_TEST_NESTED\" ]; then exit 5; fi",
+        );
+        setup.hook(
             "post-checkout",
             &format!(
-                "{watch}\n\
-                 git --version > '{merged}' 2>&1\n\
+                "git fetch --quiet origin\n\
+                 {watch}\n\
+                 git ls-remote '{url}' > '{merged}' 2>&1\n\
+                 git ls-remote '{url}' 2> '{errors}' > /dev/null\n\
+                 GIKLI_TEST_NESTED=1 git update-ref refs/heads/nested HEAD 2> /dev/null\n\
                  printf 'half a line' >&2\n\
                  exit 3",
-                watch = watch_script(&setup),
-                merged = setup.linux_file("merged-output"),
+                watch = setup.watch_script(),
+                url = setup.url,
+                merged = setup.source.linux_path_beside("merged-output"),
+                errors = setup.source.linux_path_beside("error-output"),
             ),
         );
 
         let (result, gikli) = setup.clone(setup.host(&[]));
 
-        let Err(Failure::Explained { explanation }) = &result else {
-            panic!("got {result:?}");
-        };
-        let ExplainedMessage::HookFailed { hook, output } = &explanation.message else {
-            panic!("got {:?}", explanation.message);
-        };
+        let (hook, output) = failed_hook_of(&result);
         assert_eq!(hook, "post-checkout");
         assert!(output.contains("half a line"), "{output}");
         assert_holds_no_trace(&format!("{result:?}{:?}", gikli.operation_log()));
-        assert_no_file_holds_the_password(&setup);
-        let merged = fs::read_to_string(setup.windows_file("merged-output")).expect("the hook ran");
-        assert!(merged.starts_with("git version"), "{merged}");
+        setup.assert_cloned();
+        setup.assert_no_file_holds_the_password();
+        let merged = setup.output_of_hook("merged-output");
+        assert!(merged.contains("HEAD"), "{merged}");
         assert_holds_no_trace(&merged);
+        assert_eq!(setup.output_of_hook("error-output"), "");
     }
 
     /// The program holds on to all it inherited from git, the FIFO included. WSL ends it once
@@ -516,7 +556,6 @@ mod wsl {
             eprintln!("skipped: no WSL with git on this machine");
             return;
         };
-        let finished = setup.linux_file("finished");
         setup.hook(
             "post-checkout",
             &format!(
@@ -525,15 +564,20 @@ mod wsl {
                    sleep 20\n\
                    : > '{finished}'\n\
                  ) > /dev/null 2>&1 < /dev/null &",
-                watch = watch_script(&setup),
+                watch = setup.watch_script(),
+                finished = setup.source.linux_path_beside("finished"),
             ),
         );
 
         let (result, _gikli) = setup.clone(setup.host(&[]));
 
         result.expect("clone");
-        assert!(!setup.windows_file("finished").exists(), "the run waited");
-        assert_no_file_holds_the_password(&setup);
+        setup.assert_cloned();
+        assert!(
+            !setup.source.windows_path_beside("finished").exists(),
+            "the run waited"
+        );
+        setup.assert_no_file_holds_the_password();
     }
 
     /// `mktemp` has nowhere to go, as real a way as any for the forwarder to fail.
@@ -543,13 +587,12 @@ mod wsl {
             eprintln!("skipped: no WSL with git on this machine");
             return;
         };
-        setup.hook("post-checkout", &watch_script(&setup));
+        setup.hook("post-checkout", &setup.watch_script());
 
         let (result, gikli) = setup.clone(setup.host(&[("TMPDIR", "/nowhere/at/all")]));
 
         result.expect("clone");
-        let targets = fs::read_to_string(setup.windows_file("trace-targets")).expect("hook ran");
-        assert_eq!(targets, "0\n");
+        setup.assert_cloned_without_a_trace();
         assert_holds_no_trace(&format!("{:?}", gikli.operation_log()));
     }
 
@@ -559,12 +602,11 @@ mod wsl {
             eprintln!("skipped: no WSL with git on this machine");
             return;
         };
-        setup.hook("post-checkout", &watch_script(&setup));
+        setup.hook("post-checkout", &setup.watch_script());
 
         let (result, _gikli) = setup.clone(setup.host(&[("GIKLI_NO_TRACE_READER", "1")]));
 
         result.expect("clone");
-        let targets = fs::read_to_string(setup.windows_file("trace-targets")).expect("hook ran");
-        assert_eq!(targets, "0\n");
+        setup.assert_cloned_without_a_trace();
     }
 }
