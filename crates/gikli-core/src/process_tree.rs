@@ -46,8 +46,14 @@ impl Cancellation {
         lock(&self.state).requested
     }
 
+    /// Whether this is what ended a run with `status`. A run that ended by itself first, which it
+    /// can do long before its output closes when a hook left a program behind, has its own result.
+    pub fn ended_run_with(&self, status: ExitStatus) -> bool {
+        self.is_requested() && platform::was_ended(status)
+    }
+
     /// Makes `tree` the run this ends.
-    pub fn reach(&self, tree: ProcessTree) {
+    fn attach(&self, tree: ProcessTree) {
         let mut state = lock(&self.state);
         if state.requested {
             tree.end();
@@ -79,14 +85,14 @@ impl Cancellation {
     }
 }
 
-pub(crate) use platform::{ProcessTree, start_contained};
+use platform::ProcessTree;
 
 #[cfg(windows)]
 mod platform {
     use std::io;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
-    use std::process::{Child, Command};
+    use std::process::{Child, Command, ExitStatus};
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
@@ -101,8 +107,8 @@ mod platform {
         CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
     };
 
-    /// The exit code of a process ended by a cancel.
-    const CANCELLED: u32 = 1;
+    /// The exit code of a process ended by a cancel, which no program gives by itself: `GIKL`.
+    const CANCELLED: u32 = 0x4749_4B4C;
 
     /// A Job Object holding one run. The processes in it can neither leave it nor start one
     /// outside it, as it allows no breakaway. Closing it ends nothing: gikli kills only on request.
@@ -115,13 +121,17 @@ mod platform {
 
     /// Makes `command` start without running, so that it starts nothing before it is in a job,
     /// and without a console window, as every run of git.
-    pub(crate) fn start_contained(command: &mut Command) {
+    pub(super) fn prepare(command: &mut Command) {
         command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
 
+    pub(super) fn was_ended(status: ExitStatus) -> bool {
+        status.code() == Some(CANCELLED as i32)
+    }
+
     impl ProcessTree {
-        /// Puts `child`, started by a command given to [`start_contained`], in a job of its own,
-        /// and lets it run.
+        /// Puts `child`, started by a command given to [`prepare`], in a job of its own, and lets
+        /// it run.
         pub fn of(child: &Child) -> io::Result<Self> {
             // SAFETY: both arguments may be null, for a job with no name and default security.
             let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
@@ -211,7 +221,8 @@ mod platform {
 #[cfg(unix)]
 mod platform {
     use std::io;
-    use std::process::{Child, Command};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Child, Command, ExitStatus};
 
     /// The process group of one run. git leads it, as it runs in a session of its own.
     pub(crate) struct ProcessTree {
@@ -219,7 +230,11 @@ mod platform {
     }
 
     /// The group is there already: every run of git starts a session.
-    pub(crate) fn start_contained(_command: &mut Command) {}
+    pub(super) fn prepare(_command: &mut Command) {}
+
+    pub(super) fn was_ended(status: ExitStatus) -> bool {
+        status.signal() == Some(libc::SIGKILL)
+    }
 
     impl ProcessTree {
         pub fn of(child: &Child) -> io::Result<Self> {
@@ -240,15 +255,16 @@ mod platform {
     }
 }
 
-/// Starts `command`, contained by [`start_contained`], as a process tree that `cancellation` ends.
+/// Starts `command` as a process tree that `cancellation` ends.
 pub(crate) fn spawn_contained(
     command: &mut Command,
     cancellation: &Cancellation,
 ) -> io::Result<Child> {
+    platform::prepare(command);
     let mut child = command.spawn()?;
     match ProcessTree::of(&child) {
         Ok(tree) => {
-            cancellation.reach(tree);
+            cancellation.attach(tree);
             Ok(child)
         }
         Err(error) => {

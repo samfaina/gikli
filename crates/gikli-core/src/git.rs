@@ -164,6 +164,8 @@ pub(crate) struct Invocation {
     pub cancelled: bool,
     /// The last hook this run started, when it was cancelled.
     pub last_hook: Option<String>,
+    /// The hook this run was waiting on, when it was cancelled.
+    pub interrupted_hook: Option<String>,
 }
 
 /// Where gikli's credential helper notes that a remote refused the credentials.
@@ -250,7 +252,6 @@ impl GitRunner {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let cancellation = operation.cancellation();
         let started = if self.runs_natively() {
-            process_tree::start_contained(&mut command);
             process_tree::spawn_contained(&mut command, cancellation)
         } else {
             command.spawn()
@@ -324,8 +325,7 @@ impl GitRunner {
             }
         };
         let stderr = hide_url_passwords(&String::from_utf8_lossy(&stderr));
-        // A run that ended well before the request reached it did what it had to.
-        let cancelled = cancellation.is_requested() && !status.success();
+        let cancelled = cancellation.ended_run_with(status);
         entry.cancelled = cancelled;
         entry.exit_code = status.code();
         entry.stdout = hide_url_passwords(&String::from_utf8_lossy(&stdout));
@@ -338,7 +338,8 @@ impl GitRunner {
             failed_hook: trace.failed_hook(),
             credentials_refused: trace.refused_credentials_file.exists(),
             cancelled,
-            last_hook: if cancelled { trace.last_hook() } else { None },
+            last_hook: trace.last_hook().filter(|_| cancelled),
+            interrupted_hook: trace.running_hook().filter(|_| cancelled),
         })
     }
 
@@ -374,19 +375,19 @@ const TRACE_READ_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Follows the run of `child`, traced to `trace`, until it ends, and returns what it wrote. A
 /// program that holds git's output open after the run was cancelled, having escaped the cancel,
-/// is left behind.
+/// no longer holds this back.
 fn watch_run(
     mut child: Child,
     trace: &RunTrace,
     operation: &OperationRun,
 ) -> std::io::Result<Output> {
     let (sender, pipes) = mpsc::channel();
-    read_apart(
+    read_on_its_own_thread(
         child.stdout.take().expect("stdout is piped"),
         Piped::Stdout,
         sender.clone(),
     );
-    read_apart(
+    read_on_its_own_thread(
         child.stderr.take().expect("stderr is piped"),
         Piped::Stderr,
         sender,
@@ -428,7 +429,7 @@ fn watch_run(
 fn tell_hook(trace: &RunTrace, hook: &mut Option<String>, operation: &OperationRun) {
     let running = trace.running_hook();
     if running != *hook {
-        operation.waits_on_hook(running.clone());
+        operation.report_hook(running.clone());
         *hook = running;
     }
 }
@@ -443,7 +444,7 @@ enum Piped {
 /// Reads `pipe` on a thread of its own, so git never blocks on one pipe while gikli reads another,
 /// and so gikli can stop waiting for a pipe that stays open. `piped` makes what it sends of what
 /// it read, and the thread ends when the pipe closes or nobody listens any more.
-fn read_apart(
+fn read_on_its_own_thread(
     mut pipe: impl Read + Send + 'static,
     piped: fn(Vec<u8>) -> Piped,
     sender: Sender<Piped>,
@@ -523,6 +524,7 @@ impl Invocation {
             credentials_refused: self.credentials_refused,
             cancelled: self.cancelled,
             last_hook: self.last_hook.clone(),
+            interrupted_hook: self.interrupted_hook.clone(),
         }
     }
 }

@@ -723,14 +723,10 @@ impl Gikli {
             url: shown_url.clone(),
             folder: target.clone(),
         };
-        let invocation = self
-            .operations
-            .run(operation, runner.runs_natively(), |run| {
-                runner.run_operation(parent, &["clone", "--progress", "--", url, &name], run)
-            })
-            .map_err(git_failed_to_start)?;
+        let args = ["clone", "--progress", "--", url, &name];
+        let invocation = self.run_operation(&runner, operation, parent, &args)?;
         if invocation.cancelled {
-            return self.end_cancelled_clone(&target, found, invocation.last_hook);
+            return self.end_cancelled_clone(&target, found, invocation);
         }
         if !invocation.success {
             return Err(failure_of(
@@ -746,16 +742,34 @@ impl Gikli {
         self.open_project(&target)
     }
 
-    /// What is left to do about a clone into `target`, which held `found` before, that the user
-    /// cancelled after it started the hook `last_hook`, if any.
+    /// Runs git with `args` in `folder` as `operation`, which the user can cancel unless git runs
+    /// inside WSL.
+    fn run_operation(
+        &self,
+        runner: &GitRunner,
+        operation: LongOperation,
+        folder: &Path,
+        args: &[&str],
+    ) -> Result<Invocation, Failure> {
+        self.operations
+            .run(operation, runner.runs_natively(), |run| {
+                runner.run_operation(folder, args, run)
+            })
+            .map_err(git_failed_to_start)
+    }
+
+    /// What is left to do about `clone`, a clone into `target`, which held `found` before, that the
+    /// user cancelled.
     fn end_cancelled_clone(
         &self,
         target: &Path,
         found: FoundFolder,
-        last_hook: Option<String>,
+        clone: Invocation,
     ) -> Result<Project, Failure> {
-        let Some(hook) = last_hook.filter(|hook| HOOKS_AFTER_CHECKOUT.contains(&hook.as_str()))
-        else {
+        let checked_out = clone
+            .last_hook
+            .is_some_and(|hook| HOOKS_AFTER_CHECKOUT.contains(&hook.as_str()));
+        if !checked_out {
             return match found.restore(target) {
                 Ok(()) => Err(Failure::OperationCancelled { left_behind: None }),
                 Err(error) => Err(Failure::CancelledCloneNotRemoved {
@@ -765,14 +779,18 @@ impl Gikli {
             };
         };
         let project = self.open_project(target)?;
-        let repository = Repository {
-            root: project.folder.clone(),
-        };
-        self.notifications.raise(
-            &project.folder,
-            NotificationKind::HookNotFinished { repository, hook },
-            vec![],
-        );
+        // Unless the cancel came just as the hook ended, which leaves nothing to tell.
+        if let Some(hook) = clone.interrupted_hook {
+            // A clone is the Repository at the root of the Project it opens as.
+            let repository = Repository {
+                root: project.folder.clone(),
+            };
+            self.notifications.raise(
+                &project.folder,
+                NotificationKind::HookNotFinished { repository, hook },
+                vec![],
+            );
+        }
         Ok(project)
     }
 
@@ -805,12 +823,7 @@ impl Gikli {
         let operation = LongOperation::AddFiles {
             repository: repository.clone(),
         };
-        let invocation = self
-            .operations
-            .run(operation, runner.runs_natively(), |run| {
-                runner.run_operation(&repository.root, &args, run)
-            })
-            .map_err(git_failed_to_start)?;
+        let invocation = self.run_operation(&runner, operation, &repository.root, &args)?;
         if !invocation.success {
             return Err(failure_of(
                 &runner,
@@ -941,7 +954,8 @@ enum FoundFolder {
     Nothing,
     /// There was a folder with nothing in it.
     Empty,
-    /// There was a folder with something in it, which git refuses to clone into.
+    /// There was something gikli must leave alone: a folder with something in it, which git refuses
+    /// to clone into, or anything it cannot tell is empty.
     Contents,
 }
 
@@ -949,8 +963,8 @@ impl FoundFolder {
     fn at(target: &Path) -> Self {
         match std::fs::read_dir(target).map(|mut entries| entries.next().is_none()) {
             Ok(true) => Self::Empty,
-            Ok(false) => Self::Contents,
-            Err(_) => Self::Nothing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::Nothing,
+            Ok(false) | Err(_) => Self::Contents,
         }
     }
 

@@ -77,14 +77,20 @@ pub(crate) struct LongOperations {
 #[derive(Default)]
 struct State {
     next_id: u64,
-    running: Vec<(RunningOperation, Arc<Cancellation>)>,
+    running: Vec<Tracked>,
+}
+
+/// A long operation running, with what cancels it.
+struct Tracked {
+    shown: RunningOperation,
+    cancellation: Arc<Cancellation>,
 }
 
 impl State {
     fn running(&mut self, id: u64) -> Option<&mut RunningOperation> {
         self.running
             .iter_mut()
-            .map(|(running, _)| running)
+            .map(|tracked| &mut tracked.shown)
             .find(|running| running.id == id)
     }
 }
@@ -109,7 +115,7 @@ impl OperationRun<'_> {
     }
 
     /// `hook` is the one the operation waits on from now on, or None when it waits on none.
-    pub fn waits_on_hook(&self, hook: Option<String>) {
+    pub fn report_hook(&self, hook: Option<String>) {
         let mut state = lock(&self.operations.state);
         if let Some(running) = state.running(self.id) {
             running.hook = hook.clone();
@@ -147,16 +153,16 @@ impl LongOperations {
             let mut state = lock(&self.state);
             let id = state.next_id;
             state.next_id += 1;
-            state.running.push((
-                RunningOperation {
+            state.running.push(Tracked {
+                shown: RunningOperation {
                     id,
                     operation: operation.clone(),
                     progress: None,
                     hook: None,
                     cancellable,
                 },
-                cancellation.clone(),
-            ));
+                cancellation: cancellation.clone(),
+            });
             self.events.send(Event::OperationStarted {
                 id,
                 operation,
@@ -170,7 +176,7 @@ impl LongOperations {
             cancellation,
         });
         let mut state = lock(&self.state);
-        state.running.retain(|(running, _)| running.id != id);
+        state.running.retain(|tracked| tracked.shown.id != id);
         self.events.send(Event::OperationFinished { id });
         result
     }
@@ -181,8 +187,8 @@ impl LongOperations {
         let cancellation = lock(&self.state)
             .running
             .iter()
-            .find(|(running, _)| running.id == id && running.cancellable)
-            .map(|(_, cancellation)| cancellation.clone());
+            .find(|tracked| tracked.shown.id == id && tracked.shown.cancellable)
+            .map(|tracked| tracked.cancellation.clone());
         if let Some(cancellation) = cancellation {
             cancellation.request();
         }
@@ -193,7 +199,7 @@ impl LongOperations {
         lock(&self.state)
             .running
             .iter()
-            .map(|(running, _)| running.clone())
+            .map(|tracked| tracked.shown.clone())
             .collect()
     }
 }

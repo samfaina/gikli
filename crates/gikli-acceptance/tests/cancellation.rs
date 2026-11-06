@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use std::thread::ScopedJoinHandle;
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, file_url};
+use gikli_acceptance::{Sandbox, TestRepository, WslRepository, as_git_writes_it, file_url};
 use gikli_core::{
     Event, ExplainedMessage, Explanation, Failure, FailureAction, Gikli, LongOperation, NextStep,
     NotificationKind, Project, Repository, RunningOperation,
@@ -38,6 +38,14 @@ fn blocking_hook() -> String {
     format!("echo '{WRITTEN_BEFORE_BLOCKING}'\n{BLOCKS}")
 }
 
+/// A script that creates `holding` and then never ends.
+fn holds_after_creating(holding: &Path) -> String {
+    format!(
+        ": > '{}'\nwhile :; do sleep 1; done\n",
+        as_git_writes_it(holding)
+    )
+}
+
 /// A bare remote holding one commit, pushed from a working repository.
 fn remote_with_a_commit(sandbox: &Sandbox) -> TestRepository {
     let remote = sandbox.bare_remote("remote.git");
@@ -65,13 +73,18 @@ fn wait_for_hook(events: &Receiver<Event>, hook: &str) -> u64 {
     }
 }
 
-/// Waits for `path` to exist: something the test started has got as far as creating it.
-fn wait_for_file(path: &Path) {
+/// Waits for `condition` to hold, for a limited time. `what` says what the test waits for.
+fn wait_until(what: &str, condition: impl Fn() -> bool) {
     let give_up = Instant::now() + DEADLINE;
-    while !path.exists() {
-        assert!(Instant::now() < give_up, "{} never came", path.display());
+    while !condition() {
+        assert!(Instant::now() < give_up, "waited in vain for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Waits for `path` to exist: something the test started has got as far as creating it.
+fn wait_for_file(path: &Path) {
+    wait_until(&path.display().to_string(), || path.exists());
 }
 
 /// The only long operation running.
@@ -83,11 +96,7 @@ fn the_running_operation(gikli: &Gikli) -> RunningOperation {
 
 /// Waits for what `thread` returns, for a limited time, as a cancelled run must end by itself.
 fn result_of<T>(thread: ScopedJoinHandle<'_, T>) -> T {
-    let give_up = Instant::now() + DEADLINE;
-    while !thread.is_finished() {
-        assert!(Instant::now() < give_up, "the cancelled run did not end");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the cancelled run to end", || thread.is_finished());
     thread.join().expect("the run does not panic")
 }
 
@@ -96,14 +105,7 @@ fn result_of<T>(thread: ScopedJoinHandle<'_, T>) -> T {
 fn hold_clones_before_any_hook(sandbox: &Sandbox) -> PathBuf {
     let holding = sandbox.root().join("clone-is-held");
     let script = sandbox.root().join("hold-clone.sh");
-    fs::write(
-        &script,
-        format!(
-            ": > '{}'\nwhile :; do sleep 1; done\n",
-            as_git_writes_it(&holding)
-        ),
-    )
-    .expect("write the script");
+    fs::write(&script, holds_after_creating(&holding)).expect("write the script");
     // Read by git's upload-pack only from protected configuration, such as the global one.
     sandbox.configure(&format!(
         "[uploadpack]\n\tpackObjectsHook = sh '{}'\n",
@@ -179,19 +181,12 @@ fn a_clone_waiting_on_a_hook_can_be_cancelled_and_stays_a_repository_that_opens(
 
 /// Fails unless a process called `program`, running for this sandbox, shows up.
 fn assert_eventually_runs(sandbox: &Sandbox, program: &str) {
-    let give_up = Instant::now() + DEADLINE;
-    while !sandbox
-        .processes_still_running()
-        .iter()
-        .any(|name| name == program)
-    {
-        assert!(
-            Instant::now() < give_up,
-            "{program} never ran: {:?}",
-            sandbox.processes_still_running()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until(program, || {
+        sandbox
+            .processes_still_running()
+            .iter()
+            .any(|name| name == program)
+    });
 }
 
 /// Clones with the transfer held, cancels, and returns what the clone returned.
@@ -300,6 +295,12 @@ fn a_hook_that_is_only_slow_runs_to_completion_with_nobody_cancelling_it() {
 
     assert!(finished.exists(), "gikli let the hook finish");
     assert_eq!(project.repositories.len(), 1);
+    assert_eq!(
+        sandbox
+            .existing_repository(&target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
     assert!(gikli.notifications().is_empty());
     let hooks: Vec<Option<String>> = events
         .try_iter()
@@ -356,6 +357,98 @@ fn a_hook_run_by_a_git_inside_a_hook_is_not_the_one_reported() {
 
     result.expect("the clone is complete, so it opens");
     assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+    assert_eq!(
+        sandbox
+            .existing_repository(&target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
+}
+
+/// A hook that fails and leaves a program behind holding git's output keeps the operation running
+/// after git has ended. Cancelling then ends that program, and what happened to the run stands.
+#[test]
+fn cancelling_a_run_that_already_failed_by_itself_keeps_its_failure() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_commit(&sandbox);
+    sandbox.hook(
+        "post-checkout",
+        "echo 'Lint found 2 problems'\nsleep 3600 &\nexit 3",
+    );
+    let target = sandbox.root().join("clone");
+    let url = file_url(remote.root());
+    let gikli = sandbox.gikli();
+
+    let result = std::thread::scope(|scope| {
+        let clone = scope.spawn(|| gikli.clone_repository(&url, &target));
+        wait_until("git to end with the program still running", || {
+            let running = sandbox.processes_still_running();
+            running.iter().any(|name| name.starts_with("sleep"))
+                && !running.iter().any(|name| name.starts_with("git"))
+        });
+        assert!(!clone.is_finished(), "the program holds git's output open");
+
+        gikli.cancel_operation(the_running_operation(&gikli).id);
+
+        result_of(clone)
+    });
+
+    assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+    let Err(Failure::Explained { explanation }) = result else {
+        panic!("got {result:?}");
+    };
+    let ExplainedMessage::HookFailed { hook, output } = explanation.message else {
+        panic!("got {:?}", explanation.message);
+    };
+    assert_eq!(hook, "post-checkout");
+    assert!(output.contains("Lint found 2 problems"), "{output}");
+    let logged = gikli
+        .operation_log()
+        .into_iter()
+        .find(|entry| entry.args.contains(&"clone".to_owned()))
+        .expect("the clone is logged");
+    assert!(!logged.cancelled);
+    assert_eq!(logged.exit_code, Some(3));
+}
+
+/// A program can leave the process group of the run, which nothing tells gikli. It stays alive, and
+/// holding git's output open it still does not keep the cancelled operation from ending.
+#[cfg(unix)]
+#[test]
+fn a_program_that_left_the_run_does_not_hold_back_the_cancel() {
+    let leaves = "perl -e 'use POSIX; POSIX::setsid(); sleep 20'";
+    if !std::process::Command::new("perl")
+        .args(["-e", "use POSIX;"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("skipped: needs perl with POSIX");
+        return;
+    }
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_commit(&sandbox);
+    sandbox.hook("post-checkout", &format!("{leaves} &\n{BLOCKS}"));
+    let target = sandbox.root().join("clone");
+    let url = file_url(remote.root());
+    let gikli = sandbox.gikli();
+    let events = gikli.subscribe();
+
+    let result = std::thread::scope(|scope| {
+        let clone = scope.spawn(|| gikli.clone_repository(&url, &target));
+        let id = wait_for_hook(&events, "post-checkout");
+        assert_eventually_runs(&sandbox, "perl");
+        gikli.cancel_operation(id);
+        result_of(clone)
+    });
+
+    result.expect("the clone is complete, so it opens");
+    assert!(
+        !sandbox
+            .processes_still_running()
+            .iter()
+            .any(|name| name == BLOCKING_PROGRAM),
+        "what stayed in the run ended"
+    );
 }
 
 /// A repository where adding `held.txt` blocks, with the index locked, in a filter that creates
@@ -363,14 +456,7 @@ fn a_hook_run_by_a_git_inside_a_hook_is_not_the_one_reported() {
 fn repository_where_adding_blocks(sandbox: &Sandbox) -> (TestRepository, PathBuf) {
     let holding = sandbox.root().join("add-is-held");
     let script = sandbox.root().join("hold-add.sh");
-    fs::write(
-        &script,
-        format!(
-            ": > '{}'\nwhile :; do sleep 1; done\n",
-            as_git_writes_it(&holding)
-        ),
-    )
-    .expect("write the script");
+    fs::write(&script, holds_after_creating(&holding)).expect("write the script");
     sandbox.configure(&format!(
         "[filter \"hold\"]\n\tclean = sh '{}'\n",
         as_git_writes_it(&script)
@@ -387,8 +473,8 @@ fn repository_where_adding_blocks(sandbox: &Sandbox) -> (TestRepository, PathBuf
 /// Where a file of the git directory of `repository` goes, as plain git says.
 fn in_git_directory(repository: &TestRepository, name: &str) -> PathBuf {
     let path = repository.git(&["rev-parse", "--path-format=absolute", "--git-path", name]);
-    let index = PathBuf::from(path.trim_end());
-    let folder = dunce::canonicalize(index.parent().expect("a file of the git directory"))
+    let file = PathBuf::from(path.trim_end());
+    let folder = dunce::canonicalize(file.parent().expect("a file of the git directory"))
         .expect("the repository has a git directory");
     folder.join(name)
 }
@@ -495,8 +581,8 @@ fn cancelling_an_operation_that_already_ended_or_never_ran_changes_nothing() {
     );
 }
 
-/// A cancelled clone takes the askpass program with it, and with it the question nobody needs
-/// answered any more.
+/// A cancelled clone takes the askpass program with it, and with it the Prompt nobody needs answered
+/// any more.
 #[test]
 fn cancelling_a_clone_waiting_for_a_prompt_closes_the_prompt() {
     let sandbox = Sandbox::new();
@@ -518,11 +604,7 @@ fn cancelling_a_clone_waiting_for_a_prompt_closes_the_prompt() {
         result,
         Err(Failure::OperationCancelled { left_behind: None })
     );
-    let give_up = Instant::now() + DEADLINE;
-    while !gikli.pending_prompts().is_empty() {
-        assert!(Instant::now() < give_up, "the prompt stayed open");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_until("the prompt to close", || gikli.pending_prompts().is_empty());
     assert!(
         events
             .try_iter()
@@ -547,24 +629,41 @@ fn wait_for_prompt(events: &Receiver<Event>, gikli: &Gikli) -> (u64, u64) {
 }
 
 /// Cancelling git inside WSL may not reach the processes on the Linux side, so gikli does not offer
-/// it. The stand-in `wsl.exe` fails at once, which is all this needs: the operation still starts.
-#[cfg(windows)]
+/// it, and asking for it anyway changes nothing.
 #[test]
-fn an_operation_of_git_inside_wsl_does_not_offer_to_be_cancelled() {
+fn an_operation_of_git_inside_wsl_cannot_be_cancelled() {
+    let Some(repository) = WslRepository::create() else {
+        eprintln!("skipped: needs WSL with git");
+        return;
+    };
+    repository.write("new.txt", "new\n");
+    let root = Repository {
+        root: repository.root(),
+    };
     let sandbox = Sandbox::new();
-    let (host, _wsl) = sandbox.host_with_fake_wsl(gikli_acceptance::fake_git!(), "2.43.0");
-    let gikli = sandbox.gikli_in(host);
+    let gikli = sandbox.gikli();
     let events = gikli.subscribe();
 
-    let result = gikli.clone_repository("file:///nowhere", &sandbox.root().join("clone"));
+    let (result, cancellable) = std::thread::scope(|scope| {
+        let add = scope.spawn(|| gikli.add_files(&root, &["new.txt".to_owned()]));
+        let give_up = Instant::now() + DEADLINE;
+        let cancellable = loop {
+            let left = give_up.saturating_duration_since(Instant::now());
+            match events.recv_timeout(left) {
+                Ok(Event::OperationStarted {
+                    id, cancellable, ..
+                }) => {
+                    gikli.cancel_operation(id);
+                    break cancellable;
+                }
+                Ok(_) => {}
+                Err(error) => panic!("the add did not start: {error}"),
+            }
+        };
+        (result_of(add), cancellable)
+    });
 
-    assert!(result.is_err());
-    let started = events
-        .try_iter()
-        .find_map(|event| match event {
-            Event::OperationStarted { cancellable, .. } => Some(cancellable),
-            _ => None,
-        })
-        .expect("the clone announces it started");
-    assert!(!started, "gikli offers no cancel that may not work");
+    assert!(!cancellable, "gikli offers no cancel that may not work");
+    result.expect("the add runs to its end");
+    assert_eq!(repository.status_by_git(), ["A  new.txt"]);
 }
