@@ -49,25 +49,11 @@ fn a_clone_works_with_the_password_in_the_url_and_only_git_sees_it() {
         .expect("the remote takes the password in the URL");
 
     assert_cloned(&sandbox, &remote, &target);
-    assert_eq!(
-        sandbox
-            .existing_repository(&target)
-            .git(&["config", "remote.origin.url"])
-            .trim_end(),
-        url,
-        "git received the URL as the user gave it"
-    );
+    assert_git_received(&sandbox, &target, &url);
 
     let hidden = with_credentials(&server.url(), USERNAME, "***");
     let events: Vec<Event> = events.try_iter().collect();
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            Event::OperationStarted { operation: LongOperation::Clone { url, .. }, .. }
-                if *url == hidden
-        )),
-        "{events:?}"
-    );
+    assert_clone_started_showing(&events, &hidden);
     let args = logged_run(&gikli, "clone").args;
     assert!(args.contains(&hidden), "{args:?}");
     let log = gikli.operation_log();
@@ -91,6 +77,29 @@ fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
             .existing_repository(target)
             .git(&["rev-parse", "HEAD"]),
         remote.git(&["rev-parse", "main"])
+    );
+}
+
+/// Checks with plain git that the clone in `target` has `url` as its remote.
+fn assert_git_received(sandbox: &Sandbox, target: &Path, url: &str) {
+    assert_eq!(
+        sandbox
+            .existing_repository(target)
+            .git(&["config", "remote.origin.url"])
+            .trim_end(),
+        url,
+        "git received the URL as the user gave it"
+    );
+}
+
+fn assert_clone_started_showing(events: &[Event], shown: &str) {
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::OperationStarted { operation: LongOperation::Clone { url, .. }, .. }
+                if url == shown
+        )),
+        "{events:?}"
     );
 }
 
@@ -217,8 +226,12 @@ fn only_the_password_of_a_url_goes_away() {
             "https://host:8080/repo.git failed for ada@example.com",
         ),
         (
-            "'https://host:8080/repo.git' failed for ada@example.com",
-            "'https://host:8080/repo.git' failed for ada@example.com",
+            "'https://host:8080/repo.git','ada@example.com'",
+            "'https://host:8080/repo.git','ada@example.com'",
+        ),
+        (
+            "\\\"https://host:8080/repo.git\\\",\\\"ada@example.com\\\"",
+            "\"https://host:8080/repo.git\",\"ada@example.com\"",
         ),
         (
             "https://host:8080/a.git and https://ada:s3cret@two/y",
@@ -227,6 +240,10 @@ fn only_the_password_of_a_url_goes_away() {
         (
             "https://user:123/a b@host/repo.git",
             "https://user:123/a b@host/repo.git",
+        ),
+        (
+            "https://user:/a b@host/repo.git",
+            "https://user:/a b@host/repo.git",
         ),
         ("git@host:org/repo.git", "git@host:org/repo.git"),
         ("file:///srv/ada:lace@home", "file:///srv/ada:lace@home"),
@@ -422,14 +439,7 @@ fn a_password_that_reads_as_a_port_stays_hidden_when_the_clone_fails() {
         })
     );
     let events: Vec<Event> = events.try_iter().collect();
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            Event::OperationStarted { operation: LongOperation::Clone { url, .. }, .. }
-                if url == hidden
-        )),
-        "{events:?}"
-    );
+    assert_clone_started_showing(&events, hidden);
     let logged = logged_run(&gikli, "clone");
     assert!(logged.args.iter().any(|arg| arg == hidden), "{logged:?}");
     assert!(
@@ -440,6 +450,7 @@ fn a_password_that_reads_as_a_port_stays_hidden_when_the_clone_fails() {
     );
     let kept = format!("{:?}{events:?}", gikli.operation_log());
     assert!(!kept.contains(PASSWORD), "{kept}");
+    assert!(!target.join(".git").exists());
 }
 
 /// Text alone cannot tell this URL from one with a password, so what shows of it loses a part, and
@@ -459,14 +470,7 @@ fn a_url_with_a_port_and_an_at_sign_in_its_path_reaches_git_as_the_user_gave_it(
     gikli.clone_repository(&url, &target).expect("clone");
 
     assert_cloned(&sandbox, &remote, &target);
-    assert_eq!(
-        sandbox
-            .existing_repository(&target)
-            .git(&["config", "remote.origin.url"])
-            .trim_end(),
-        url,
-        "git received the URL as the user gave it"
-    );
+    assert_git_received(&sandbox, &target, &url);
     let args = logged_run(&gikli, "clone").args;
     assert!(
         args.iter().any(|arg| arg == "http://127.0.0.1:***@v2.git"),
