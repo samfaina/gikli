@@ -31,6 +31,12 @@ pub enum NotificationKind {
     /// A Repository registered in the Project is no longer a valid repository: it was moved,
     /// deleted or broken.
     InvalidRepository { repository: Repository },
+    /// The user cancelled the clone that created `repository` while the hook `hook` ran. The clone
+    /// is complete, and the hook did not finish.
+    HookNotFinished {
+        repository: Repository,
+        hook: String,
+    },
 }
 
 /// An action a notification offers.
@@ -63,6 +69,7 @@ impl NotificationKind {
             Self::InvalidRepository { repository } => {
                 project.invalid_repositories.contains(repository)
             }
+            Self::HookNotFinished { .. } => true,
         }
     }
 }
@@ -146,9 +153,12 @@ impl Notifications {
             return;
         };
         let notification = state.raised.remove(index);
-        state
-            .dismissed
-            .push((notification.project, notification.kind));
+        // This one tells of something that happened once. It may happen again, and it is news then.
+        if !matches!(notification.kind, NotificationKind::HookNotFinished { .. }) {
+            state
+                .dismissed
+                .push((notification.project, notification.kind));
+        }
         self.events.send(Event::NotificationRemoved { id });
     }
 

@@ -11,6 +11,7 @@ mod host;
 mod notifications;
 mod operation_log;
 mod operations;
+mod process_tree;
 mod processes;
 mod project;
 mod prompts;
@@ -161,6 +162,13 @@ pub enum Failure {
     Explained {
         explanation: Explanation,
     },
+    /// The user cancelled the operation, so git and every process it started ended. Not a failure
+    /// of the run: nothing went wrong. `left_behind` is what the run left in the user's way, with
+    /// what to do about it, when it left anything.
+    #[serde(rename_all = "camelCase")]
+    OperationCancelled {
+        left_behind: Option<Explanation>,
+    },
     GitNotFound,
     GitTooOld {
         version: GitVersion,
@@ -217,6 +225,13 @@ pub enum Failure {
     CloneFailed {
         url: String,
         folder: PathBuf,
+    },
+    /// The user cancelled the clone into `folder`, and gikli could not remove what it had created
+    /// there.
+    #[serde(rename_all = "camelCase")]
+    CancelledCloneNotRemoved {
+        folder: PathBuf,
+        message: String,
     },
     /// The notification is gone: the user already acted on it or dismissed it, or what it said
     /// no longer holds.
@@ -667,10 +682,23 @@ impl Gikli {
         self.operations.running()
     }
 
+    /// Cancels the long operation `id`: git and every process it started end, and the command that
+    /// started the operation returns [`Failure::OperationCancelled`], or for a clone that is
+    /// complete the Project, with [`NotificationKind::HookNotFinished`] raised. This does not wait
+    /// for that. Nothing happens when the operation already ended, or does not offer it, as its
+    /// [`RunningOperation::cancellable`] says.
+    pub fn cancel_operation(&self, id: u64) {
+        self.operations.cancel(id);
+    }
+
     /// Clones the repository at `url` into `folder`, which must not exist or be empty, and opens
     /// it as a Project. The clone runs as a [`LongOperation`] that reports its progress; the
     /// rest of the core keeps answering meanwhile. A password in `url` goes to git and shows
     /// nowhere else.
+    ///
+    /// When the user cancels it during a hook that runs after the checkout, the clone is complete:
+    /// it opens as a Project, with [`NotificationKind::HookNotFinished`] raised. When they cancel it
+    /// earlier, it returns [`Failure::OperationCancelled`] and leaves `folder` as it found it.
     pub fn clone_repository(&self, url: &str, folder: &Path) -> Result<Project, Failure> {
         let runner = self.runner(folder)?;
         let target = std::path::absolute(folder).map_err(|_| Failure::FolderNotFound {
@@ -688,18 +716,18 @@ impl Gikli {
             folder: parent.to_path_buf(),
             message: error.to_string(),
         })?;
+        let found = FoundFolder::at(&target);
         // The folder goes by its name inside its parent, a path git inside WSL reads too.
         let name = name.to_string_lossy();
         let operation = LongOperation::Clone {
             url: shown_url.clone(),
             folder: target.clone(),
         };
-        let invocation = self
-            .operations
-            .run(operation, |report| {
-                runner.run_reporting(parent, &["clone", "--progress", "--", url, &name], report)
-            })
-            .map_err(git_failed_to_start)?;
+        let args = ["clone", "--progress", "--", url, &name];
+        let invocation = self.run_operation(&runner, operation, parent, &args)?;
+        if invocation.cancelled {
+            return self.end_cancelled_clone(&target, found, invocation);
+        }
         if !invocation.success {
             return Err(failure_of(
                 &runner,
@@ -712,6 +740,58 @@ impl Gikli {
             ));
         }
         self.open_project(&target)
+    }
+
+    /// Runs git with `args` in `folder` as `operation`, which the user can cancel unless git runs
+    /// inside WSL.
+    fn run_operation(
+        &self,
+        runner: &GitRunner,
+        operation: LongOperation,
+        folder: &Path,
+        args: &[&str],
+    ) -> Result<Invocation, Failure> {
+        self.operations
+            .run(operation, runner.runs_natively(), |run| {
+                runner.run_operation(folder, args, run)
+            })
+            .map_err(git_failed_to_start)
+    }
+
+    /// What is left to do about `clone`, a clone into `target`, which held `found` before, that the
+    /// user cancelled.
+    fn end_cancelled_clone(
+        &self,
+        target: &Path,
+        found: FoundFolder,
+        clone: Invocation,
+    ) -> Result<Project, Failure> {
+        let checked_out = clone
+            .last_hook
+            .is_some_and(|hook| HOOKS_AFTER_CHECKOUT.contains(&hook.as_str()));
+        if !checked_out {
+            return match found.restore(target) {
+                Ok(()) => Err(Failure::OperationCancelled { left_behind: None }),
+                Err(error) => Err(Failure::CancelledCloneNotRemoved {
+                    folder: target.to_path_buf(),
+                    message: error.to_string(),
+                }),
+            };
+        };
+        let project = self.open_project(target)?;
+        // Unless the cancel came just as the hook ended, which leaves nothing to tell.
+        if let Some(hook) = clone.interrupted_hook {
+            // A clone is the Repository at the root of the Project it opens as.
+            let repository = Repository {
+                root: project.folder.clone(),
+            };
+            self.notifications.raise(
+                &project.folder,
+                NotificationKind::HookNotFinished { repository, hook },
+                vec![],
+            );
+        }
+        Ok(project)
     }
 
     /// The Project folder `folder`, in its absolute form, with the runner for it.
@@ -740,9 +820,10 @@ impl Gikli {
         let runner = self.runner(&repository.root)?;
         let mut args = vec!["--literal-pathspecs", "add", "--"];
         args.extend(paths.iter().map(String::as_str));
-        let invocation = runner
-            .run(&repository.root, &args)
-            .map_err(git_failed_to_start)?;
+        let operation = LongOperation::AddFiles {
+            repository: repository.clone(),
+        };
+        let invocation = self.run_operation(&runner, operation, &repository.root, &args)?;
         if !invocation.success {
             return Err(failure_of(
                 &runner,
@@ -859,6 +940,65 @@ impl Gikli {
             .entry(share.clone())
             .or_insert_with(|| git::check_wsl(share, &self.host, &self.log))
             .clone()
+    }
+}
+
+/// The hooks git runs on a clone once it has checked out the files, when all that is left of the
+/// clone is running them.
+const HOOKS_AFTER_CHECKOUT: &[&str] = &["post-index-change", "post-checkout"];
+
+/// What the target of a clone held before the clone started.
+#[derive(Clone, Copy)]
+enum FoundFolder {
+    /// There was no folder.
+    Nothing,
+    /// There was a folder with nothing in it.
+    Empty,
+    /// There was something gikli must leave alone: a folder with something in it, which git refuses
+    /// to clone into, or anything it cannot tell is empty.
+    Contents,
+}
+
+impl FoundFolder {
+    fn at(target: &Path) -> Self {
+        match std::fs::read_dir(target).map(|mut entries| entries.next().is_none()) {
+            Ok(true) => Self::Empty,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::Nothing,
+            Ok(false) | Err(_) => Self::Contents,
+        }
+    }
+
+    /// Leaves `target`, where a cancelled clone worked, as it was before. The processes of the clone
+    /// have just ended, and on Windows what they held open can take a moment to close, or to be
+    /// let go by whatever scans new files.
+    fn restore(self, target: &Path) -> std::io::Result<()> {
+        const ATTEMPTS: u32 = 20;
+        for _ in 1..ATTEMPTS {
+            if self.remove_what_the_clone_created(target).is_ok() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        self.remove_what_the_clone_created(target)
+    }
+
+    fn remove_what_the_clone_created(self, target: &Path) -> std::io::Result<()> {
+        match self {
+            Self::Contents => Ok(()),
+            Self::Nothing if !target.exists() => Ok(()),
+            Self::Nothing => std::fs::remove_dir_all(target),
+            Self::Empty => {
+                for entry in std::fs::read_dir(target)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        std::fs::remove_dir_all(entry.path())?;
+                    } else {
+                        std::fs::remove_file(entry.path())?;
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -983,14 +1123,20 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The failure of `invocation`, which failed in `folder`: what the failure explainer says about
-/// it, or `otherwise` when it does not know this failure.
+/// The failure of `invocation`, which failed in `folder`: the user's cancelling it, when they did,
+/// or else what the failure explainer says about it, or `otherwise` when it does not know this
+/// failure.
 fn failure_of(
     runner: &GitRunner,
     folder: &Path,
     invocation: &Invocation,
     otherwise: Failure,
 ) -> Failure {
+    if invocation.cancelled {
+        return Failure::OperationCancelled {
+            left_behind: explainer::left_behind_by_cancelled_run(runner, folder),
+        };
+    }
     match explainer::explain(runner, folder, invocation) {
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,

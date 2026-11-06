@@ -27,6 +27,8 @@ pub struct OperationLogEntry {
     pub stderr: String,
     /// Why git could not start, when it did not.
     pub error: Option<String>,
+    /// Whether the user cancelled this run, which ended it.
+    pub cancelled: bool,
 }
 
 /// How many entries the log keeps. Older ones are dropped, so a session that runs git for days,
