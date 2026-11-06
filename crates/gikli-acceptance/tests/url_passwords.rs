@@ -15,7 +15,12 @@ const PASSWORD: &str = "tr0ub4dor-and-3";
 
 /// A bare remote holding one commit, pushed from a working repository.
 fn remote_with_a_commit(sandbox: &Sandbox) -> TestRepository {
-    let remote = sandbox.bare_remote("remote.git");
+    remote_named_with_a_commit(sandbox, "remote.git")
+}
+
+/// A bare remote in the folder `name` holding one commit, pushed from a working repository.
+fn remote_named_with_a_commit(sandbox: &Sandbox, name: &str) -> TestRepository {
+    let remote = sandbox.bare_remote(name);
     let work = sandbox.repository("work");
     work.write("notes.txt", "draft\n");
     work.commit_all("First commit");
@@ -44,25 +49,11 @@ fn a_clone_works_with_the_password_in_the_url_and_only_git_sees_it() {
         .expect("the remote takes the password in the URL");
 
     assert_cloned(&sandbox, &remote, &target);
-    assert_eq!(
-        sandbox
-            .existing_repository(&target)
-            .git(&["config", "remote.origin.url"])
-            .trim_end(),
-        url,
-        "git received the URL as the user gave it"
-    );
+    assert_git_received(&sandbox, &target, &url);
 
     let hidden = with_credentials(&server.url(), USERNAME, "***");
     let events: Vec<Event> = events.try_iter().collect();
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            Event::OperationStarted { operation: LongOperation::Clone { url, .. }, .. }
-                if *url == hidden
-        )),
-        "{events:?}"
-    );
+    assert_clone_started_showing(&events, &hidden);
     let args = logged_run(&gikli, "clone").args;
     assert!(args.contains(&hidden), "{args:?}");
     let log = gikli.operation_log();
@@ -86,6 +77,29 @@ fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
             .existing_repository(target)
             .git(&["rev-parse", "HEAD"]),
         remote.git(&["rev-parse", "main"])
+    );
+}
+
+/// Checks with plain git that the clone in `target` has `url` as its remote.
+fn assert_git_received(sandbox: &Sandbox, target: &Path, url: &str) {
+    assert_eq!(
+        sandbox
+            .existing_repository(target)
+            .git(&["config", "remote.origin.url"])
+            .trim_end(),
+        url,
+        "git received the URL as the user gave it"
+    );
+}
+
+fn assert_clone_started_showing(events: &[Event], shown: &str) {
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::OperationStarted { operation: LongOperation::Clone { url, .. }, .. }
+                if url == shown
+        )),
+        "{events:?}"
     );
 }
 
@@ -187,8 +201,49 @@ fn only_the_password_of_a_url_goes_away() {
         ("ssh://git@host:22/repo.git", "ssh://git@host:22/repo.git"),
         ("http://[::1]:8080/repo", "http://[::1]:8080/repo"),
         (
-            "https://host:8443/ada:lace@home",
-            "https://host:8443/ada:lace@home",
+            "https://user:123/abc@host/repo.git",
+            "https://user:***@host/repo.git",
+        ),
+        (
+            "https://user:/abc@host/repo.git",
+            "https://user:***@host/repo.git",
+        ),
+        (
+            "fatal: unable to access 'https://user:123/abc@127.0.0.1/repo.git/': Could not resolve host: user",
+            "fatal: unable to access 'https://user:***@127.0.0.1/repo.git/': Could not resolve host: user",
+        ),
+        (
+            "https://host:8080/team@v2/repo.git",
+            "https://host:***@v2/repo.git",
+        ),
+        ("https://host:8443/ada:lace@home", "https://host:***@home"),
+        (
+            "https://host:8080/team/repo.git",
+            "https://host:8080/team/repo.git",
+        ),
+        (
+            "https://host:8080/repo.git failed for ada@example.com",
+            "https://host:8080/repo.git failed for ada@example.com",
+        ),
+        (
+            "'https://host:8080/repo.git','ada@example.com'",
+            "'https://host:8080/repo.git','ada@example.com'",
+        ),
+        (
+            "\\\"https://host:8080/repo.git\\\",\\\"ada@example.com\\\"",
+            "\"https://host:8080/repo.git\",\"ada@example.com\"",
+        ),
+        (
+            "https://host:8080/a.git and https://ada:s3cret@two/y",
+            "https://host:8080/a.git and https://ada:***@two/y",
+        ),
+        (
+            "https://user:123/a b@host/repo.git",
+            "https://user:123/a b@host/repo.git",
+        ),
+        (
+            "https://user:/a b@host/repo.git",
+            "https://user:/a b@host/repo.git",
         ),
         ("git@host:org/repo.git", "git@host:org/repo.git"),
         ("file:///srv/ada:lace@home", "file:///srv/ada:lace@home"),
@@ -361,6 +416,66 @@ fn a_prompt_that_repeats_a_url_reaches_the_user_without_the_password() {
     assert_cloned(&sandbox, &remote, &target);
     assert_eq!(prompt.kind, PromptKind::Password);
     assert_eq!(prompt.text, "Password for http://ada:***@host/repo: ");
+}
+
+/// git fails on this URL and repeats it: it takes the `9` for a port and connects to nothing, with
+/// no DNS lookup. The `9` goes along with the password, so the test looks for the password.
+#[test]
+fn a_password_that_reads_as_a_port_stays_hidden_when_the_clone_fails() {
+    let sandbox = Sandbox::new();
+    let url = format!("https://127.0.0.1:9/{PASSWORD}@host/repo.git");
+    let hidden = "https://127.0.0.1:***@host/repo.git";
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli();
+    let events = gikli.subscribe();
+
+    let result = gikli.clone_repository(&url, &target);
+
+    assert_eq!(
+        result,
+        Err(Failure::CloneFailed {
+            url: hidden.to_owned(),
+            folder: target.clone(),
+        })
+    );
+    let events: Vec<Event> = events.try_iter().collect();
+    assert_clone_started_showing(&events, hidden);
+    let logged = logged_run(&gikli, "clone");
+    assert!(logged.args.iter().any(|arg| arg == hidden), "{logged:?}");
+    assert!(
+        logged
+            .stderr
+            .contains(&format!("unable to access '{hidden}/'")),
+        "{logged:?}"
+    );
+    let kept = format!("{:?}{events:?}", gikli.operation_log());
+    assert!(!kept.contains(PASSWORD), "{kept}");
+    assert!(!target.join(".git").exists());
+}
+
+/// Text alone cannot tell this URL from one with a password, so what shows of it loses a part, and
+/// git still receives all of it.
+#[test]
+fn a_url_with_a_port_and_an_at_sign_in_its_path_reaches_git_as_the_user_gave_it() {
+    let sandbox = Sandbox::new();
+    let remote = remote_named_with_a_commit(&sandbox, "team@v2.git");
+    let server = sandbox.http_remote(&remote, USERNAME, PASSWORD);
+    sandbox.configure(&format!(
+        "[credential]\n\thelper = \"!f() {{ echo username={USERNAME}; echo password={PASSWORD}; }}; f\"\n"
+    ));
+    let url = server.url();
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli();
+
+    gikli.clone_repository(&url, &target).expect("clone");
+
+    assert_cloned(&sandbox, &remote, &target);
+    assert_git_received(&sandbox, &target, &url);
+    let args = logged_run(&gikli, "clone").args;
+    assert!(
+        args.iter().any(|arg| arg == "http://127.0.0.1:***@v2.git"),
+        "{args:?}"
+    );
 }
 
 /// The real git writes no URL on its standard output for any command gikli runs today, and a

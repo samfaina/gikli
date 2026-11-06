@@ -24,6 +24,7 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - Passphrases for GPG keys stay with `gpg-agent` and its own pinentry window. The embedded GPG prompt is Scope 3 in the reference.
 - gikli never edits `known_hosts`: ssh records a key the user accepted, and a changed key is the user's to resolve.
 - A password in a URL shows as `***` wherever gikli keeps or shows the URL: the operation log, events, prompts and failures. git still receives the URL as the user gave it, so `git clone` writes it to `.git/config`, as it does in a terminal. gikli leaves that file to git. git also writes the command line to the trace file gikli reads and removes after each run: git 2.51 hides the password of a URL it can read there, and gikli cannot change what a given version of git writes.
+- A password can read as a port, as in `https://user:123/abc@host/repo.git`, and text alone cannot tell that from a valid URL with a port and an `@` in its path. gikli hides both, up to the last `@` before the URL ends at whitespace, a quote or the end of the line, and accepts two costs. A valid URL such as `https://host:8080/team@v2/repo.git` shows as `https://host:***@v2/repo.git`, while git still receives it whole. A password with zero or more digits, a `/` and then whitespace or a quote, as in `https://user:123/a b@host/repo.git`, stays visible, as hiding it would also hide ordinary text in git's messages.
 
 ### Long operations and hooks
 
