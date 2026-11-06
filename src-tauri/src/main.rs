@@ -178,6 +178,11 @@ fn running_operations(gikli: State<'_, Gikli>) -> Vec<RunningOperation> {
     gikli.running_operations()
 }
 
+#[tauri::command]
+fn cancel_operation(gikli: State<'_, Gikli>, id: u64) {
+    gikli.cancel_operation(id);
+}
+
 #[tauri::command(async)]
 fn clone_repository(
     gikli: State<'_, Gikli>,
@@ -323,6 +328,7 @@ fn main() {
             create_repository,
             clone_repository,
             running_operations,
+            cancel_operation,
             window_for_project,
             read_changes,
             add_files,

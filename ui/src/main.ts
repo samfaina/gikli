@@ -4,6 +4,7 @@ import {
   actOnNotification,
   addRepository,
   answerPrompt,
+  cancelOperation,
   cancelPrompt,
   capabilities,
   checkGit,
@@ -239,7 +240,13 @@ function handleCoreEvent(event: CoreEvent): void {
       showNotifications();
       break;
     case "operationStarted":
-      runningOperations.set(event.payload.id, { id: event.payload.id, operation: event.payload.operation, progress: null });
+      runningOperations.set(event.payload.id, {
+        id: event.payload.id,
+        operation: event.payload.operation,
+        progress: null,
+        hook: null,
+        cancellable: event.payload.cancellable,
+      });
       showOperations();
       break;
     case "operationProgress": {
@@ -250,8 +257,17 @@ function handleCoreEvent(event: CoreEvent): void {
       }
       break;
     }
+    case "operationHook": {
+      const running = runningOperations.get(event.payload.id);
+      if (running !== undefined) {
+        running.hook = event.payload.hook;
+        showOperations();
+      }
+      break;
+    }
     case "operationFinished":
       finishedOperations.add(event.payload.id);
+      cancellingOperations.delete(event.payload.id);
       runningOperations.delete(event.payload.id);
       showOperations();
       break;
@@ -751,7 +767,7 @@ function logEntryView(entry: OperationLogEntry): HTMLElement {
   const view = document.createElement("div");
   view.className = "log-entry";
   view.dataset.testid = "log-entry";
-  const failed = entry.error !== null || entry.exitCode !== 0;
+  const failed = !entry.cancelled && (entry.error !== null || entry.exitCode !== 0);
   view.classList.toggle("failed", failed);
   const command = document.createElement("pre");
   command.className = "log-command";
@@ -773,6 +789,12 @@ function logEntryView(entry: OperationLogEntry): HTMLElement {
         : entry.exitCode === null
           ? t("operationLogEndedBySignal")
           : t("operationLogExitCode", { code: String(entry.exitCode) });
+    view.append(result);
+  }
+  if (entry.cancelled) {
+    const result = document.createElement("pre");
+    result.className = "log-result";
+    result.textContent = t("operationLogCancelled");
     view.append(result);
   }
   return view;
@@ -846,6 +868,8 @@ function describeNotification(notification: Notification): string {
       return t("notificationUnregisteredRepository", { root: notification.kind.repository.root });
     case "invalidRepository":
       return t("notificationInvalidRepository", { root: notification.kind.repository.root });
+    case "hookNotFinished":
+      return t("notificationHookNotFinished", { root: notification.kind.repository.root, hook: notification.kind.hook });
   }
 }
 
@@ -957,11 +981,14 @@ const runningOperations = new Map<number, RunningOperation>();
 /** The long operations finished since this window started listening, so a late read does not show them again. */
 const finishedOperations = new Set<number>();
 
-/** Shows each running long operation with its progress, in the status area, without blocking the views. */
+/** The long operations this window asked to cancel and that have not finished yet. */
+const cancellingOperations = new Set<number>();
+
+/** Shows each running long operation with its progress, the hook it waits on and the way to cancel it, in the status area, without blocking the views. */
 function showOperations(): void {
   operationsView.hidden = runningOperations.size === 0;
   operationsView.replaceChildren(
-    ...[...runningOperations.values()].map(({ operation, progress }) => {
+    ...[...runningOperations.values()].map(({ id, operation, progress, hook, cancellable }) => {
       const view = document.createElement("div");
       view.className = "operation";
       view.dataset.testid = "operation";
@@ -977,6 +1004,25 @@ function showOperations(): void {
         bar.value = progress.percent;
       }
       view.append(text, bar);
+      if (hook !== null) {
+        const waiting = document.createElement("span");
+        waiting.dataset.testid = "operation-hook";
+        waiting.textContent = t("operationWaitingOnHook", { hook });
+        view.append(waiting);
+      }
+      if (cancellable) {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.dataset.testid = "cancel-operation";
+        cancel.textContent = t("operationCancel");
+        cancel.disabled = cancellingOperations.has(id);
+        cancel.addEventListener("click", () => {
+          cancellingOperations.add(id);
+          showOperations();
+          void cancelOperation(id).catch(report);
+        });
+        view.append(cancel);
+      }
       return view;
     }),
   );
@@ -986,6 +1032,8 @@ function describeOperation(operation: LongOperation): string {
   switch (operation.kind) {
     case "clone":
       return t("operationClone", { url: operation.url });
+    case "addFiles":
+      return t("operationAddFiles", { root: operation.repository.root });
   }
 }
 
@@ -994,9 +1042,15 @@ function describeOperation(operation: LongOperation): string {
  * `retry`, if given, runs once it is done.
  */
 function errorView(error: unknown, retry?: () => void): HTMLElement {
-  return isFailure(error) && error.kind === "explained"
-    ? explanationView(error.explanation, retry)
-    : line("message", describeError(error));
+  if (isFailure(error) && error.kind === "explained") {
+    return explanationView(error.explanation, retry);
+  }
+  if (isFailure(error) && error.kind === "operationCancelled" && error.leftBehind !== null) {
+    const view = document.createElement("div");
+    view.append(line("message", t("failureOperationCancelled")), explanationView(error.leftBehind, retry));
+    return view;
+  }
+  return line("message", describeError(error));
 }
 
 function explanationView(explanation: Explanation, retry?: () => void): HTMLElement {
@@ -1102,6 +1156,10 @@ function describeFailure(failure: Failure): string {
         message: describeExplainedMessage(failure.explanation.message),
         nextStep: t(NEXT_STEPS[failure.explanation.nextStep]),
       });
+    case "operationCancelled":
+      return t("failureOperationCancelled");
+    case "cancelledCloneNotRemoved":
+      return t("failureCancelledCloneNotRemoved", { folder: failure.folder, message: failure.message });
     case "gitNotFound":
       return t("failureGitNotFound");
     case "gitTooOld":

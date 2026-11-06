@@ -25,10 +25,19 @@ pub enum Event {
     /// A notification went away: the user acted on it or dismissed it, or what it was about no
     /// longer holds.
     NotificationRemoved { id: u64 },
-    /// A long operation started. Its progress follows, then [`Event::OperationFinished`].
-    OperationStarted { id: u64, operation: LongOperation },
+    /// A long operation started. Its progress follows, then [`Event::OperationFinished`]. The user
+    /// can cancel it if it is `cancellable`.
+    OperationStarted {
+        id: u64,
+        operation: LongOperation,
+        cancellable: bool,
+    },
     /// The long operation `id` advanced.
     OperationProgress { id: u64, progress: Progress },
+    /// The long operation `id` now waits on the hook `hook`, as git names it, or on no hook. A hook
+    /// that waits on the console looks the same as a slow one, so this goes next to the way to
+    /// cancel.
+    OperationHook { id: u64, hook: Option<String> },
     /// The long operation `id` ended, whether it succeeded or not.
     OperationFinished { id: u64 },
     /// Files of a watched Repository changed, in its working tree or in its git directory,

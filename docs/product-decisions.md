@@ -25,6 +25,13 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - gikli never edits `known_hosts`: ssh records a key the user accepted, and a changed key is the user's to resolve.
 - A password in a URL shows as `***` wherever gikli keeps or shows the URL: the operation log, events, prompts and failures. git still receives the URL as the user gave it, so `git clone` writes it to `.git/config`, as it does in a terminal. gikli leaves that file to git. git also writes the command line to the trace file gikli reads and removes after each run: git 2.51 hides the password of a URL it can read there, and gikli cannot change what a given version of git writes.
 
+### Long operations and hooks
+
+- The user can cancel a running long operation. That ends git and every process it started. gikli never kills a hook by itself and has no timeout, as it cannot tell a hook waiting on the console from a slow one. While a hook runs, the view of the operation names it next to Cancel.
+- Cancelling is not offered for git inside WSL, as ending the process on the Windows side may not reach the ones on the Linux side.
+- A clone cancelled during `post-checkout` or `post-index-change` is complete: gikli keeps it, opens it and says the hook did not finish. A clone cancelled earlier, including during a hook such as `reference-transaction`, has no checkout yet: gikli removes what it created, and a folder that existed before stays, empty.
+- A run cancelled while it holds `index.lock` ends with the usual offer to remove the lock, which also removes the `next-index-*.lock` files of `git commit --only`.
+
 ### Saved local changes and the Shelf
 
 - In Scope 1, Saved local changes use a stash. When the Shelf ships in Scope 2, the default method becomes Shelve, as in JetBrains.

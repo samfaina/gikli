@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
 use gikli_core::{Gikli, HostEnvironment};
+use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 use tempfile::TempDir;
 
 mod http_remote;
@@ -309,6 +310,39 @@ impl Sandbox {
         let mut host = self.host_environment();
         host.set(OWNED_BY_SOMEONE_ELSE, "1");
         host
+    }
+
+    /// The names of the processes running for this sandbox right now: the ones that run in it, or
+    /// that name it in their arguments or their variables, which is all gikli and plain git start
+    /// here and whatever those start in turn. Only what happens to be running after a run that
+    /// ended by itself may be missing from the variables a process shows.
+    pub fn processes_still_running(&self) -> Vec<String> {
+        let refresh = ProcessRefreshKind::nothing()
+            .with_cwd(UpdateKind::Always)
+            .with_cmd(UpdateKind::Always)
+            .with_environ(UpdateKind::Always);
+        let mut system = System::new().expect("list the processes");
+        system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh);
+        let sandbox = self
+            .root
+            .file_name()
+            .expect("the sandbox has a name")
+            .to_string_lossy()
+            .into_owned();
+        let names = |text: &OsStr| text.to_string_lossy().contains(&sandbox);
+        let mut running: Vec<String> = system
+            .processes()
+            .values()
+            .filter(|process| process.status() != ProcessStatus::Zombie)
+            .filter(|process| {
+                process.cwd().is_some_and(|cwd| names(cwd.as_os_str()))
+                    || process.cmd().iter().any(|argument| names(argument))
+                    || process.environ().iter().any(|variable| names(variable))
+            })
+            .map(|process| process.name().to_string_lossy().into_owned())
+            .collect();
+        running.sort();
+        running
     }
 
     /// An environment whose PATH holds no git at all.

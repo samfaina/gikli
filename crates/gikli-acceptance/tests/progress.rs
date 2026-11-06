@@ -55,7 +55,7 @@ fn a_clone_reports_its_progress_and_opens_as_a_project() {
     let started = received
         .iter()
         .find_map(|event| match event {
-            Event::OperationStarted { id, operation } => Some((*id, operation.clone())),
+            Event::OperationStarted { id, operation, .. } => Some((*id, operation.clone())),
             _ => None,
         })
         .expect("the clone announces it started");
@@ -161,7 +161,9 @@ fn a_clone_reports_progress_while_it_runs_and_the_rest_of_gikli_keeps_answering(
                     url: url.clone(),
                     folder: target.clone()
                 },
-                progress: Some(progress)
+                progress: Some(progress),
+                hook: None,
+                cancellable: true,
             }],
             "a window that opens during the clone sees it"
         );

@@ -159,6 +159,8 @@ export interface Explanation {
 
 export type Failure =
   | { kind: "explained"; explanation: Explanation }
+  /** The user cancelled the operation. `leftBehind` is what the run left in their way, when it left anything. */
+  | { kind: "operationCancelled"; leftBehind: Explanation | null }
   | { kind: "gitNotFound" }
   | { kind: "gitTooOld"; version: GitVersion; minimum: GitVersion }
   | { kind: "gitUnrecognized" }
@@ -178,6 +180,7 @@ export type Failure =
   | { kind: "changesUnreadable"; folder: string }
   | { kind: "changesNotWatched"; folder: string; message: string }
   | { kind: "cloneFailed"; url: string; folder: string }
+  | { kind: "cancelledCloneNotRemoved"; folder: string; message: string }
   | { kind: "notificationGone"; id: number }
   | { kind: "notificationActionNotOffered"; id: number }
   | { kind: "promptGone"; id: number };
@@ -196,12 +199,16 @@ export interface OperationLogEntry {
   stderr: string;
   /** Why git could not start, when it did not. */
   error: string | null;
+  /** Whether the user cancelled this run, which ended it. */
+  cancelled: boolean;
 }
 
 /** What a notification says. */
 export type NotificationKind =
   | { kind: "unregisteredRepository"; repository: Repository }
-  | { kind: "invalidRepository"; repository: Repository };
+  | { kind: "invalidRepository"; repository: Repository }
+  /** The user cancelled the clone while this hook ran: the clone is complete, and the hook did not finish. */
+  | { kind: "hookNotFinished"; repository: Repository; hook: string };
 
 /** An action a notification offers. */
 export type NotificationAction =
@@ -222,7 +229,9 @@ export interface Notification {
 export type NotificationOutcome = { outcome: "projectChanged"; payload: Project };
 
 /** A git command that takes long enough to show its progress. */
-export type LongOperation = { kind: "clone"; url: string; folder: string };
+export type LongOperation =
+  | { kind: "clone"; url: string; folder: string }
+  | { kind: "addFiles"; repository: Repository };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -238,6 +247,10 @@ export interface RunningOperation {
   operation: LongOperation;
   /** null until git reports any. */
   progress: Progress | null;
+  /** The hook the operation waits on, as git names it, while one runs. */
+  hook: string | null;
+  /** Whether the user can cancel it. They cannot when git runs inside WSL. */
+  cancellable: boolean;
 }
 
 /** What a prompt asks for. Only a username and the answer about a host key show as they are typed. */
@@ -260,8 +273,9 @@ export type CoreEvent =
   | { event: "operationLogCleared"; payload: { before: number } }
   | { event: "notificationRaised"; payload: Notification }
   | { event: "notificationRemoved"; payload: { id: number } }
-  | { event: "operationStarted"; payload: { id: number; operation: LongOperation } }
+  | { event: "operationStarted"; payload: { id: number; operation: LongOperation; cancellable: boolean } }
   | { event: "operationProgress"; payload: { id: number; progress: Progress } }
+  | { event: "operationHook"; payload: { id: number; hook: string | null } }
   | { event: "operationFinished"; payload: { id: number } }
   | { event: "filesChanged"; payload: { repository: Repository } };
 
@@ -355,8 +369,17 @@ export function runningOperations(): Promise<RunningOperation[]> {
 }
 
 /**
+ * Cancels the long operation `id`: git and every process it started end, and the operation finishes.
+ * Nothing happens when it already ended.
+ */
+export function cancelOperation(id: number): Promise<void> {
+  return invoke("cancel_operation", { id });
+}
+
+/**
  * Clones the repository at `url` into `folder` and opens it as a Project. Its progress arrives as
- * `operationStarted`, `operationProgress` and `operationFinished` events. Rejects with a {@link Failure}.
+ * `operationStarted`, `operationProgress`, `operationHook` and `operationFinished` events. Rejects with a
+ * {@link Failure}.
  */
 export function cloneRepository(url: string, folder: string): Promise<Project> {
   return invoke("clone_repository", { url, folder });

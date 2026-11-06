@@ -9,4 +9,5 @@ publish.workspace = true
 [dependencies]
 gikli-core.workspace = true
 dunce.workspace = true
+sysinfo.workspace = true
 tempfile.workspace = true

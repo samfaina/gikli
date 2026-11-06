@@ -13,13 +13,16 @@
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::time::{Duration, Instant};
 
 use crate::host::HostEnvironment;
 use crate::operation_log::{OperationLog, OperationLogEntry};
-use crate::operations::Progress;
+use crate::operations::{OperationRun, Progress};
+use crate::process_tree::{self, Cancellation};
 use crate::prompts;
 use crate::url_passwords::hide_url_passwords;
 use crate::version::GitVersion;
@@ -156,6 +159,11 @@ pub(crate) struct Invocation {
     pub failed_hook: Option<String>,
     /// Whether a remote refused the credentials git gave it in this run.
     pub credentials_refused: bool,
+    /// Whether the user cancelled this run, which ended it. It is not a failure of git's, whatever
+    /// its output says.
+    pub cancelled: bool,
+    /// The last hook this run started, when it was cancelled.
+    pub last_hook: Option<String>,
 }
 
 /// Where gikli's credential helper notes that a remote refused the credentials.
@@ -218,41 +226,37 @@ impl GitRunner {
         matches!(self.program, GitProgram::Native(_))
     }
 
-    /// Runs git with `args` in `folder`.
+    /// Runs git with `args` in `folder`, for a command nobody needs to see or stop.
     pub fn run(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
         let (mut command, entry, trace) = self.command(folder, args);
         let output = command.output();
-        self.finish(entry, output, trace)
+        self.finish(entry, output, trace, &Cancellation::default())
     }
 
-    /// Runs git with `args` in `folder`, as [`Self::run`] does, and passes each line of progress
-    /// git writes to `report` as it comes. `args` must ask git for progress (`--progress`), as
-    /// git reports none without a terminal otherwise.
-    pub fn run_reporting(
+    /// Runs git with `args` in `folder` as the long operation `operation`, which it tells of each
+    /// line of progress and of the hook it waits on as they come, and which can end it. `args` must
+    /// ask git for progress (`--progress`) for any to come, as git reports none without a terminal
+    /// otherwise.
+    ///
+    /// The git inside WSL cannot be ended this way, so it runs as a plain process, and `operation`
+    /// must not offer to cancel it.
+    pub fn run_operation(
         &self,
         folder: &Path,
         args: &[&str],
-        report: &dyn Fn(Progress),
+        operation: &OperationRun,
     ) -> std::io::Result<Invocation> {
         let (mut command, entry, trace) = self.command(folder, args);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let output = command.spawn().and_then(|mut child| {
-            let mut stdout = child.stdout.take().expect("stdout is piped");
-            // Read apart, so git never blocks on a full stdout while gikli reads its stderr.
-            let stdout = std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = stdout.read_to_end(&mut bytes);
-                bytes
-            });
-            let stderr = read_progress(child.stderr.take().expect("stderr is piped"), report);
-            let status = child.wait()?;
-            Ok(Output {
-                status,
-                stdout: stdout.join().unwrap_or_default(),
-                stderr,
-            })
-        });
-        self.finish(entry, output, trace)
+        let cancellation = operation.cancellation();
+        let started = if self.runs_natively() {
+            process_tree::start_contained(&mut command);
+            process_tree::spawn_contained(&mut command, cancellation)
+        } else {
+            command.spawn()
+        };
+        let output = started.and_then(|child| watch_run(child, &trace, operation));
+        self.finish(entry, output, trace, cancellation)
     }
 
     /// The command that runs git with `args` in `folder`, its operation log entry so far, and
@@ -294,6 +298,7 @@ impl GitRunner {
             stdout: String::new(),
             stderr: String::new(),
             error: None,
+            cancelled: false,
         };
         (command, entry, trace)
     }
@@ -304,6 +309,7 @@ impl GitRunner {
         mut entry: OperationLogEntry,
         output: std::io::Result<Output>,
         trace: RunTrace,
+        cancellation: &Cancellation,
     ) -> std::io::Result<Invocation> {
         let Output {
             status,
@@ -318,6 +324,9 @@ impl GitRunner {
             }
         };
         let stderr = hide_url_passwords(&String::from_utf8_lossy(&stderr));
+        // A run that ended well before the request reached it did what it had to.
+        let cancelled = cancellation.is_requested() && !status.success();
+        entry.cancelled = cancelled;
         entry.exit_code = status.code();
         entry.stdout = hide_url_passwords(&String::from_utf8_lossy(&stdout));
         entry.stderr = stderr.clone();
@@ -328,6 +337,8 @@ impl GitRunner {
             stderr,
             failed_hook: trace.failed_hook(),
             credentials_refused: trace.refused_credentials_file.exists(),
+            cancelled,
+            last_hook: if cancelled { trace.last_hook() } else { None },
         })
     }
 
@@ -358,32 +369,130 @@ impl GitRunner {
     }
 }
 
-/// Reads git's error output to its end and returns it, passing each line of progress in it to
-/// `report`. git redraws a progress line after a carriage return.
-fn read_progress(mut stderr: impl Read, report: &dyn Fn(Progress)) -> Vec<u8> {
-    let mut captured = Vec::new();
-    let mut line_start = 0;
-    let mut chunk = [0; 4096];
-    while let Ok(read) = stderr.read(&mut chunk)
-        && read > 0
-    {
-        captured.extend_from_slice(&chunk[..read]);
-        while let Some(end) = captured[line_start..]
+/// How often gikli reads the trace of a running git for the hook it waits on.
+const TRACE_READ_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Follows the run of `child`, traced to `trace`, until it ends, and returns what it wrote. A
+/// program that holds git's output open after the run was cancelled, having escaped the cancel,
+/// is left behind.
+fn watch_run(
+    mut child: Child,
+    trace: &RunTrace,
+    operation: &OperationRun,
+) -> std::io::Result<Output> {
+    let (sender, pipes) = mpsc::channel();
+    read_apart(
+        child.stdout.take().expect("stdout is piped"),
+        Piped::Stdout,
+        sender.clone(),
+    );
+    read_apart(
+        child.stderr.take().expect("stderr is piped"),
+        Piped::Stderr,
+        sender,
+    );
+    let cancellation = operation.cancellation();
+    let mut stdout = Vec::new();
+    let mut stderr = ProgressLines::default();
+    let mut open_pipes = 2;
+    let mut hook = None;
+    let mut next_trace_read = Instant::now();
+    let mut give_up = None;
+    while open_pipes > 0 {
+        match pipes.recv_timeout(TRACE_READ_INTERVAL) {
+            Ok(Piped::Stdout(bytes)) => stdout.extend_from_slice(&bytes),
+            Ok(Piped::Stderr(bytes)) => stderr.add(&bytes, operation),
+            Ok(Piped::Closed) => open_pipes -= 1,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        let now = Instant::now();
+        if now >= next_trace_read {
+            tell_hook(trace, &mut hook, operation);
+            next_trace_read = now + TRACE_READ_INTERVAL;
+        }
+        if cancellation.is_requested() && now >= *give_up.get_or_insert(now + process_tree::GRACE) {
+            break;
+        }
+    }
+    tell_hook(trace, &mut hook, operation);
+    let status = cancellation.wait_for(&mut child)?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr: stderr.finish(operation),
+    })
+}
+
+/// Tells `operation` of the hook `trace` says runs now, when it is not `hook`, the last one told.
+fn tell_hook(trace: &RunTrace, hook: &mut Option<String>, operation: &OperationRun) {
+    let running = trace.running_hook();
+    if running != *hook {
+        operation.waits_on_hook(running.clone());
+        *hook = running;
+    }
+}
+
+/// Something that came out of the pipes of a running git.
+enum Piped {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Closed,
+}
+
+/// Reads `pipe` on a thread of its own, so git never blocks on one pipe while gikli reads another,
+/// and so gikli can stop waiting for a pipe that stays open. `piped` makes what it sends of what
+/// it read, and the thread ends when the pipe closes or nobody listens any more.
+fn read_apart(
+    mut pipe: impl Read + Send + 'static,
+    piped: fn(Vec<u8>) -> Piped,
+    sender: Sender<Piped>,
+) {
+    std::thread::spawn(move || {
+        let mut chunk = [0; 4096];
+        while let Ok(read) = pipe.read(&mut chunk)
+            && read > 0
+        {
+            if sender.send(piped(chunk[..read].to_vec())).is_err() {
+                return;
+            }
+        }
+        let _ = sender.send(Piped::Closed);
+    });
+}
+
+/// git's error output so far, whose lines of progress go on to a long operation as they end. git
+/// redraws a progress line after a carriage return.
+#[derive(Default)]
+struct ProgressLines {
+    captured: Vec<u8>,
+    line_start: usize,
+}
+
+impl ProgressLines {
+    fn add(&mut self, bytes: &[u8], operation: &OperationRun) {
+        self.captured.extend_from_slice(bytes);
+        while let Some(end) = self.captured[self.line_start..]
             .iter()
             .position(|byte| matches!(byte, b'\r' | b'\n'))
         {
-            report_progress_in(&captured[line_start..line_start + end], report);
-            line_start += end + 1;
+            let line = &self.captured[self.line_start..self.line_start + end];
+            report_progress_in(line, operation);
+            self.line_start += end + 1;
         }
     }
-    report_progress_in(&captured[line_start..], report);
-    captured
+
+    /// The whole output, once nothing more comes.
+    fn finish(self, operation: &OperationRun) -> Vec<u8> {
+        report_progress_in(&self.captured[self.line_start..], operation);
+        self.captured
+    }
 }
 
-/// Passes the progress in this line of git's error output to `report`, when there is any.
-fn report_progress_in(line: &[u8], report: &dyn Fn(Progress)) {
+/// Tells `operation` of the progress in this line of git's error output, when there is any.
+fn report_progress_in(line: &[u8], operation: &OperationRun) {
     if let Some(progress) = Progress::parse(&hide_url_passwords(&String::from_utf8_lossy(line))) {
-        report(progress);
+        operation.report(progress);
     }
 }
 
@@ -412,13 +521,15 @@ impl Invocation {
             stderr: kept,
             failed_hook: self.failed_hook.clone(),
             credentials_refused: self.credentials_refused,
+            cancelled: self.cancelled,
+            last_hook: self.last_hook.clone(),
         }
     }
 }
 
 /// What git reports about one run outside its messages, which is the same in every language, in
-/// files of its own. It is the only place that tells a hook failed, as git itself says nothing
-/// about it.
+/// files of its own. It is the only place that tells which hook runs or failed, as git itself says
+/// nothing about it.
 struct RunTrace {
     /// The events of the run, in the event format of trace2.
     file: PathBuf,
@@ -440,17 +551,25 @@ impl RunTrace {
         }
     }
 
-    /// The hook that ended with an error in the run, as the git gikli started saw it. A git the
-    /// hook started traces to the same file, under a session nested with `/`.
-    fn failed_hook(&self) -> Option<String> {
-        let trace = std::fs::read_to_string(&self.file).ok()?;
-        let events: Vec<serde_json::Value> = trace
+    /// The events so far of the git gikli started. A git a hook started traces to the same file,
+    /// under a session nested with `/`. The last line may be one git is still writing, which goes
+    /// unread until it is whole.
+    fn events(&self) -> Vec<serde_json::Value> {
+        let Ok(trace) = std::fs::read_to_string(&self.file) else {
+            return Vec::new();
+        };
+        trace
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
             .filter(|event: &serde_json::Value| {
                 event["sid"].as_str().is_some_and(|sid| !sid.contains('/'))
             })
-            .collect();
+            .collect()
+    }
+
+    /// The hook that ended with an error in the run, as the git gikli started saw it.
+    fn failed_hook(&self) -> Option<String> {
+        let events = self.events();
         events.iter().find_map(|started| {
             let hook = started["hook_name"].as_str()?;
             let failed = events.iter().any(|ended| {
@@ -460,6 +579,27 @@ impl RunTrace {
             });
             failed.then(|| hook.to_owned())
         })
+    }
+
+    /// The hook running now, as the git gikli started sees it: the last one started that has not
+    /// ended.
+    fn running_hook(&self) -> Option<String> {
+        let events = self.events();
+        events.iter().rev().find_map(|started| {
+            let hook = started["hook_name"].as_str()?;
+            let ended = events.iter().any(|ended| {
+                ended["event"] == "child_exit" && ended["child_id"] == started["child_id"]
+            });
+            (!ended).then(|| hook.to_owned())
+        })
+    }
+
+    /// The last hook the git gikli started has started, running or not.
+    fn last_hook(&self) -> Option<String> {
+        self.events()
+            .iter()
+            .rev()
+            .find_map(|started| started["hook_name"].as_str().map(str::to_owned))
     }
 }
 
@@ -515,7 +655,8 @@ fn detach_from_terminal(command: &mut Command) {
 /// On Windows, `/dev/tty` fails by itself in a hook, as no terminal is attached. A native program
 /// that reads the console directly (`CONIN$`) is the exception: the shell that runs the hook gives
 /// it a hidden console, whatever flags git starts with, and it waits there until it is killed.
-/// gikli keeps answering meanwhile, and cannot tell it from a hook that takes long.
+/// gikli keeps answering meanwhile and cannot tell it from a hook that takes long, so it leaves it
+/// to the user to cancel the operation.
 #[cfg(not(unix))]
 fn detach_from_terminal(_command: &mut Command) {}
 

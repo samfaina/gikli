@@ -86,8 +86,9 @@ pub enum FailureAction {
         repository: Repository,
         folder: String,
     },
-    /// Removes the stale lock of the index of `repository`, once the user has confirmed and as
-    /// long as no other git operation has started running there.
+    /// Removes the stale lock of the index of `repository`, with the `next-index-*.lock` files
+    /// `git commit --only` keeps next to it, once the user has confirmed and as long as no other
+    /// git operation has started running there.
     RemoveIndexLock { repository: Repository },
 }
 
@@ -227,8 +228,22 @@ fn is_refused_by_http_server(line: &str) -> bool {
         })
 }
 
-/// Removes the lock of the index of `repository`, unless a git operation may have started running
-/// there since the user was offered this. A lock already gone is fine.
+/// What a run cancelled in `folder` left in the user's way, with what to do about it: the lock of
+/// the index, as killing git leaves it where it is.
+pub(crate) fn left_behind_by_cancelled_run(
+    runner: &GitRunner,
+    folder: &Path,
+) -> Option<Explanation> {
+    let lock = existing_index_lock(runner, folder)?;
+    let repository = Repository {
+        root: folder.to_path_buf(),
+    };
+    Some(explain_index_lock(runner, &repository, lock))
+}
+
+/// Removes the lock of the index of `repository`, and the locks of `git commit --only` next to it,
+/// unless a git operation may have started running there since the user was offered this. A lock
+/// already gone is fine.
 pub(crate) fn remove_stale_index_lock(
     runner: &GitRunner,
     repository: &Repository,
@@ -240,8 +255,21 @@ pub(crate) fn remove_stale_index_lock(
     if explanation.next_step != NextStep::RemoveIndexLock {
         return Err(Failure::Explained { explanation });
     }
-    std::fs::remove_file(&lock).map_err(|error| Failure::IndexLockNotRemoved {
-        lock,
+    remove_lock(&lock)?;
+    let git_dir = lock.parent().unwrap_or(&repository.root);
+    for entry in std::fs::read_dir(git_dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(NEXT_INDEX_LOCK_PREFIX) && name.ends_with(".lock") {
+            remove_lock(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_lock(lock: &Path) -> Result<(), Failure> {
+    std::fs::remove_file(lock).map_err(|error| Failure::IndexLockNotRemoved {
+        lock: lock.to_path_buf(),
         message: error.to_string(),
     })
 }
@@ -252,6 +280,10 @@ const PATH_TOO_LONG: &str = "Filename too long";
 
 /// The name of the file that locks the index.
 const INDEX_LOCK: &str = "index.lock";
+
+/// How the names of the locks of the temporary indexes of `git commit --only` start, in the same
+/// folder as the lock of the index. The rest of each is the number of the git that made it.
+const NEXT_INDEX_LOCK_PREFIX: &str = "next-index-";
 
 /// The lock of the index of the repository `folder` is in, when there is one. Each linked worktree
 /// has an index, and a lock, of its own.
