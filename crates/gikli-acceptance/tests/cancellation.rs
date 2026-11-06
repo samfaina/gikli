@@ -319,8 +319,8 @@ fn a_hook_that_is_only_slow_runs_to_completion_with_nobody_cancelling_it() {
     assert_eq!(logged.exit_code, Some(0));
 }
 
-/// A git that a hook starts traces to the same file, and may run hooks of its own. What the
-/// operation waits on is still the hook of the git gikli started.
+/// A git that a hook starts inherits the target of the trace, and may run hooks of its own. What
+/// the operation waits on is still the hook of the git gikli started.
 #[test]
 fn a_hook_run_by_a_git_inside_a_hook_is_not_the_one_reported() {
     let sandbox = Sandbox::new();

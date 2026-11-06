@@ -14,16 +14,17 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::host::HostEnvironment;
+use crate::lock;
 use crate::operation_log::{OperationLog, OperationLogEntry};
 use crate::operations::{OperationRun, Progress};
 use crate::process_tree::{self, Cancellation};
 use crate::prompts;
+use crate::trace::{self, ForwardedEvents, HookRuns, TraceReader};
 use crate::url_passwords::hide_url_passwords;
 use crate::version::GitVersion;
 use crate::wsl::WslShare;
@@ -93,8 +94,9 @@ impl GitProgram {
         }
     }
 
-    /// The command that starts git in `folder`, before its arguments.
-    fn command(&self, folder: &Path) -> Command {
+    /// The command that starts git in `folder`, before its arguments. Inside WSL, a run whose trace
+    /// is forwarded with the marker `forwarding_with` goes through [`trace::WSL_FORWARDER`].
+    fn command(&self, folder: &Path, forwarding_with: Option<&str>) -> Command {
         match self {
             Self::Native(executable) => {
                 let mut command = Command::new(executable);
@@ -112,7 +114,11 @@ impl GitProgram {
                     Some((_, linux_path)) => command.args(["--cd", &linux_path]),
                     None => command.arg("--cd").arg(folder),
                 };
-                command.args(["--exec", "git"]);
+                command.arg("--exec");
+                if let Some(marker) = forwarding_with {
+                    command.args(["sh", "-c", trace::WSL_FORWARDER, "sh", marker]);
+                }
+                command.arg("git");
                 command
             }
         }
@@ -145,6 +151,7 @@ pub(crate) struct GitRunner {
     host: HostEnvironment,
     log: Arc<OperationLog>,
     use_credential_helpers: bool,
+    can_read_trace: bool,
 }
 
 /// One finished git run.
@@ -178,12 +185,17 @@ const REFUSED_CREDENTIALS_VARIABLE: &str = "GIKLI_CREDENTIALS_REFUSED";
 const NOTE_REFUSED_CREDENTIALS: &str =
     "credential.helper=!f() { [ \"$1\" != erase ] || : > \"$GIKLI_CREDENTIALS_REFUSED\"; }; f";
 
-/// Variables that cross into WSL, so git there runs without a terminal as it does natively, and
-/// leaves what it reports about each run in files gikli can read: `/p` translates a path.
+/// In the environment of a test, this plays a machine where gikli cannot set up the reader of git's
+/// trace. Nothing else sets it, and git does not get it.
+const NO_TRACE_READER_VARIABLE: &str = "GIKLI_NO_TRACE_READER";
+
+/// Variables that cross into WSL, so git there runs without a trace unless the forwarder gives it
+/// one, runs without a terminal as it does natively, and leaves what it reports about each run in
+/// files gikli can read: `/p` translates a path.
 const WSL_SHARED_VARIABLES: &[&str] = &[
     "GIT_TERMINAL_PROMPT",
     "GIT_OPTIONAL_LOCKS",
-    "GIT_TRACE2_EVENT/p",
+    "GIT_TRACE2_EVENT",
     "GIKLI_CREDENTIALS_REFUSED/p",
 ];
 
@@ -192,6 +204,8 @@ impl GitRunner {
         for name in REDIRECTING_VARIABLES {
             host.remove(*name);
         }
+        let can_read_trace = host.get(NO_TRACE_READER_VARIABLE).is_none();
+        host.remove(NO_TRACE_READER_VARIABLE);
         // No terminal: a hook or credential prompt that needs one fails instead of hanging.
         host.set("GIT_TERMINAL_PROMPT", "0");
         host.set("GIT_OPTIONAL_LOCKS", "0");
@@ -213,6 +227,7 @@ impl GitRunner {
             host,
             log,
             use_credential_helpers: true,
+            can_read_trace,
         }
     }
 
@@ -230,8 +245,13 @@ impl GitRunner {
 
     /// Runs git with `args` in `folder`, for a command nobody needs to see or stop.
     pub fn run(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
-        let (mut command, entry, trace) = self.command(folder, args);
-        let output = command.output();
+        let (mut command, entry, mut trace) = self.command(folder, args);
+        let output = command.output().map(|mut output| {
+            let mut stderr = trace.take_events_from(&output.stderr);
+            stderr.extend(trace.stderr_ended());
+            output.stderr = stderr;
+            output
+        });
         self.finish(entry, output, trace, &Cancellation::default())
     }
 
@@ -248,7 +268,7 @@ impl GitRunner {
         args: &[&str],
         operation: &OperationRun,
     ) -> std::io::Result<Invocation> {
-        let (mut command, entry, trace) = self.command(folder, args);
+        let (mut command, entry, mut trace) = self.command(folder, args);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let cancellation = operation.cancellation();
         let started = if self.runs_natively() {
@@ -256,7 +276,7 @@ impl GitRunner {
         } else {
             command.spawn()
         };
-        let output = started.and_then(|child| watch_run(child, &trace, operation));
+        let output = started.and_then(|child| watch_run(child, &mut trace, operation));
         self.finish(entry, output, trace, cancellation)
     }
 
@@ -274,7 +294,8 @@ impl GitRunner {
         command_line.extend(["-c", NOTE_REFUSED_CREDENTIALS]);
         command_line.extend(args);
 
-        let mut command = self.program.command(folder);
+        let trace = RunTrace::new(&self.program, self.can_read_trace);
+        let mut command = self.program.command(folder, trace.forwarding_marker());
         command
             .args(&command_line)
             .env_clear()
@@ -282,8 +303,7 @@ impl GitRunner {
             .stdin(Stdio::null());
         hide_console_window(&mut command);
         detach_from_terminal(&mut command);
-        let trace = RunTrace::new();
-        command.env("GIT_TRACE2_EVENT", &trace.file);
+        command.env("GIT_TRACE2_EVENT", &trace.git_target);
         command.env(
             REFUSED_CREDENTIALS_VARIABLE,
             &trace.refused_credentials_file,
@@ -309,7 +329,7 @@ impl GitRunner {
         &self,
         mut entry: OperationLogEntry,
         output: std::io::Result<Output>,
-        trace: RunTrace,
+        mut trace: RunTrace,
         cancellation: &Cancellation,
     ) -> std::io::Result<Invocation> {
         let Output {
@@ -324,6 +344,7 @@ impl GitRunner {
                 return Err(error);
             }
         };
+        trace.run_ended();
         let stderr = hide_url_passwords(&String::from_utf8_lossy(&stderr));
         let cancelled = cancellation.ended_run_with(status);
         entry.cancelled = cancelled;
@@ -370,7 +391,7 @@ impl GitRunner {
     }
 }
 
-/// How often gikli reads the trace of a running git for the hook it waits on.
+/// How often gikli looks at the trace of a running git for the hook it waits on.
 const TRACE_READ_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Follows the run of `child`, traced to `trace`, until it ends, and returns what it wrote. A
@@ -378,7 +399,7 @@ const TRACE_READ_INTERVAL: Duration = Duration::from_millis(100);
 /// no longer holds this back.
 fn watch_run(
     mut child: Child,
-    trace: &RunTrace,
+    trace: &mut RunTrace,
     operation: &OperationRun,
 ) -> std::io::Result<Output> {
     let (sender, pipes) = mpsc::channel();
@@ -402,7 +423,7 @@ fn watch_run(
     while open_pipes > 0 {
         match pipes.recv_timeout(TRACE_READ_INTERVAL) {
             Ok(Piped::Stdout(bytes)) => stdout.extend_from_slice(&bytes),
-            Ok(Piped::Stderr(bytes)) => stderr.add(&bytes, operation),
+            Ok(Piped::Stderr(bytes)) => stderr.add(&trace.take_events_from(&bytes), operation),
             Ok(Piped::Closed) => open_pipes -= 1,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -416,8 +437,10 @@ fn watch_run(
             break;
         }
     }
-    tell_hook(trace, &mut hook, operation);
+    stderr.add(&trace.stderr_ended(), operation);
     let status = cancellation.wait_for(&mut child)?;
+    trace.run_ended();
+    tell_hook(trace, &mut hook, operation);
     Ok(Output {
         status,
         stdout,
@@ -529,87 +552,112 @@ impl Invocation {
     }
 }
 
-/// What git reports about one run outside its messages, which is the same in every language, in
-/// files of its own. It is the only place that tells which hook runs or failed, as git itself says
-/// nothing about it.
+/// What git reports about one run outside its messages, which is the same in every language. It
+/// is the only place that tells which hook runs or failed, as git itself says nothing about it.
 struct RunTrace {
-    /// The events of the run, in the event format of trace2.
-    file: PathBuf,
+    /// What git's trace of the run has said so far, without its command lines. Empty for a run
+    /// without a trace, which then reports no hook.
+    hooks: Arc<Mutex<HookRuns>>,
+    source: TraceSource,
+    /// What git gets as its target for the trace.
+    git_target: OsString,
     /// The empty file gikli's credential helper creates when a remote refuses the credentials.
     refused_credentials_file: PathBuf,
 }
 
-/// Tells apart the trace files of the runs of this process.
-static NEXT_TRACE: AtomicU64 = AtomicU64::new(0);
+/// Where the trace of a run reaches gikli.
+enum TraceSource {
+    /// The run has no trace.
+    None,
+    /// A git on this machine writes to a reader.
+    Reader(TraceReader),
+    /// The git inside WSL has its events forwarded on its error output.
+    Forwarded(ForwardedEvents),
+}
 
 impl RunTrace {
-    fn new() -> Self {
-        let number = NEXT_TRACE.fetch_add(1, Ordering::Relaxed);
-        let name = format!("gikli-trace-{}-{number}", std::process::id());
-        let folder = std::env::temp_dir();
+    /// The trace of a run of `program`. When it cannot be read, git runs without one, as it can do
+    /// its work all the same, and gikli does not fall back to a file.
+    fn new(program: &GitProgram, can_read: bool) -> Self {
+        let hooks = Arc::new(Mutex::new(HookRuns::default()));
+        let mut source = TraceSource::None;
+        let mut git_target = OsString::from(trace::NO_TRACE);
+        if can_read {
+            match program {
+                GitProgram::Native(_) => {
+                    if let Ok((reader, target)) = TraceReader::start(hooks.clone()) {
+                        source = TraceSource::Reader(reader);
+                        git_target = target;
+                    }
+                }
+                // The forwarder gives git its target, and git runs with this one without it.
+                GitProgram::Wsl { .. } => {
+                    if let Ok(forwarded) = ForwardedEvents::new(hooks.clone()) {
+                        source = TraceSource::Forwarded(forwarded);
+                    }
+                }
+            }
+        }
+        let refused_credentials_file =
+            std::env::temp_dir().join(format!("{}.refused", trace::new_run_name()));
         Self {
-            file: folder.join(format!("{name}.json")),
-            refused_credentials_file: folder.join(format!("{name}.refused")),
+            hooks,
+            source,
+            git_target,
+            refused_credentials_file,
         }
     }
 
-    /// The events so far of the git gikli started. A git a hook started traces to the same file,
-    /// under a session nested with `/`. The last line may be one git is still writing, which goes
-    /// unread until it is whole.
-    fn events(&self) -> Vec<serde_json::Value> {
-        let Ok(trace) = std::fs::read_to_string(&self.file) else {
-            return Vec::new();
-        };
-        trace
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
-            .filter(|event: &serde_json::Value| {
-                event["sid"].as_str().is_some_and(|sid| !sid.contains('/'))
-            })
-            .collect()
+    /// The marker of the events the git inside WSL forwards in its error output.
+    fn forwarding_marker(&self) -> Option<&str> {
+        match &self.source {
+            TraceSource::Forwarded(forwarded) => Some(forwarded.marker()),
+            _ => None,
+        }
+    }
+
+    /// `stderr`, a piece of git's error output, without the events in it.
+    fn take_events_from(&mut self, stderr: &[u8]) -> Vec<u8> {
+        match &mut self.source {
+            TraceSource::Forwarded(forwarded) => forwarded.take_from(stderr),
+            _ => stderr.to_vec(),
+        }
+    }
+
+    /// What is left of git's error output now that it has ended.
+    fn stderr_ended(&mut self) -> Vec<u8> {
+        match &mut self.source {
+            TraceSource::Forwarded(forwarded) => forwarded.finish(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Takes what is left of the trace, once git has ended. A process a hook started that is still
+    /// running does not hold this back.
+    fn run_ended(&mut self) {
+        if let TraceSource::Reader(reader) = &mut self.source {
+            reader.finish();
+        }
     }
 
     /// The hook that ended with an error in the run, as the git gikli started saw it.
     fn failed_hook(&self) -> Option<String> {
-        let events = self.events();
-        events.iter().find_map(|started| {
-            let hook = started["hook_name"].as_str()?;
-            let failed = events.iter().any(|ended| {
-                ended["event"] == "child_exit"
-                    && ended["child_id"] == started["child_id"]
-                    && ended["code"] != 0
-            });
-            failed.then(|| hook.to_owned())
-        })
+        lock(&self.hooks).failed()
     }
 
-    /// The hook running now, as the git gikli started sees it: the last one started that has not
-    /// ended.
+    /// The hook running now, as the git gikli started sees it.
     fn running_hook(&self) -> Option<String> {
-        let events = self.events();
-        events.iter().rev().find_map(|started| {
-            let hook = started["hook_name"].as_str()?;
-            let ended = events.iter().any(|ended| {
-                ended["event"] == "child_exit" && ended["child_id"] == started["child_id"]
-            });
-            (!ended).then(|| hook.to_owned())
-        })
+        lock(&self.hooks).running()
     }
 
     /// The last hook the git gikli started has started, running or not.
     fn last_hook(&self) -> Option<String> {
-        self.events()
-            .iter()
-            .rev()
-            .find_map(|started| started["hook_name"].as_str().map(str::to_owned))
+        lock(&self.hooks).last()
     }
 }
 
 impl Drop for RunTrace {
     fn drop(&mut self) {
-        // Absent when git traced nothing; left behind when a process the hook started still
-        // holds it. The temporary folder takes care of it then.
-        let _ = std::fs::remove_file(&self.file);
         let _ = std::fs::remove_file(&self.refused_credentials_file);
     }
 }

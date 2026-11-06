@@ -230,7 +230,7 @@ fn read_request(stream: &TcpStream, token: &str) -> Option<String> {
 }
 
 /// A token nobody can guess.
-fn new_token() -> io::Result<String> {
+pub(crate) fn new_token() -> io::Result<String> {
     let mut bytes = [0; 32];
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())

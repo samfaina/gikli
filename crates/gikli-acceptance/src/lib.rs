@@ -735,6 +735,47 @@ impl WslRepository {
         fs::write(self.root().join(path), contents).expect("write file");
     }
 
+    /// The place `name` beside the repository, as git inside WSL sees it. The folder they share
+    /// goes when this is dropped.
+    pub fn linux_path_beside(&self, name: &str) -> String {
+        let parent = self.linux_root.trim_end_matches("/app");
+        format!("{parent}/{name}")
+    }
+
+    /// The place `name` beside the repository, as Windows sees it under `\\wsl$`.
+    pub fn windows_path_beside(&self, name: &str) -> PathBuf {
+        self.windows_path("wsl$", &self.linux_path_beside(name))
+    }
+
+    /// Makes `name`, beside the repository, another way to reach the repository.
+    pub fn link_beside(&self, name: &str) {
+        let link = self.linux_path_beside(name);
+        wsl_output(&self.wsl, None, &["ln", "-s", &self.linux_root, &link]);
+    }
+
+    /// Writes `script` at `linux_path` as a shell script git can start, in a folder it creates.
+    pub fn write_script(&self, linux_path: &str, script: &str) {
+        let folder = linux_path
+            .rsplit_once('/')
+            .map_or("/", |(folder, _)| folder);
+        wsl_output(&self.wsl, None, &["mkdir", "-p", folder]);
+        fs::write(
+            self.windows_path("wsl$", linux_path),
+            format!("#!/bin/sh\n{script}\n"),
+        )
+        .expect("write script");
+        wsl_output(&self.wsl, None, &["chmod", "+x", linux_path]);
+    }
+
+    /// Whether anything is at `linux_path`.
+    pub fn file_exists(&self, linux_path: &str) -> bool {
+        Command::new(&self.wsl)
+            .args(["--exec", "test", "-e", linux_path])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
     /// The uncommitted changes as plain git inside WSL reports them, in the form of
     /// [`TestRepository::status_by_git`].
     pub fn status_by_git(&self) -> Vec<String> {

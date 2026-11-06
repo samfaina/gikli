@@ -14,7 +14,8 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   installed off the PATH, or `wsl.exe` on a machine without WSL. The test that hides passwords
   in git's standard output uses it too, as the real git writes no URL there for any command
   gikli runs today. Tests of WSL itself run on Windows with WSL and a git inside it, and skip
-  elsewhere. Tests of dubious ownership play
+  elsewhere. Tests of a machine where gikli cannot read git's trace set `GIKLI_NO_TRACE_READER`,
+  as nothing else makes that happen on demand. Tests of dubious ownership play
   another owner with git's own `GIT_TEST_ASSUME_DIFFERENT_OWNER`, and skip on a git that does
   not check ownership, such as 2.34.0. Tests of long paths run only on Windows. Tests of
   credentials use a local HTTP server that requires them, in front of git's own `git http-backend`.
