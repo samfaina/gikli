@@ -127,29 +127,9 @@ element<HTMLElement>("use-credential-helper-label").textContent = t("useCredenti
 element<HTMLElement>("use-credential-helper-hint").textContent = t("useCredentialHelperHint");
 element<HTMLElement>("clone-submodules-recursively-label").textContent = t("cloneSubmodulesRecursively");
 
-cloneSubmodulesInput.addEventListener("change", async () => {
-  cloneSubmodulesInput.disabled = true;
-  try {
-    cloneSubmodulesInput.checked = (await setCloneSubmodulesRecursively(cloneSubmodulesInput.checked)).cloneSubmodulesRecursively;
-  } catch (error) {
-    cloneSubmodulesInput.checked = !cloneSubmodulesInput.checked;
-    report(error);
-  } finally {
-    cloneSubmodulesInput.disabled = false;
-  }
-});
 
-useCredentialHelperInput.addEventListener("change", async () => {
-  useCredentialHelperInput.disabled = true;
-  try {
-    useCredentialHelperInput.checked = (await setUseCredentialHelper(useCredentialHelperInput.checked)).useCredentialHelper;
-  } catch (error) {
-    useCredentialHelperInput.checked = !useCredentialHelperInput.checked;
-    report(error);
-  } finally {
-    useCredentialHelperInput.disabled = false;
-  }
-});
+saveOnChange(useCredentialHelperInput, async (checked) => (await setUseCredentialHelper(checked)).useCredentialHelper);
+saveOnChange(cloneSubmodulesInput, async (checked) => (await setCloneSubmodulesRecursively(checked)).cloneSubmodulesRecursively);
 
 operationLogButton.addEventListener("click", () => {
   const opening = operationLogPanel.hidden;
@@ -261,8 +241,8 @@ cloneButton.addEventListener("click", () => {
   }
 });
 
-cloneUrlInput.addEventListener("input", () => void showCloneUrlForms());
-cloneFolderInput.addEventListener("input", enableStartClone);
+cloneUrlInput.addEventListener("input", () => void updateCloneUrlChoice());
+cloneFolderInput.addEventListener("input", updateStartClone);
 cloneUrlHttpsInput.addEventListener("change", () => chooseCloneUrlForm("https"));
 cloneUrlSshInput.addEventListener("change", () => chooseCloneUrlForm("ssh"));
 
@@ -270,41 +250,56 @@ browseCloneFolderButton.addEventListener("click", async () => {
   const folder = await open({ directory: true, title: t("cloneFolderDialogTitle") });
   if (typeof folder === "string") {
     cloneFolderInput.value = folder;
-    enableStartClone();
+    updateStartClone();
   }
 });
 
 clonePanel.addEventListener("submit", async (event) => {
   event.preventDefault();
   cloning = true;
-  enableStartClone();
+  updateStartClone();
   cloneResult.replaceChildren();
   try {
     const project = await cloneRepository(cloneUrlInput.value.trim(), cloneFolderInput.value.trim());
     clonePanel.reset();
     clonePanel.hidden = true;
     cloneButton.setAttribute("aria-expanded", "false");
-    await showCloneUrlForms();
+    await updateCloneUrlChoice();
     await showInItsWindow(project);
   } catch (error) {
     cloneResult.replaceChildren(errorView(error));
   } finally {
     cloning = false;
-    enableStartClone();
+    updateStartClone();
   }
 });
 
 void start();
 
+/** Saves a setting when the user changes `input`, with what `save` says was saved. When it fails, `input` goes back. */
+function saveOnChange(input: HTMLInputElement, save: (checked: boolean) => Promise<boolean>): void {
+  input.addEventListener("change", async () => {
+    input.disabled = true;
+    try {
+      input.checked = await save(input.checked);
+    } catch (error) {
+      input.checked = !input.checked;
+      report(error);
+    } finally {
+      input.disabled = false;
+    }
+  });
+}
+
 /** Whether this window is cloning, which it does one at a time. */
 let cloning = false;
 
-/** The forms of the URL in the clone form, once the core has given them. */
+/** The forms of the URL in the URL field, once the core has given them. */
 let shownCloneUrlForms: CloneUrlForms | null = null;
 
-/** Enables the choice of form that the URL in the clone form has, with the form it is in chosen. */
-async function showCloneUrlForms(): Promise<void> {
-  enableStartClone();
+/** Offers the choice between HTTPS and SSH when the URL has those forms, with the one it is in chosen. */
+async function updateCloneUrlChoice(): Promise<void> {
+  updateStartClone();
   const url = cloneUrlInput.value.trim();
   const forms = url === "" ? null : await cloneUrlForms(url);
   // The user typed on while the core answered: the answer to what they typed last counts.
@@ -317,15 +312,15 @@ async function showCloneUrlForms(): Promise<void> {
   cloneUrlSshInput.checked = forms?.ssh === url;
 }
 
-/** Puts the chosen form of the URL in the clone form. */
+/** Puts the chosen form of the URL in the URL field. */
 function chooseCloneUrlForm(form: keyof CloneUrlForms): void {
   if (shownCloneUrlForms !== null) {
     cloneUrlInput.value = shownCloneUrlForms[form];
   }
 }
 
-/** A clone takes a URL and a folder, and starts once nothing else is cloning here. */
-function enableStartClone(): void {
+/** A clone takes a URL and a folder, and can start once nothing else is cloning here. */
+function updateStartClone(): void {
   startCloneButton.disabled = cloning || cloneUrlInput.value.trim() === "" || cloneFolderInput.value.trim() === "";
 }
 
@@ -1240,8 +1235,12 @@ function describeExplainedMessage(message: ExplainedMessage): string {
       return t("failureServerUnreachable");
     case "cloneTargetNotEmpty":
       return t("failureCloneTargetNotEmpty", { folder: message.folder });
-    case "submodulesNotCloned":
-      return t("failureSubmodulesNotCloned", { folder: message.folder });
+    case "submodulesNotCloned": {
+      const notCloned = t("failureSubmodulesNotCloned", { folder: message.folder });
+      return message.cause === null
+        ? notCloned
+        : t("failureSubmodulesNotClonedCause", { message: notCloned, cause: describeExplainedMessage(message.cause) });
+    }
   }
 }
 

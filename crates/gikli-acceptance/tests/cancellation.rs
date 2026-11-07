@@ -231,7 +231,7 @@ fn a_clone_cancelled_before_any_hook_runs_leaves_nothing_behind() {
 /// A bare remote with a submodule, and the file that exists once a clone holds on the transfer of
 /// the submodule. Only that transfer holds: the Repository around it comes through.
 fn remote_with_a_held_submodule(sandbox: &Sandbox) -> (TestRepository, PathBuf) {
-    sandbox.configure("[protocol \"file\"]\n\tallow = always\n");
+    sandbox.allow_local_submodules();
     let submodule = sandbox.bare_remote("submodule.git");
     let work = sandbox.repository("submodule-work");
     work.write("inside.txt", "draft\n");
@@ -355,7 +355,12 @@ fn with_submodules_left_out_a_clone_cancelled_in_a_hook_is_complete() {
     let result = cancel_a_clone_held_at(&gikli, &remote, &holding, &target);
 
     result.expect("the clone is complete, so it opens");
-    assert!(target.join("notes.txt").is_file());
+    assert_eq!(
+        sandbox
+            .existing_repository(&target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
 }
 
 #[test]

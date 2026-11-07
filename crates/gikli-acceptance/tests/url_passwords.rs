@@ -431,13 +431,10 @@ fn a_password_that_reads_as_a_port_stays_hidden_when_the_clone_fails() {
 
     let result = gikli.clone_repository(&url, &target);
 
-    assert_eq!(
-        result,
-        Err(Failure::CloneFailed {
-            url: hidden.to_owned(),
-            folder: target.clone(),
-        })
-    );
+    let Err(Failure::Explained { explanation }) = result else {
+        panic!("got {result:?}");
+    };
+    assert_eq!(explanation.message, ExplainedMessage::ServerUnreachable);
     let events: Vec<Event> = events.try_iter().collect();
     assert_clone_started_showing(&events, hidden);
     let logged = logged_run(&gikli, "clone");

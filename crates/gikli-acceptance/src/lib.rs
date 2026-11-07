@@ -100,6 +100,11 @@ impl Sandbox {
         (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (2, 46)
     }
 
+    /// Lets git clone submodules from `file://` URLs, which it refuses unless the user allows it.
+    pub fn allow_local_submodules(&self) {
+        self.configure("[protocol \"file\"]\n\tallow = always\n");
+    }
+
     /// Installs `script` as the hook `name` of every repository in the sandbox, as a user would
     /// with `core.hooksPath` in `~/.gitconfig`.
     pub fn hook(&self, name: &str, script: &str) {

@@ -99,9 +99,10 @@ export const en = {
   failureFilesNotAdded: "git could not add the files in {folder}. The operation log shows git's output.",
   failureIndexLockNotRemoved: "gikli could not remove {lock}: {message}",
   failureFolderNotTrusted: "git could not add {folder} to your trusted folders. The operation log shows git's output.",
-  failureServerUnreachable: "git could not reach the server of this repository.",
+  failureServerUnreachable: "git could not reach the server.",
   failureCloneTargetNotEmpty: "{folder} already holds something, so git cannot clone into it.",
-  failureSubmodulesNotCloned: "The files of the repository are in {folder}, but git could not clone its submodules.",
+  failureSubmodulesNotCloned: "The files of the Repository are in {folder}, but git could not clone its submodules.",
+  failureSubmodulesNotClonedCause: "{message} {cause}",
   failureOperationCancelled: "The operation was cancelled.",
   failureCancelledCloneNotRemoved:
     "The clone was cancelled, and gikli could not remove what it created in {folder}: {message} Delete it before you clone again.",

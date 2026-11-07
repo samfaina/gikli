@@ -29,8 +29,8 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 
 ### Clone
 
-- Submodules are cloned with `git clone --recurse-submodules`, the command the reference names, under the setting "Clone submodules recursively", on by default. A clone whose submodules fail keeps what git left in its folder, as git does, and says so. The user can open it without them or delete it.
-- The URL form holds what git gets. Choosing HTTPS or SSH rewrites the URL there: the form it is already in stays as typed, and the other is built from the host and the path alone. A port stays with the form it was typed for, and a password never moves to the other form. The SSH form uses the user `git`, as the servers gikli knows of expect. A URL on plain HTTP keeps its HTTP as its HTTPS form, as gikli cannot know that the server has HTTPS.
+- Submodules are cloned with `git clone --recurse-submodules`, the command the reference names, under the setting "Clone submodules recursively", on by default. A clone whose submodules fail keeps what git left in its folder, as git does, and says so, with the cause when gikli knows it. The URL the user gave was fine, so the failure is about the submodules first. The user can open the clone without them or delete it.
+- The URL field holds what git gets. Choosing HTTPS or SSH rewrites the URL there: the form it is already in stays as typed, and the other is built from the host and the path alone. A port stays with the form it was typed for, and a password never moves to the other form. The SSH form uses the user `git`, as the servers gikli knows of expect. A URL on plain HTTP keeps its HTTP as its HTTPS form, as gikli cannot know that the server has HTTPS.
 - Only HTTP, HTTPS and SSH URLs have these forms. A folder on this machine, a `file://` URL and a `git://` URL offer no choice, and clone as they are.
 - gikli tells a server it cannot reach only from what ssh and curl write, as neither translates it. A repository the server does not have is reported by git in the user's language, with nothing else to tell it by, so it stays the general failure that points to the operation log.
 

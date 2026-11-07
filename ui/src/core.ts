@@ -136,7 +136,8 @@ export type ExplainedMessage =
   | { kind: "hostKeyChanged" }
   | { kind: "serverUnreachable" }
   | { kind: "cloneTargetNotEmpty"; folder: string }
-  | { kind: "submodulesNotCloned"; folder: string };
+  /** `cause` is what kept the submodules from cloning, when the core knows it. */
+  | { kind: "submodulesNotCloned"; folder: string; cause: ExplainedMessage | null };
 
 /** What the user can do next, in a failure the core explains. */
 export type NextStep =

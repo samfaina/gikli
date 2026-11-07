@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, Invocation};
-use crate::{Failure, Repository, canonicalize, processes};
+use crate::{CloneTarget, Failure, Repository, canonicalize, processes};
 
 /// A failure explained in plain words. The UI words the message and the next step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -50,12 +50,13 @@ pub enum ExplainedMessage {
     /// git could not get to the server: its name does not resolve, or it does not answer.
     ServerUnreachable,
     /// The target of a clone, `folder`, already holds something, so git refused to clone into it.
-    #[serde(rename_all = "camelCase")]
     CloneTargetNotEmpty { folder: PathBuf },
     /// The clone into `folder` got its files, and git could not clone its submodules. git leaves
-    /// the folder as it is.
-    #[serde(rename_all = "camelCase")]
-    SubmodulesNotCloned { folder: PathBuf },
+    /// the folder as it is. `cause` is what kept them from cloning, when gikli knows it.
+    SubmodulesNotCloned {
+        folder: PathBuf,
+        cause: Option<Box<ExplainedMessage>>,
+    },
 }
 
 /// What the user can do next.
@@ -182,41 +183,47 @@ pub(crate) fn explain(
 }
 
 /// The explanation of the failure of `invocation`, a `git clone` run in `parent` into `target`,
-/// when gikli knows this failure. `target` already held something when `target_was_in_use`, and
-/// `git clone` was to clone submodules when `with_submodules`.
+/// when gikli knows this failure.
 pub(crate) fn explain_failed_clone(
     runner: &GitRunner,
     parent: &Path,
-    target: &Path,
+    target: &CloneTarget,
     invocation: &Invocation,
-    target_was_in_use: bool,
-    with_submodules: bool,
 ) -> Option<Explanation> {
-    if target_was_in_use {
+    if target.was_in_use() {
         return Some(explained(
             ExplainedMessage::CloneTargetNotEmpty {
-                folder: target.to_path_buf(),
+                folder: target.folder.clone(),
             },
             NextStep::ChooseEmptyFolder,
         ));
     }
-    explain(runner, parent, invocation).or_else(|| {
-        // git removes a clone that fails before it has its files, and goes on to the submodules
-        // once it has them.
-        (with_submodules && holds_submodules(target) && target.join(".git").exists()).then(|| {
-            explained(
-                ExplainedMessage::SubmodulesNotCloned {
-                    folder: target.to_path_buf(),
-                },
-                NextStep::UseOrDeleteClone,
+    let explanation = explain(runner, parent, invocation);
+    // git removes a clone that fails before it has its files, and goes on to the submodules once it
+    // has them, unless a hook or a path too long stopped it first.
+    let reached_submodules = target.has_submodules_to_clone()
+        && target.folder.join(".git").exists()
+        && !explanation.as_ref().is_some_and(|explanation| {
+            matches!(
+                explanation.message,
+                ExplainedMessage::HookFailed { .. } | ExplainedMessage::LongPaths
             )
-        })
+        });
+    if !reached_submodules {
+        return explanation;
+    }
+    let (cause, actions) = match explanation {
+        Some(explanation) => (Some(Box::new(explanation.message)), explanation.actions),
+        None => (None, vec![]),
+    };
+    Some(Explanation {
+        message: ExplainedMessage::SubmodulesNotCloned {
+            folder: target.folder.clone(),
+            cause,
+        },
+        next_step: NextStep::UseOrDeleteClone,
+        actions,
     })
-}
-
-/// Whether the files of the repository at `folder` name any submodules.
-pub(crate) fn holds_submodules(folder: &Path) -> bool {
-    folder.join(".gitmodules").is_file()
 }
 
 fn explained(message: ExplainedMessage, next_step: NextStep) -> Explanation {

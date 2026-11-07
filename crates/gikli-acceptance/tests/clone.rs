@@ -8,11 +8,6 @@ use std::path::Path;
 use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, file_url};
 use gikli_core::{ExplainedMessage, Explanation, Failure, Gikli, NextStep, Project, Repository};
 
-/// Lets git clone submodules from `file://` URLs, which it refuses unless the user allows it.
-fn allow_local_submodules(sandbox: &Sandbox) {
-    sandbox.configure("[protocol \"file\"]\n\tallow = always\n");
-}
-
 /// A bare remote named `name`, holding a file named after it and, when given, a submodule.
 fn remote_holding(
     sandbox: &Sandbox,
@@ -34,7 +29,7 @@ fn remote_holding(
 
 /// A bare remote with a submodule `middle`, which has a submodule `leaf`.
 fn remote_with_nested_submodules(sandbox: &Sandbox) -> TestRepository {
-    allow_local_submodules(sandbox);
+    sandbox.allow_local_submodules();
     let leaf = remote_holding(sandbox, "leaf", None);
     let middle = remote_holding(sandbox, "middle", Some(("leaf", &leaf)));
     remote_holding(sandbox, "top", Some(("middle", &middle)))
@@ -58,6 +53,14 @@ fn a_clone_holds_its_submodules_and_theirs_by_default() {
     assert_holds(&target, "top.txt");
     assert_holds(&target, "middle/middle.txt");
     assert_holds(&target, "middle/leaf/leaf.txt");
+    let status = sandbox
+        .existing_repository(&target)
+        .git(&["submodule", "status", "--recursive"]);
+    assert_eq!(status.lines().count(), 2, "{status}");
+    assert!(
+        status.lines().all(|line| line.starts_with(' ')),
+        "git finds every submodule at the commit recorded: {status}"
+    );
     assert_eq!(
         project.repositories,
         vec![Repository {
@@ -88,6 +91,13 @@ fn with_the_setting_off_a_clone_leaves_its_submodules_out_and_the_setting_stays_
         .expect("clone the remote");
     assert_holds(&target, "top.txt");
     assert!(!target.join("middle/middle.txt").exists());
+    assert!(
+        sandbox
+            .existing_repository(&target)
+            .git(&["submodule", "status"])
+            .starts_with('-'),
+        "git finds the submodule not cloned"
+    );
 }
 
 /// The forms gikli offers for `url`, as (HTTPS, SSH), when it offers them.
@@ -241,6 +251,13 @@ fn the_ssh_form_of_a_url_clones_through_ssh() {
         .expect("clone through ssh");
 
     assert_holds(&target, "remote.txt");
+    assert_eq!(
+        sandbox
+            .existing_repository(&target)
+            .git(&["remote", "get-url", "origin"])
+            .trim_end(),
+        forms.ssh
+    );
     let asked = fs::read_to_string(asked).expect("ssh was started");
     assert!(asked.contains("git@gikli.test"), "{asked}");
     assert!(asked.contains("owner/remote.git"), "{asked}");
@@ -286,7 +303,7 @@ fn a_folder_that_holds_something_is_left_alone_and_the_failure_says_so() {
         fs::read_to_string(target.join("keep.txt")).expect("the file is still there"),
         "mine\n"
     );
-    assert!(!target.join(".git").exists());
+    assert!(!sandbox.is_inside_repository_by_git(&target));
 }
 
 #[test]
@@ -353,7 +370,7 @@ fn what_a_server_says_about_other_servers_does_not_read_as_unreachable() {
 
 /// A bare remote with a submodule `missing` whose remote is gone.
 fn remote_with_a_submodule_that_is_gone(sandbox: &Sandbox) -> TestRepository {
-    allow_local_submodules(sandbox);
+    sandbox.allow_local_submodules();
     let gone = remote_holding(sandbox, "gone", None);
     let remote = remote_holding(sandbox, "top", Some(("missing", &gone)));
     fs::remove_dir_all(gone.root()).expect("remove the remote of the submodule");
@@ -374,13 +391,65 @@ fn a_submodule_that_cannot_be_cloned_is_explained_and_the_clone_stays_in_its_fol
         Explanation {
             message: ExplainedMessage::SubmodulesNotCloned {
                 folder: target.clone(),
+                cause: None,
             },
             next_step: NextStep::UseOrDeleteClone,
             actions: vec![],
         },
     );
     assert_holds(&target, "top.txt");
+    let clone = sandbox.existing_repository(&target);
+    assert_eq!(
+        clone.git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
+    assert!(
+        clone.git(&["submodule", "status"]).starts_with('-'),
+        "the submodule is not there"
+    );
     gikli.open_project(&target).expect("the clone opens");
+}
+
+/// What keeps a submodule from cloning is about its own server, while the URL the user gave was
+/// fine, so the explanation says it is about the submodules, and where the clone is.
+#[test]
+fn a_submodule_on_a_server_out_of_reach_is_explained_as_a_submodule_with_that_cause() {
+    let sandbox = Sandbox::new();
+    sandbox.allow_local_submodules();
+    let submodule = remote_holding(&sandbox, "submodule", None);
+    let remote = remote_holding(&sandbox, "top", Some(("elsewhere", &submodule)));
+    let work = sandbox.existing_repository(&sandbox.root().join("top"));
+    work.git(&[
+        "config",
+        "--file",
+        ".gitmodules",
+        "submodule.elsewhere.url",
+        "git@gikli.test:submodule.git",
+    ]);
+    work.commit_all("Move the submodule");
+    work.git(&["push", "--quiet", "origin", "main"]);
+    ssh_that_reports(
+        &sandbox,
+        "ssh: Could not resolve hostname gikli.test: Name or service not known",
+    );
+    let target = sandbox.root().join("clone");
+
+    let result = sandbox
+        .gikli()
+        .clone_repository(&file_url(remote.root()), &target);
+
+    assert_explained(
+        result,
+        Explanation {
+            message: ExplainedMessage::SubmodulesNotCloned {
+                folder: target.clone(),
+                cause: Some(Box::new(ExplainedMessage::ServerUnreachable)),
+            },
+            next_step: NextStep::UseOrDeleteClone,
+            actions: vec![],
+        },
+    );
+    assert_holds(&target, "top.txt");
 }
 
 #[test]

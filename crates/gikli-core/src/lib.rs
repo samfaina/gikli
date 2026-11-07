@@ -735,31 +735,32 @@ impl Gikli {
             folder: parent.to_path_buf(),
             message: error.to_string(),
         })?;
-        let found = FoundFolder::at(&target);
+        let destination = CloneTarget {
+            folder: target.clone(),
+            found: FoundFolder::at(&target),
+            with_submodules: self.settings().clone_submodules_recursively,
+        };
         // The folder goes by its name inside its parent, a path git inside WSL reads too.
         let name = name.to_string_lossy();
         let operation = LongOperation::Clone {
             url: shown_url.clone(),
             folder: target.clone(),
         };
-        let with_submodules = self.settings().clone_submodules_recursively;
         let mut args = vec!["clone", "--progress"];
-        if with_submodules {
+        if destination.with_submodules {
             args.push("--recurse-submodules");
         }
         args.extend(["--", url, &name]);
         let invocation = self.run_operation(&runner, operation, parent, &args)?;
         if invocation.cancelled {
-            return self.end_cancelled_clone(&target, found, invocation, with_submodules);
+            return self.end_cancelled_clone(&destination, invocation);
         }
         if !invocation.success {
             let explanation = explainer::explain_failed_clone(
                 &runner,
                 parent,
-                &target,
+                &destination,
                 &invocation.without_clone_reports(),
-                matches!(found, FoundFolder::Contents),
-                with_submodules,
             );
             return Err(match explanation {
                 Some(explanation) => Failure::Explained { explanation },
@@ -788,30 +789,27 @@ impl Gikli {
             .map_err(git_failed_to_start)
     }
 
-    /// What is left to do about `clone`, a clone into `target`, which held `found` before, that the
-    /// user cancelled.
+    /// What is left to do about `clone`, a clone into `target`, that the user cancelled.
     fn end_cancelled_clone(
         &self,
-        target: &Path,
-        found: FoundFolder,
+        target: &CloneTarget,
         clone: Invocation,
-        with_submodules: bool,
     ) -> Result<Project, Failure> {
         let checked_out = clone
             .last_hook
             .is_some_and(|hook| HOOKS_AFTER_CHECKOUT.contains(&hook.as_str()));
         // git goes on to the submodules after those hooks, so these did not get to all it had to do.
-        let complete = checked_out && !(with_submodules && explainer::holds_submodules(target));
+        let complete = checked_out && !target.has_submodules_to_clone();
         if !complete {
-            return match found.restore(target) {
+            return match target.found.restore(&target.folder) {
                 Ok(()) => Err(Failure::OperationCancelled { left_behind: None }),
                 Err(error) => Err(Failure::CancelledCloneNotRemoved {
-                    folder: target.to_path_buf(),
+                    folder: target.folder.clone(),
                     message: error.to_string(),
                 }),
             };
         };
-        let project = self.open_project(target)?;
+        let project = self.open_project(&target.folder)?;
         // Unless the cancel came just as the hook ended, which leaves nothing to tell.
         if let Some(hook) = clone.interrupted_hook {
             // A clone is the Repository at the root of the Project it opens as.
@@ -979,6 +977,27 @@ impl Gikli {
 /// The hooks git runs on a clone once it has checked out the files, when all that is left of the
 /// clone is running them.
 const HOOKS_AFTER_CHECKOUT: &[&str] = &["post-index-change", "post-checkout"];
+
+/// Where a clone goes, and what it has to do there.
+struct CloneTarget {
+    folder: PathBuf,
+    /// What the folder held before the clone started.
+    found: FoundFolder,
+    /// Whether the clone also clones submodules.
+    with_submodules: bool,
+}
+
+impl CloneTarget {
+    /// Whether the folder held something git refuses to clone into.
+    fn was_in_use(&self) -> bool {
+        matches!(self.found, FoundFolder::Contents)
+    }
+
+    /// Whether the files of the clone name submodules that git goes on to clone.
+    fn has_submodules_to_clone(&self) -> bool {
+        self.with_submodules && self.folder.join(".gitmodules").is_file()
+    }
+}
 
 /// What the target of a clone held before the clone started.
 #[derive(Clone, Copy)]

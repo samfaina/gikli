@@ -18,9 +18,6 @@ const exe = process.platform === "win32" ? ".exe" : "";
 /** The one uncommitted change in the smoke test's repository, a file git does not track yet. */
 const UNTRACKED_FILE = "smoke file.txt";
 
-/** The one file in the smoke test's remote. */
-const REMOTE_FILE = "remote file.txt";
-
 /**
  * A temporary folder with a git repository holding {@link UNTRACKED_FILE}, isolated from the
  * developer's git configuration.
@@ -31,36 +28,33 @@ function createRepository() {
   fs.writeFileSync(gitconfig, "[init]\n\tdefaultBranch = main\n");
   const repository = path.join(sandbox, "smoke repo");
   fs.mkdirSync(repository);
-  const git = spawnSync("git", ["init", "--quiet"], {
-    cwd: repository,
-    env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1" },
-  });
-  if (git.status !== 0) {
-    throw new Error(`git init failed: ${git.stderr}`);
-  }
+  runGit(repository, gitconfig, "init", "--quiet");
   fs.writeFileSync(path.join(repository, UNTRACKED_FILE), "smoke\n");
   installPromptingFsmonitor(sandbox, repository, gitconfig);
   return { sandbox, repository, remote: createRemote(sandbox, gitconfig) };
 }
 
-/** A bare remote in `sandbox` holding {@link REMOTE_FILE} in one commit. */
+/** Runs git in `cwd`, isolated from the developer's git configuration. */
+function runGit(cwd, gitconfig, ...args) {
+  const git = spawnSync("git", args, {
+    cwd,
+    env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1" },
+  });
+  if (git.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${git.stderr}`);
+  }
+}
+
+/** A bare remote in `sandbox` holding one file in one commit. */
 function createRemote(sandbox, gitconfig) {
   const remote = path.join(sandbox, "remote.git");
   const work = path.join(sandbox, "remote work");
-  const git = (cwd, ...args) => {
-    const run = spawnSync("git", args, {
-      cwd,
-      env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1" },
-    });
-    if (run.status !== 0) {
-      throw new Error(`git ${args.join(" ")} failed: ${run.stderr}`);
-    }
-  };
+  const git = (cwd, ...args) => runGit(cwd, gitconfig, ...args);
   fs.mkdirSync(remote);
   fs.mkdirSync(work);
   git(remote, "init", "--quiet", "--bare");
   git(work, "init", "--quiet");
-  fs.writeFileSync(path.join(work, REMOTE_FILE), "smoke\n");
+  fs.writeFileSync(path.join(work, "remote file.txt"), "smoke\n");
   git(work, "add", "--all");
   git(work, "-c", "user.name=gikli", "-c", "user.email=gikli@example.com", "commit", "--quiet", "--message", "First commit");
   git(work, "push", "--quiet", remote, "main");
@@ -86,13 +80,7 @@ exit 1
 `,
     { mode: 0o755 },
   );
-  const git = spawnSync("git", ["config", "core.fsmonitor", monitor.replaceAll("\\", "/")], {
-    cwd: repository,
-    env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1" },
-  });
-  if (git.status !== 0) {
-    throw new Error(`git config failed: ${git.stderr}`);
-  }
+  runGit(repository, gitconfig, "config", "core.fsmonitor", monitor.replaceAll("\\", "/"));
 }
 
 function targetDirectory() {
@@ -114,7 +102,6 @@ if (!process.env.GIKLI_E2E_REPOSITORY) {
   process.env.GIKLI_E2E_REPOSITORY = created.repository;
   process.env.GIKLI_E2E_UNTRACKED_FILE = UNTRACKED_FILE;
   process.env.GIKLI_E2E_REMOTE = created.remote;
-  process.env.GIKLI_E2E_REMOTE_FILE = REMOTE_FILE;
 }
 
 /**
