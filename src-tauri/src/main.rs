@@ -104,9 +104,9 @@ fn set_diff_local_side_editable(
 #[tauri::command]
 fn set_go_to_next_file_after_last_change(
     gikli: State<'_, Gikli>,
-    go: bool,
+    go_to_next_file: bool,
 ) -> Result<Settings, Failure> {
-    gikli.set_go_to_next_file_after_last_change(go)
+    gikli.set_go_to_next_file_after_last_change(go_to_next_file)
 }
 
 #[tauri::command]

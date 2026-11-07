@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::git::GitRunner;
+use crate::git::{GitRunner, Invocation};
 use crate::{ChangeSet, Failure, Repository, Settings, failure_of, git_failed_to_start};
 
 /// A changed file, compared with its version in HEAD.
@@ -117,30 +117,26 @@ pub(crate) fn read(
     settings: &Settings,
 ) -> Result<FileDiff, Failure> {
     let repository = &changes.repository;
-    let root = repository.root.as_path();
-    let original_path = changes
-        .changes
-        .iter()
-        .find(|change| change.path == Path::new(path))
-        .and_then(|change| change.original_path.clone());
+    let original_path = changes.original_path_of(Path::new(path));
     let head_path = match &original_path {
         Some(original) => original.to_string_lossy().into_owned(),
         None => path.to_owned(),
     };
-    let head = head_entry(runner, root, &head_path)?;
-    let local = LocalFile::read(root, path)?;
+    let file = ComparedFile {
+        runner,
+        root: &repository.root,
+        path,
+        head_path: &head_path,
+    };
+    let head = file.head_entry()?;
+    let local = LocalFile::read(&repository.root, path)?;
     let content = if local.is_folder() || head.as_ref().is_some_and(HeadEntry::is_folder) {
         DiffContent::Folder
     } else {
-        let read_only = local.read_only(settings.diff_local_side_editable);
-        read_content(
-            runner,
-            root,
-            path,
-            &head_path,
+        file.content(
             head.as_ref(),
             &local,
-            read_only,
+            local.read_only(settings.diff_local_side_editable),
         )?
     };
     let (previous_file, next_file) =
@@ -156,57 +152,6 @@ pub(crate) fn read(
         next_file,
         content,
     })
-}
-
-/// What the view shows of the file at `path` on disk, which is `local`, against the file at
-/// `head_path` in HEAD, which is `head`.
-fn read_content(
-    runner: &GitRunner,
-    root: &Path,
-    path: &str,
-    head_path: &str,
-    head: Option<&HeadEntry>,
-    local: &LocalFile,
-    local_read_only: Option<LocalReadOnly>,
-) -> Result<DiffContent, Failure> {
-    let comparison = compare(
-        runner,
-        root,
-        path,
-        head_path,
-        head.is_some(),
-        local.bytes().is_some(),
-    )?;
-    if comparison.binary {
-        return Ok(DiffContent::Binary);
-    }
-    let head_bytes = match head {
-        Some(entry) => Some(read_blob(runner, root, &entry.id, path)?),
-        None => None,
-    };
-    if [head_bytes.as_deref(), local.bytes()]
-        .into_iter()
-        .flatten()
-        .any(|bytes| bytes.contains(&0))
-    {
-        return Ok(DiffContent::Binary);
-    }
-    let head = head_bytes.as_deref().map(shown_text);
-    let local_version = local.version();
-    let local = local.bytes().map(shown_text);
-    let collapsed = collapsed_regions(
-        &comparison.differences,
-        line_count(head.as_deref()),
-        line_count(local.as_deref()),
-    );
-    Ok(DiffContent::Text(TextDiff {
-        head,
-        local,
-        local_version,
-        local_read_only,
-        differences: comparison.differences,
-        collapsed,
-    }))
 }
 
 /// Writes `text`, which has `\n` between lines, as the file at `path` in `root`, when what is there
@@ -355,8 +300,9 @@ impl LocalFile {
     }
 }
 
-/// The arguments after `git` that compare two versions of one file. git's own settings for how a
-/// diff looks or what makes it, such as `diff.context` or `diff.external`, have no say.
+/// The arguments after `git` that compare two versions of one file. git's settings for how a diff
+/// looks, or for a program to make it, such as `diff.context` or `diff.external`, have no say.
+/// `diff.algorithm` does: it only changes which lines git pairs, and that is the user's to choose.
 const DIFF_ARGS: &[&str] = &[
     "--literal-pathspecs",
     "diff",
@@ -375,43 +321,143 @@ struct Comparison {
     differences: Vec<Difference>,
 }
 
-/// Has git compare the file at `head_path` in HEAD, when `in_head`, with the one at `path` on disk,
-/// when `on_disk`.
-fn compare(
-    runner: &GitRunner,
-    root: &Path,
-    path: &str,
-    head_path: &str,
-    in_head: bool,
-    on_disk: bool,
-) -> Result<Comparison, Failure> {
-    let head_blob = format!("HEAD:{head_path}");
-    let targets: &[&str] = match (in_head, on_disk) {
-        // A blob against a file, as `HEAD -- path` would not find a moved file. git converts the
-        // file as it does for any comparison with HEAD.
-        (true, true) => &[&head_blob, "--", path],
-        (true, false) => &["HEAD", "--", head_path],
-        // HEAD has no such file, and may have nothing at all.
-        (false, true) => &["--no-index", "--", "/dev/null", path],
-        (false, false) => {
-            return Ok(Comparison {
-                binary: false,
-                differences: Vec::new(),
-            });
+/// A file to compare: its place on disk, and its place in HEAD, which differs for a moved file.
+struct ComparedFile<'a> {
+    runner: &'a GitRunner,
+    root: &'a Path,
+    path: &'a str,
+    head_path: &'a str,
+}
+
+impl ComparedFile<'_> {
+    /// What the view shows of this file, with `head` what HEAD has of it, `local` what is on disk,
+    /// and `local_read_only` why that cannot be edited.
+    fn content(
+        &self,
+        head: Option<&HeadEntry>,
+        local: &LocalFile,
+        local_read_only: Option<LocalReadOnly>,
+    ) -> Result<DiffContent, Failure> {
+        let comparison = self.compare(head.is_some(), local.bytes().is_some())?;
+        if comparison.binary {
+            return Ok(DiffContent::Binary);
         }
-    };
-    let mut args = DIFF_ARGS.to_vec();
-    args.extend(targets);
-    let invocation = runner.run(root, &args).map_err(git_failed_to_start)?;
-    // With `--no-index`, git says the files differ by failing, and writes the difference.
-    if !invocation.success && invocation.stdout.is_empty() {
-        return Err(unreadable(runner, root, &invocation, path));
+        let head_bytes = match head {
+            Some(entry) => Some(self.read_blob(&entry.id)?),
+            None => None,
+        };
+        if [head_bytes.as_deref(), local.bytes()]
+            .into_iter()
+            .flatten()
+            .any(|bytes| bytes.contains(&0))
+        {
+            return Ok(DiffContent::Binary);
+        }
+        let head = head_bytes.as_deref().map(shown_text);
+        let local_version = local.version();
+        let local = local.bytes().map(shown_text);
+        let collapsed = collapsed_regions(
+            &comparison.differences,
+            line_count(head.as_deref()),
+            line_count(local.as_deref()),
+        );
+        Ok(DiffContent::Text(TextDiff {
+            head,
+            local,
+            local_version,
+            local_read_only,
+            differences: comparison.differences,
+            collapsed,
+        }))
     }
-    Ok(Comparison {
-        // The first line of `--numstat`, which counts no lines in a binary file.
-        binary: invocation.stdout.starts_with(b"-\t-\t"),
-        differences: parse_differences(&invocation.stdout),
-    })
+
+    /// Has git compare the file in HEAD, when `in_head`, with the one on disk, when `on_disk`.
+    fn compare(&self, in_head: bool, on_disk: bool) -> Result<Comparison, Failure> {
+        let head_blob = format!("HEAD:{}", self.head_path);
+        let targets: &[&str] = match (in_head, on_disk) {
+            // A blob against a file, as `HEAD -- path` would not find a moved file. git converts
+            // the file as it does for any comparison with HEAD.
+            (true, true) => &[&head_blob, "--", self.path],
+            (true, false) => &["HEAD", "--", self.head_path],
+            // HEAD has no such file, and may have nothing at all.
+            (false, true) => &["--no-index", "--", "/dev/null", self.path],
+            (false, false) => {
+                return Ok(Comparison {
+                    binary: false,
+                    differences: Vec::new(),
+                });
+            }
+        };
+        let mut args = DIFF_ARGS.to_vec();
+        args.extend(targets);
+        let invocation = self.run(&args)?;
+        // With `--no-index`, git says the files differ by failing, and writes the difference.
+        if !invocation.success && invocation.stdout.is_empty() {
+            return Err(self.unreadable(&invocation));
+        }
+        Ok(Comparison {
+            // The first line of `--numstat`, which counts no lines in a binary file.
+            binary: invocation.stdout.starts_with(b"-\t-\t"),
+            differences: parse_differences(&invocation.stdout),
+        })
+    }
+
+    /// What HEAD has of this file, if anything. A Repository with no commits has nothing.
+    fn head_entry(&self) -> Result<Option<HeadEntry>, Failure> {
+        if !self
+            .run(&["rev-parse", "--verify", "--quiet", "HEAD"])?
+            .success
+        {
+            return Ok(None);
+        }
+        let invocation = self.run(&[
+            "--literal-pathspecs",
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            "HEAD",
+            "--",
+            self.head_path,
+        ])?;
+        if !invocation.success {
+            return Err(self.unreadable(&invocation));
+        }
+        // `mode type id`, a tab, and the path.
+        let entry = invocation.stdout.split(|byte| *byte == b'\t').next();
+        let mut fields = entry.unwrap_or_default().split(|byte| *byte == b' ');
+        let (Some(mode), Some(id)) = (fields.next(), fields.nth(1)) else {
+            return Ok(None);
+        };
+        Ok(Some(HeadEntry {
+            mode: mode.to_vec(),
+            id: String::from_utf8_lossy(id).into_owned(),
+        }))
+    }
+
+    fn read_blob(&self, id: &str) -> Result<Vec<u8>, Failure> {
+        let invocation = self.run(&["cat-file", "blob", id])?;
+        if !invocation.success {
+            return Err(self.unreadable(&invocation));
+        }
+        Ok(invocation.stdout)
+    }
+
+    fn run(&self, args: &[&str]) -> Result<Invocation, Failure> {
+        self.runner
+            .run(self.root, args)
+            .map_err(git_failed_to_start)
+    }
+
+    fn unreadable(&self, invocation: &Invocation) -> Failure {
+        failure_of(
+            self.runner,
+            self.root,
+            invocation,
+            Failure::DiffUnreadable {
+                path: PathBuf::from(self.path),
+            },
+        )
+    }
 }
 
 /// A file or folder in HEAD.
@@ -427,70 +473,6 @@ impl HeadEntry {
     }
 }
 
-/// What HEAD has at `path`, if anything. A Repository with no commits has nothing.
-fn head_entry(runner: &GitRunner, root: &Path, path: &str) -> Result<Option<HeadEntry>, Failure> {
-    let has_commits = runner
-        .run(root, &["rev-parse", "--verify", "--quiet", "HEAD"])
-        .map_err(git_failed_to_start)?
-        .success;
-    if !has_commits {
-        return Ok(None);
-    }
-    let invocation = runner
-        .run(
-            root,
-            &[
-                "--literal-pathspecs",
-                "ls-tree",
-                "-z",
-                "--full-tree",
-                "HEAD",
-                "--",
-                path,
-            ],
-        )
-        .map_err(git_failed_to_start)?;
-    if !invocation.success {
-        return Err(unreadable(runner, root, &invocation, path));
-    }
-    // `mode type id`, a tab, and the path.
-    let entry = invocation.stdout.split(|byte| *byte == b'\t').next();
-    let mut fields = entry.unwrap_or_default().split(|byte| *byte == b' ');
-    let (Some(mode), Some(id)) = (fields.next(), fields.nth(1)) else {
-        return Ok(None);
-    };
-    Ok(Some(HeadEntry {
-        mode: mode.to_vec(),
-        id: String::from_utf8_lossy(id).into_owned(),
-    }))
-}
-
-fn read_blob(runner: &GitRunner, root: &Path, blob: &str, path: &str) -> Result<Vec<u8>, Failure> {
-    let invocation = runner
-        .run(root, &["cat-file", "blob", blob])
-        .map_err(git_failed_to_start)?;
-    if !invocation.success {
-        return Err(unreadable(runner, root, &invocation, path));
-    }
-    Ok(invocation.stdout)
-}
-
-fn unreadable(
-    runner: &GitRunner,
-    root: &Path,
-    invocation: &crate::git::Invocation,
-    path: &str,
-) -> Failure {
-    failure_of(
-        runner,
-        root,
-        invocation,
-        Failure::DiffUnreadable {
-            path: PathBuf::from(path),
-        },
-    )
-}
-
 /// `bytes` as the view shows them, with `\n` between lines.
 fn shown_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).replace("\r\n", "\n")
@@ -504,6 +486,13 @@ fn line_count(text: Option<&str>) -> usize {
     })
 }
 
+/// A line on each side, where the same unchanged lines start.
+#[derive(Clone, Copy)]
+struct SameLine {
+    head: usize,
+    local: usize,
+}
+
 /// What the view hides of the unchanged lines around `differences`, between sides of `head_lines`
 /// and `local_lines` lines.
 fn collapsed_regions(
@@ -515,17 +504,20 @@ fn collapsed_regions(
         return Vec::new();
     }
     let mut regions = Vec::new();
-    let mut after_last = (0, 0);
+    let mut after_last = SameLine { head: 0, local: 0 };
     for (index, difference) in differences.iter().enumerate() {
         let context_above = if index == 0 { 0 } else { CONTEXT_LINES };
-        let unchanged = difference.head.start.saturating_sub(after_last.0);
+        let unchanged = difference.head.start.saturating_sub(after_last.head);
         let hidden = unchanged.saturating_sub(context_above + CONTEXT_LINES);
         regions.extend(region_of(after_last, context_above, hidden));
-        after_last = (difference.head.end, difference.local.end);
+        after_last = SameLine {
+            head: difference.head.end,
+            local: difference.local.end,
+        };
     }
     let unchanged = head_lines
-        .saturating_sub(after_last.0)
-        .min(local_lines.saturating_sub(after_last.1));
+        .saturating_sub(after_last.head)
+        .min(local_lines.saturating_sub(after_last.local));
     regions.extend(region_of(
         after_last,
         CONTEXT_LINES,
@@ -534,27 +526,48 @@ fn collapsed_regions(
     regions
 }
 
-/// The `hidden` lines after the `context` lines from `start`, the lines where they start on each
-/// side, when there are enough of them to hide.
-fn region_of(start: (usize, usize), context: usize, hidden: usize) -> Option<UnchangedRegion> {
+/// The `hidden` lines after the `context` lines from `start`, when there are enough of them to hide.
+fn region_of(start: SameLine, context: usize, hidden: usize) -> Option<UnchangedRegion> {
     let lines_from = |start: usize| LineRange {
         start: start + context,
         end: start + context + hidden,
     };
     (hidden >= FEWEST_COLLAPSED_LINES).then(|| UnchangedRegion {
-        head: lines_from(start.0),
-        local: lines_from(start.1),
+        head: lines_from(start.head),
+        local: lines_from(start.local),
     })
 }
 
 /// The differences in the output of `git diff --unified=0`, from its hunk headers. Only a hunk
-/// header starts with `@@`: every line of a hunk starts with a marker of its own.
+/// header starts with `@@`: every line of a hunk starts with a marker of its own. A file that
+/// became or stopped being a symbolic link comes as a deletion and an addition, both from the top,
+/// and that is one difference.
 fn parse_differences(output: &[u8]) -> Vec<Difference> {
-    output
+    let hunks = output
         .split(|byte| *byte == b'\n')
         .filter_map(|line| line.strip_prefix(b"@@ -"))
-        .filter_map(parse_hunk_header)
-        .collect()
+        .filter_map(parse_hunk_header);
+    let mut differences: Vec<Difference> = Vec::new();
+    for hunk in hunks {
+        match differences.last_mut() {
+            Some(last) if hunk.head.start < last.head.end || hunk.local.start < last.local.end => {
+                last.head = last.head.joined_with(hunk.head);
+                last.local = last.local.joined_with(hunk.local);
+            }
+            _ => differences.push(hunk),
+        }
+    }
+    differences
+}
+
+impl LineRange {
+    /// The lines from the first of either range to the last of either.
+    fn joined_with(self, other: Self) -> Self {
+        Self {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
+    }
 }
 
 /// The difference in `old[,count] +new[,count] @@`, the hunk header after its `@@ -`.

@@ -29,6 +29,33 @@ fn text_of(diff: &FileDiff) -> &TextDiff {
     }
 }
 
+/// The ranges of the hunks plain git finds between HEAD and the file at `path`, as `-old +new`.
+fn hunks_by_git(repository: &TestRepository, path: &str) -> Vec<String> {
+    repository
+        .git(&[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--unified=0",
+            "--inter-hunk-context=0",
+            "HEAD",
+            "--",
+            path,
+        ])
+        .lines()
+        .filter_map(|line| line.strip_prefix("@@ "))
+        .filter_map(|line| line.split(" @@").next())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether plain git takes the difference between HEAD and the file at `path` as binary.
+fn binary_by_git(repository: &TestRepository, path: &str) -> bool {
+    repository
+        .git(&["diff", "--numstat", "HEAD", "--", path])
+        .starts_with("-\t-\t")
+}
+
 /// The lines from `start` up to `end`, counted from 0.
 fn lines(start: usize, end: usize) -> LineRange {
     LineRange { start, end }
@@ -239,6 +266,10 @@ three
         )
     );
     assert_eq!(text.differences, vec![difference(lines(0, 3), lines(0, 2))]);
+    assert_eq!(
+        repository.git(&["show", "HEAD:old.txt"]),
+        "one\ntwo\nthree\n"
+    );
 }
 
 #[test]
@@ -279,6 +310,7 @@ fn a_path_with_spaces_unicode_and_glob_characters_is_taken_literally() {
         )
     );
     assert_eq!(text.differences, vec![difference(lines(0, 1), lines(0, 1))]);
+    assert_eq!(repository.git(&["show", &format!("HEAD:{path}")]), "uno\n");
 }
 
 #[test]
@@ -304,6 +336,7 @@ two
         text_of(&diff).differences,
         vec![difference(lines(1, 2), lines(1, 2))]
     );
+    assert_eq!(hunks_by_git(&repository, "notes.txt"), vec!["-2 +2"]);
 }
 
 /// git's settings for how a diff looks, or what makes it, would change what gikli reads.
@@ -354,6 +387,10 @@ FOUR
             difference(lines(3, 4), lines(3, 4)),
         ]
     );
+    assert_eq!(
+        hunks_by_git(&repository, "notes.txt"),
+        vec!["-1 +1", "-4 +4"]
+    );
 }
 
 #[test]
@@ -368,6 +405,7 @@ fn a_changed_binary_file_is_shown_without_a_text_diff() {
 
     assert_eq!(diff.content, DiffContent::Binary);
     assert_eq!(repository.status_by_git(), vec![" M logo.png"]);
+    assert!(binary_by_git(&repository, "logo.png"));
 }
 
 #[test]
@@ -381,6 +419,7 @@ fn a_new_binary_file_is_shown_without_a_text_diff() {
     let diff = read_diff(&sandbox.gikli(), &repository, "logo.png");
 
     assert_eq!(diff.content, DiffContent::Binary);
+    assert_eq!(repository.status_by_git(), vec!["?? logo.png"]);
 }
 
 #[test]
@@ -394,6 +433,7 @@ fn a_deleted_binary_file_is_shown_without_a_text_diff() {
     let diff = read_diff(&sandbox.gikli(), &repository, "logo.png");
 
     assert_eq!(diff.content, DiffContent::Binary);
+    assert!(binary_by_git(&repository, "logo.png"));
 }
 
 #[test]
@@ -407,6 +447,7 @@ fn a_file_turned_binary_is_shown_without_a_text_diff() {
     let diff = read_diff(&sandbox.gikli(), &repository, "data.bin");
 
     assert_eq!(diff.content, DiffContent::Binary);
+    assert!(binary_by_git(&repository, "data.bin"));
 }
 
 /// `.gitattributes` has the last word on what is binary, as it does for git.
@@ -422,6 +463,7 @@ fn a_file_gitattributes_calls_binary_is_shown_without_a_text_diff() {
     let diff = read_diff(&sandbox.gikli(), &repository, "deps.lock");
 
     assert_eq!(diff.content, DiffContent::Binary);
+    assert!(binary_by_git(&repository, "deps.lock"));
 }
 
 /// What git compares can be text while the file on disk is not, as with Git LFS, or as here, when
@@ -438,6 +480,7 @@ fn a_file_that_holds_zero_bytes_is_never_shown_as_text() {
     let diff = read_diff(&sandbox.gikli(), &repository, "data.dat");
 
     assert_eq!(diff.content, DiffContent::Binary);
+    assert!(!binary_by_git(&repository, "data.dat"));
 }
 
 #[test]
@@ -453,6 +496,7 @@ fn a_nested_repository_is_shown_without_a_text_diff() {
     let diff = read_diff(&sandbox.gikli(), &repository, "nested/");
 
     assert_eq!(diff.content, DiffContent::Folder);
+    assert_eq!(repository.status_by_git(), vec!["?? nested/"]);
 }
 
 #[test]
@@ -515,6 +559,7 @@ fn with_autocrlf_only_the_lines_really_changed_are_differences() {
         text_of(&diff).differences,
         vec![difference(lines(1, 2), lines(1, 2))]
     );
+    assert_eq!(hunks_by_git(&repository, "notes.txt"), vec!["-2 +2"]);
 }
 
 #[test]
@@ -529,6 +574,7 @@ fn with_autocrlf_input_a_converted_line_ending_is_no_difference() {
     let diff = read_diff(&sandbox.gikli(), &repository, "notes.txt");
 
     assert_eq!(text_of(&diff).differences, vec![]);
+    assert_eq!(repository.git(&["diff", "--stat", "HEAD"]), "");
 }
 
 /// Without a conversion, the line ending really is what changed, and git says so. The two sides
@@ -548,6 +594,7 @@ fn without_autocrlf_a_changed_line_ending_is_a_difference() {
         text_of(&diff).differences,
         vec![difference(lines(0, 1), lines(0, 1))]
     );
+    assert_eq!(hunks_by_git(&repository, "notes.txt"), vec!["-1 +1"]);
 }
 
 /// `count` numbered lines.
@@ -588,6 +635,7 @@ fn unchanged_lines_are_collapsed_around_a_difference_with_4_lines_of_context() {
             region(lines(25, 40), lines(25, 40)),
         ]
     );
+    assert_eq!(hunks_by_git(&repository, "long.txt"), vec!["-21 +21"]);
 }
 
 #[test]
@@ -607,6 +655,10 @@ fn unchanged_lines_between_two_differences_keep_context_on_both_ends() {
         text_of(&diff)
             .collapsed
             .contains(&region(lines(15, 26), lines(15, 26)))
+    );
+    assert_eq!(
+        hunks_by_git(&repository, "long.txt"),
+        vec!["-11 +11", "-31 +31"]
     );
 }
 
@@ -638,6 +690,7 @@ fn the_collapsed_lines_of_the_two_sides_stay_aligned_after_lines_were_added() {
             region(lines(14, 40), lines(17, 43)),
         ]
     );
+    assert_eq!(hunks_by_git(&repository, "long.txt"), vec!["-10,0 +11,3"]);
 }
 
 #[test]
@@ -654,6 +707,10 @@ fn unchanged_lines_that_fit_in_the_context_are_not_collapsed() {
     let diff = read_diff(&sandbox.gikli(), &repository, "short.txt");
 
     assert_eq!(text_of(&diff).collapsed, vec![]);
+    assert_eq!(
+        hunks_by_git(&repository, "short.txt"),
+        vec!["-1 +1", "-10 +10"]
+    );
 }
 
 /// One hidden line would take the place of the marker that says so, so it stays visible.
@@ -670,6 +727,7 @@ fn a_single_line_past_the_context_is_not_collapsed() {
     let diff = read_diff(&sandbox.gikli(), &repository, "short.txt");
 
     assert_eq!(text_of(&diff).collapsed, vec![]);
+    assert_eq!(hunks_by_git(&repository, "short.txt"), vec!["-6 +6"]);
 }
 
 /// With nothing to review, nothing is hidden.
@@ -688,6 +746,7 @@ fn a_file_without_differences_is_not_collapsed() {
     let text = text_of(&diff);
     assert_eq!(text.differences, vec![]);
     assert_eq!(text.collapsed, vec![]);
+    assert_eq!(repository.git(&["diff", "--stat", "HEAD"]), "");
 }
 
 /// A repository with changes in `b/c.txt`, `a.txt` and `z.txt`, which the changes view shows in
@@ -720,6 +779,10 @@ fn previous_and_next_file_follow_the_changes_view_grouped_by_folder() {
     assert_eq!(middle.next_file, Some(PathBuf::from("z.txt")));
     assert_eq!(last.previous_file, Some(PathBuf::from("a.txt")));
     assert_eq!(last.next_file, None);
+    assert_eq!(
+        repository.status_by_git(),
+        vec![" M a.txt", " M b/c.txt", " M z.txt"]
+    );
 }
 
 #[test]
@@ -735,6 +798,10 @@ fn previous_and_next_file_follow_the_changes_view_as_a_flat_list() {
 
     assert_eq!(middle.previous_file, Some(PathBuf::from("a.txt")));
     assert_eq!(middle.next_file, Some(PathBuf::from("z.txt")));
+    assert_eq!(
+        repository.status_by_git(),
+        vec![" M a.txt", " M b/c.txt", " M z.txt"]
+    );
 }
 
 #[test]
@@ -747,6 +814,10 @@ fn after_the_last_difference_the_review_moves_on_to_the_next_file() {
 
     assert!(gikli.settings().go_to_next_file_after_last_change);
     assert_eq!(diff.after_last_difference, Some(PathBuf::from("z.txt")));
+    assert_eq!(
+        repository.status_by_git(),
+        vec![" M a.txt", " M b/c.txt", " M z.txt"]
+    );
 }
 
 #[test]
@@ -757,6 +828,10 @@ fn after_the_last_difference_of_the_last_file_the_review_stays() {
     let diff = read_diff(&sandbox.gikli(), &repository, "z.txt");
 
     assert_eq!(diff.after_last_difference, None);
+    assert_eq!(
+        repository.status_by_git(),
+        vec![" M a.txt", " M b/c.txt", " M z.txt"]
+    );
 }
 
 #[test]
@@ -775,6 +850,10 @@ fn a_setting_keeps_the_review_in_the_file_after_its_last_difference() {
     assert!(
         !sandbox.gikli().settings().go_to_next_file_after_last_change,
         "the setting survives a restart"
+    );
+    assert_eq!(
+        repository.status_by_git(),
+        vec![" M a.txt", " M b/c.txt", " M z.txt"]
     );
 }
 
@@ -796,6 +875,7 @@ fn previous_and_next_file_pass_over_ignored_files() {
     let diff = read_diff(&gikli, &repository, "a.txt");
 
     assert_eq!(diff.next_file, Some(PathBuf::from("z.txt")));
+    assert_eq!(repository.status_by_git(), vec![" M a.txt", " M z.txt"]);
 }
 
 /// A file the user just took back to what HEAD has stops being a change, while they still look at
@@ -883,6 +963,7 @@ fn a_new_file_can_be_edited_and_saved() {
         vec![difference(lines(0, 0), lines(0, 2))]
     );
     assert_eq!(bytes_on_disk(&repository, "new.txt"), b"one\ntwo\n");
+    assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
 }
 
 #[test]
@@ -923,6 +1004,7 @@ fn a_setting_turns_editing_the_local_side_off() {
         !sandbox.gikli().settings().diff_local_side_editable,
         "the setting survives a restart"
     );
+    assert_eq!(repository.status_by_git(), vec![" M notes.txt"]);
 }
 
 /// Whoever saved last would otherwise silently undo the other's work.
@@ -955,6 +1037,7 @@ fn a_file_changed_on_disk_after_it_was_read_is_not_overwritten() {
         bytes_on_disk(&repository, "notes.txt"),
         b"from another editor\n"
     );
+    assert_eq!(repository.status_by_git(), vec![" M notes.txt"]);
 }
 
 #[test]
@@ -983,6 +1066,7 @@ fn a_file_deleted_after_it_was_read_is_not_brought_back() {
         }
     );
     assert!(!repository.root().join("notes.txt").exists());
+    assert_eq!(repository.status_by_git(), vec![" D notes.txt"]);
 }
 
 #[test]
@@ -1008,6 +1092,7 @@ fn a_deleted_file_has_no_local_side_to_edit() {
         }
     );
     assert!(!repository.root().join("gone.txt").exists());
+    assert_eq!(repository.status_by_git(), vec![" D gone.txt"]);
 }
 
 /// The view would show the bytes it cannot read as replacement characters, and saving would write
@@ -1034,6 +1119,7 @@ fn a_file_that_is_not_utf8_can_be_read_but_not_edited() {
         }
     );
     assert_eq!(bytes_on_disk(&repository, "latin1.txt"), b"a\xf1o\n");
+    assert_eq!(repository.status_by_git(), vec![" M latin1.txt"]);
 }
 
 #[test]
@@ -1056,6 +1142,7 @@ fn a_path_outside_the_repository_is_not_written() {
         }
     );
     assert_eq!(fs::read(outside).expect("read file"), b"keep\n");
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -1083,6 +1170,7 @@ fn saving_a_file_with_crlf_keeps_crlf_on_every_line() {
         text_of(&saved).differences,
         vec![difference(lines(1, 2), lines(1, 3))]
     );
+    assert_eq!(hunks_by_git(&repository, "notes.txt"), vec!["-2 +2,2"]);
 }
 
 /// Without a conversion, a different line ending on a line would be a change to that line.
@@ -1111,6 +1199,7 @@ fn saving_keeps_the_line_ending_of_each_line_of_a_file_that_mixes_them() {
         text_of(&saved).differences,
         vec![difference(lines(2, 3), lines(2, 3))]
     );
+    assert_eq!(hunks_by_git(&repository, "notes.txt"), vec!["-3 +3"]);
 }
 
 #[test]
@@ -1127,6 +1216,7 @@ fn saving_unchanged_text_leaves_the_file_as_it_was() {
     save(&gikli, &repository, "notes.txt", &shown).expect("save");
 
     assert_eq!(bytes_on_disk(&repository, "notes.txt"), mixed.as_bytes());
+    assert_eq!(repository.status_by_git(), vec!["?? notes.txt"]);
 }
 
 #[test]
@@ -1139,6 +1229,7 @@ fn a_last_line_without_a_line_ending_stays_without_one() {
     save(&sandbox.gikli(), &repository, "notes.txt", "one\nTWO").expect("save");
 
     assert_eq!(bytes_on_disk(&repository, "notes.txt"), b"one\r\nTWO");
+    assert_eq!(repository.status_by_git(), vec!["?? notes.txt"]);
 }
 
 /// A carriage return in the middle of a line is part of the line to git, so it stays where it is.
@@ -1156,6 +1247,7 @@ fn a_carriage_return_inside_a_line_stays_in_the_line() {
     let text = text_of(&diff);
     assert_eq!(text.local.as_deref(), Some("one\rstill one\nTWO\n"));
     assert_eq!(text.differences, vec![difference(lines(1, 2), lines(1, 2))]);
+    assert_eq!(hunks_by_git(&repository, "notes.txt"), vec!["-2 +2"]);
 }
 
 /// git compares where a link points, not what it points at, so that is what the view shows.
@@ -1184,4 +1276,28 @@ fn a_symbolic_link_shows_where_it_points_and_cannot_be_edited() {
             path: PathBuf::from("link"),
         }
     );
+    assert_eq!(repository.status_by_git(), vec![" M link"]);
+}
+
+/// git writes this as the deletion of a link and the addition of a file, both from the top. On a
+/// machine that cannot make links, the index still says what HEAD has.
+#[test]
+fn a_link_that_became_a_file_is_one_difference() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.git(&["config", "core.symlinks", "true"]);
+    repository.write("where.txt", "elsewhere.txt");
+    let blob = repository.git(&["hash-object", "-w", "where.txt"]);
+    let entry = format!("120000,{},link", blob.trim());
+    repository.git(&["update-index", "--add", "--cacheinfo", &entry]);
+    repository.git(&["commit", "--quiet", "--message", "Add a link"]);
+    repository.write("link", "one\ntwo\nthree\n");
+
+    let diff = read_diff(&sandbox.gikli(), &repository, "link");
+
+    let text = text_of(&diff);
+    assert_eq!(text.head.as_deref(), Some("elsewhere.txt"));
+    assert_eq!(text.local.as_deref(), Some("one\ntwo\nthree\n"));
+    assert_eq!(text.differences, vec![difference(lines(0, 1), lines(0, 3))]);
+    assert_eq!(repository.git(&["show", "HEAD:link"]), "elsewhere.txt");
 }

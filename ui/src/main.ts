@@ -65,7 +65,7 @@ import {
   type RunningOperation,
 } from "./core";
 import { createDiffView } from "./diff-view";
-import { element } from "./dom";
+import { element, hasShortcutKey } from "./dom";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -137,17 +137,13 @@ element<HTMLElement>("diff-local-side-editable-label").textContent = t("diffLoca
 element<HTMLElement>("go-to-next-file-after-last-change-label").textContent = t("goToNextFileAfterLastChange");
 
 const diffView = createDiffView({
-  errorView: (error) => errorView(error),
+  errorView,
   opened: () => {
     projectView.hidden = true;
   },
   closed: (path) => {
     projectView.hidden = false;
-    for (const row of projectView.querySelectorAll<HTMLElement>('[data-testid="change"]')) {
-      if (row.dataset.path === path) {
-        row.focus();
-      }
-    }
+    focusChangeRow(projectView, path);
   },
 });
 
@@ -709,11 +705,7 @@ function repositoryView(repository: Repository): HTMLElement {
           const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
           changes.replaceChildren(changeList(changeSet));
           if (focused !== undefined) {
-            for (const row of changes.querySelectorAll<HTMLElement>('[data-testid="change"]')) {
-              if (row.dataset.path === focused) {
-                row.focus();
-              }
-            }
+            focusChangeRow(changes, focused);
           }
         } catch (error) {
           changes.replaceChildren(errorView(error, () => void refreshChanges()));
@@ -770,6 +762,15 @@ const CAPABILITY_LABELS: Record<Capability, StringKey> = {
   rebaseUpdateRefs: "capabilityRebaseUpdateRefs",
 };
 
+/** Puts the focus on the row in `container` of the file at `path`, if it has one. */
+function focusChangeRow(container: HTMLElement, path: string): void {
+  for (const row of container.querySelectorAll<HTMLElement>('[data-testid="change"]')) {
+    if (row.dataset.path === path) {
+      row.focus();
+    }
+  }
+}
+
 function changeList(changeSet: ChangeSet): HTMLElement {
   if (changeSet.changes.length === 0) {
     return line("message", t("noChanges"));
@@ -814,8 +815,7 @@ function changeItem(repository: Repository, change: Change, folder: string): HTM
     item.tabIndex = 0;
     item.addEventListener("dblclick", () => void diffView.open(repository, change.path));
     item.addEventListener("keydown", (event) => {
-      const withModifier = navigator.platform.startsWith("Mac") ? event.metaKey : event.ctrlKey;
-      if (event.key === "Enter" || (withModifier && event.key.toLowerCase() === "d")) {
+      if (event.key === "Enter" || (hasShortcutKey(event) && event.key.toLowerCase() === "d")) {
         event.preventDefault();
         void diffView.open(repository, change.path);
       }

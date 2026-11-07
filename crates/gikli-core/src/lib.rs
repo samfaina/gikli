@@ -445,8 +445,13 @@ impl Gikli {
     }
 
     /// Makes moving on from the last difference of a file go to the next file, or stay.
-    pub fn set_go_to_next_file_after_last_change(&self, go: bool) -> Result<Settings, Failure> {
-        self.change_settings(|settings| settings.go_to_next_file_after_last_change = go)
+    pub fn set_go_to_next_file_after_last_change(
+        &self,
+        go_to_next_file: bool,
+    ) -> Result<Settings, Failure> {
+        self.change_settings(|settings| {
+            settings.go_to_next_file_after_last_change = go_to_next_file;
+        })
     }
 
     /// The application settings.

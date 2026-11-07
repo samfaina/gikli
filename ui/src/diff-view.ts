@@ -9,7 +9,6 @@ import { Compartment, EditorState, RangeSetBuilder, StateEffect, StateField, Tex
 import { Decoration, EditorView, WidgetType, drawSelection, highlightSpecialChars, keymap, lineNumbers, type DecorationSet } from "@codemirror/view";
 
 import {
-  isFailure,
   readDiff,
   saveLocalFile,
   type FileDiff,
@@ -18,7 +17,7 @@ import {
   type Repository,
   type TextDiff,
 } from "./core";
-import { element } from "./dom";
+import { element, hasShortcutKey, isMac } from "./dom";
 import { t, type StringKey } from "./strings";
 
 /** What the diff view needs from the window around it. */
@@ -46,7 +45,6 @@ export interface DiffView {
 
 /** The file shown, with what it takes to show it and to save it. */
 interface Shown {
-  repository: Repository;
   diff: FileDiff;
   /** The editors, when the file has a text diff. */
   merge: MergeView | null;
@@ -61,7 +59,7 @@ const READ_ONLY_LABELS: Record<LocalReadOnly, StringKey> = {
   symbolicLink: "diffLocalSideLink",
 };
 
-/** Hides lines the core collapsed, or brings back the ones of the region with this index. */
+/** Brings back the lines of the collapsed region with this index. */
 const expandRegion = StateEffect.define<number>();
 
 /** The marker in place of the lines of a collapsed region. A click brings them back on both sides. */
@@ -137,8 +135,6 @@ function documentOf(text: string | null): Text {
   return Text.of((text ?? "").split("\n"));
 }
 
-const isMac = navigator.platform.startsWith("Mac");
-
 export function createDiffView(host: DiffViewHost): DiffView {
   const section = element<HTMLElement>("diff");
   const title = element<HTMLElement>("diff-title");
@@ -150,24 +146,23 @@ export function createDiffView(host: DiffViewHost): DiffView {
   const previousFileButton = element<HTMLButtonElement>("diff-previous-file");
   const nextFileButton = element<HTMLButtonElement>("diff-next-file");
 
-  const modifier = isMac ? "Cmd" : "Ctrl";
-  const button = <T extends HTMLElement>(id: string, label: StringKey, shortcut: string, act: () => void): T => {
-    const made = element<T>(id);
+  const key = t(isMac() ? "shortcutKeyMac" : "shortcutKey");
+  const setUpButton = (id: string, label: StringKey, shortcut: StringKey, act: () => void): void => {
+    const made = element<HTMLButtonElement>(id);
     made.textContent = t(label);
-    made.title = t("diffWithShortcut", { action: t(label), shortcut });
+    made.title = t("diffWithShortcut", { action: t(label), shortcut: t(shortcut, { key }) });
     made.addEventListener("click", act);
-    return made;
   };
 
-  button("diff-previous-difference", "diffPreviousDifference", "Shift+F7", () => void moveToDifference(-1));
-  button("diff-next-difference", "diffNextDifference", "F7", () => void moveToDifference(1));
-  button("diff-previous-file", "diffPreviousFile", `${modifier}+Alt+Left`, () => void moveToFile("previous"));
-  button("diff-next-file", "diffNextFile", `${modifier}+Alt+Right`, () => void moveToFile("next"));
-  button("diff-save", "diffSave", `${modifier}+S`, () => void saveEdits());
-  button("diff-close", "diffClose", "Esc", () => void close());
+  setUpButton("diff-previous-difference", "diffPreviousDifference", "shortcutPreviousDifference", () => void moveToDifference(-1));
+  setUpButton("diff-next-difference", "diffNextDifference", "shortcutNextDifference", () => void moveToDifference(1));
+  setUpButton("diff-previous-file", "diffPreviousFile", "shortcutPreviousFile", () => void moveToFile("previous"));
+  setUpButton("diff-next-file", "diffNextFile", "shortcutNextFile", () => void moveToFile("next"));
+  setUpButton("diff-save", "diffSave", "shortcutSave", () => void saveEdits());
+  setUpButton("diff-close", "diffClose", "shortcutClose", () => void close());
 
   section.addEventListener("keydown", (event) => {
-    const withModifier = isMac ? event.metaKey : event.ctrlKey;
+    const withModifier = hasShortcutKey(event);
     if (event.key === "F7") {
       event.preventDefault();
       void moveToDifference(event.shiftKey ? -1 : 1);
@@ -190,14 +185,16 @@ export function createDiffView(host: DiffViewHost): DiffView {
   const dark = window.matchMedia("(prefers-color-scheme: dark)");
   const darkTheme = new Compartment();
   dark.addEventListener("change", () => {
-    const effects = darkTheme.reconfigure(EditorView.darkTheme.of(dark.matches));
-    shown?.merge?.a.dispatch({ effects });
-    shown?.merge?.b.dispatch({ effects });
+    if (shown?.merge != null) {
+      dispatchOnBothSides(shown.merge, darkTheme.reconfigure(EditorView.darkTheme.of(dark.matches)));
+    }
   });
 
   let shown: Shown | null = null;
-  /** The last read asked for: the answer to an earlier one no longer counts. */
-  let lastRead = 0;
+  /** Counts the files asked for: a read for an earlier one no longer counts, whatever it was for. */
+  let lastOpen = 0;
+  /** Counts the times the file shown was read again, or saved: the answer to an earlier read no longer counts. */
+  let lastRefresh = 0;
   /** The save running, so that nothing else starts from what it is about to change. */
   let saving: Promise<boolean> | null = null;
 
@@ -210,14 +207,13 @@ export function createDiffView(host: DiffViewHost): DiffView {
   }
 
   /** Shows `diff`. With `keepPlace`, stays where the user was in the same file. */
-  function show(repository: Repository, diff: FileDiff, keepPlace: boolean): void {
+  function show(diff: FileDiff, keepPlace: boolean): void {
     const scrollTop = keepPlace ? (shown?.merge?.dom.scrollTop ?? 0) : 0;
     shown?.merge?.destroy();
     content.replaceChildren();
     message.replaceChildren();
     const merge = diff.content.kind === "text" ? showText(diff.content) : null;
     shown = {
-      repository,
       diff,
       merge,
       savedLocal: merge?.b.state.doc ?? Text.empty,
@@ -257,11 +253,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
           positionOfLine(localDocument, inLocal.end),
         ),
     );
-    const expand = (index: number): void => {
-      const effects = expandRegion.of(index);
-      merge.a.dispatch({ effects });
-      merge.b.dispatch({ effects });
-    };
+    const expand = (index: number): void => dispatchOnBothSides(merge, expandRegion.of(index));
     const shared: Extension = [
       lineNumbers(),
       highlightSpecialChars(),
@@ -297,7 +289,8 @@ export function createDiffView(host: DiffViewHost): DiffView {
       gutter: true,
       diffConfig: {
         // What the core says for the file as it read it. It knows of line endings, and CodeMirror
-        // does not. Edits it has not seen yet get CodeMirror's own diff until they are saved.
+        // does not. CodeMirror follows the user's edits from there with its own diff, also after a
+        // save, as drawing the editors again would lose the cursor and the undo history.
         override: (a, b) => (a === head && b === local ? differences : diffOfEdit(a, b, { scanLimit: 500 })),
       },
     });
@@ -340,11 +333,14 @@ export function createDiffView(host: DiffViewHost): DiffView {
 
   /** Moves to the next difference after the cursor or the one before it, and on to the next file after the last one when the core says so. */
   async function moveToDifference(direction: 1 | -1): Promise<void> {
-    const merge = shown?.merge;
-    if (shown === null || merge === undefined || merge === null) {
+    if (shown === null) {
+      return;
+    }
+    const { diff, merge } = shown;
+    if (merge === null) {
       // A file without a text diff has one place to look, so the review moves on from it.
-      if (direction === 1 && shown?.diff.afterLastDifference != null) {
-        await openFromShown(shown.diff.afterLastDifference);
+      if (direction === 1 && diff.afterLastDifference !== null) {
+        await open(diff.repository, diff.afterLastDifference);
       }
       return;
     }
@@ -355,9 +351,12 @@ export function createDiffView(host: DiffViewHost): DiffView {
         ? chunks.find((chunk) => chunk.fromB > cursor)
         : [...chunks].reverse().find((chunk) => chunk.fromB < cursor);
     if (target !== undefined) {
+      if (message.textContent === t("diffNoNextDifference") || message.textContent === t("diffNoPreviousDifference")) {
+        message.replaceChildren();
+      }
       placeCursor(merge, target.fromB);
-    } else if (direction === 1 && shown.diff.afterLastDifference !== null) {
-      await openFromShown(shown.diff.afterLastDifference);
+    } else if (direction === 1 && diff.afterLastDifference !== null) {
+      await open(diff.repository, diff.afterLastDifference);
     } else {
       say(t(direction === 1 ? "diffNoNextDifference" : "diffNoPreviousDifference"));
     }
@@ -365,14 +364,8 @@ export function createDiffView(host: DiffViewHost): DiffView {
 
   async function moveToFile(direction: "previous" | "next"): Promise<void> {
     const path = direction === "previous" ? shown?.diff.previousFile : shown?.diff.nextFile;
-    if (path != null) {
-      await openFromShown(path);
-    }
-  }
-
-  async function openFromShown(path: string): Promise<void> {
-    if (shown !== null) {
-      await open(shown.repository, path);
+    if (shown !== null && path != null) {
+      await open(shown.diff.repository, path);
     }
   }
 
@@ -380,16 +373,16 @@ export function createDiffView(host: DiffViewHost): DiffView {
     if (!(await saveEdits())) {
       return;
     }
-    const read = ++lastRead;
+    const asked = ++lastOpen;
     try {
       const diff = await readDiff(repository, path);
-      if (read === lastRead) {
+      if (asked === lastOpen) {
         section.hidden = false;
         host.opened();
-        show(repository, diff, false);
+        show(diff, false);
       }
     } catch (error) {
-      if (read !== lastRead) {
+      if (asked !== lastOpen) {
         return;
       }
       if (shown === null) {
@@ -419,6 +412,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
     if (shown === null || shown.merge === null || !hasEdits()) {
       return Promise.resolve(true);
     }
+    lastRefresh++;
     saving = saveShown(shown, shown.merge).finally(() => {
       saving = null;
       updateControls();
@@ -432,33 +426,36 @@ export function createDiffView(host: DiffViewHost): DiffView {
     }
     const edited = merge.b.state.doc;
     try {
-      const saved = await saveLocalFile(file.repository, file.diff.path, edited.toString(), file.diff.content.localVersion);
+      const saved = await saveLocalFile(file.diff.repository, file.diff.path, edited.toString(), file.diff.content.localVersion);
       // The editors stay as they are, with the user's cursor and undo history, and already show this text.
       file.diff = saved;
       file.savedLocal = edited;
       message.replaceChildren();
+      if (saved.content.kind === "text" && saved.content.differences.length === 0) {
+        say(t("diffNoDifferences"));
+      }
       return true;
     } catch (error) {
-      message.replaceChildren(host.errorView(error));
-      if (isFailure(error) && error.kind === "localFileChanged") {
-        message.append(reloadButton(file));
-      }
+      message.replaceChildren(host.errorView(error), discardEditsButton(file));
       return false;
     }
   }
 
-  /** A way out of a file that changed on disk under the user's edits, which it discards after asking. */
-  function reloadButton(file: Shown): HTMLElement {
+  /**
+   * The way out of edits that cannot be saved, whatever the reason, as moving on and closing wait for
+   * the save. It discards them after asking, and shows the file as it is now.
+   */
+  function discardEditsButton(file: Shown): HTMLElement {
     const reload = document.createElement("button");
     reload.type = "button";
-    reload.dataset.testid = "diff-reload";
-    reload.textContent = t("diffReload");
+    reload.dataset.testid = "diff-discard-edits";
+    reload.textContent = t("diffDiscardEdits");
     reload.addEventListener("click", async () => {
-      if (!(await confirm(t("confirmDiffReload", { path: file.diff.path }), { kind: "warning" }))) {
+      if (!(await confirm(t("confirmDiffDiscardEdits", { path: file.diff.path }), { kind: "warning" }))) {
         return;
       }
       try {
-        show(file.repository, await readDiff(file.repository, file.diff.path), true);
+        show(await readDiff(file.diff.repository, file.diff.path), true);
       } catch (error) {
         message.replaceChildren(host.errorView(error));
       }
@@ -470,7 +467,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
     if (section.hidden || !(await saveEdits())) {
       return;
     }
-    lastRead++;
+    lastOpen++;
     const path = shown?.diff.path ?? lastAskedFor ?? "";
     shown?.merge?.destroy();
     shown = null;
@@ -485,21 +482,23 @@ export function createDiffView(host: DiffViewHost): DiffView {
     if (shown === null || saving !== null || hasEdits()) {
       return;
     }
-    const { repository, diff } = shown;
-    const read = ++lastRead;
+    const { diff } = shown;
+    const opened = lastOpen;
+    const asked = ++lastRefresh;
+    const stillCounts = (): boolean => opened === lastOpen && asked === lastRefresh;
     try {
-      const fresh = await readDiff(repository, diff.path);
-      if (read !== lastRead || shown === null || saving !== null || hasEdits()) {
+      const fresh = await readDiff(diff.repository, diff.path);
+      if (!stillCounts() || shown === null || saving !== null || hasEdits()) {
         return;
       }
-      if (sameEditors(diff, fresh)) {
+      if (sameEditors(shown.diff, fresh)) {
         shown.diff = fresh;
         updateControls();
       } else {
-        show(repository, fresh, true);
+        show(fresh, true);
       }
     } catch (error) {
-      if (read === lastRead) {
+      if (stillCounts()) {
         message.replaceChildren(host.errorView(error));
       }
     }
@@ -510,8 +509,13 @@ export function createDiffView(host: DiffViewHost): DiffView {
     close,
     saveEdits,
     refresh,
-    shownRoot: () => shown?.repository.root ?? null,
+    shownRoot: () => shown?.diff.repository.root ?? null,
   };
+}
+
+function dispatchOnBothSides(merge: MergeView, effects: StateEffect<unknown>): void {
+  merge.a.dispatch({ effects });
+  merge.b.dispatch({ effects });
 }
 
 /** Whether the editors of `shown` also show `fresh`, so nothing moves under the user. */

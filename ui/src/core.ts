@@ -409,8 +409,8 @@ export function setDiffLocalSideEditable(editable: boolean): Promise<Settings> {
 }
 
 /** Makes moving on from the last difference of a file go to the next file, or stay. Rejects with a {@link Failure}. */
-export function setGoToNextFileAfterLastChange(go: boolean): Promise<Settings> {
-  return invoke("set_go_to_next_file_after_last_change", { go });
+export function setGoToNextFileAfterLastChange(goToNextFile: boolean): Promise<Settings> {
+  return invoke("set_go_to_next_file_after_last_change", { goToNextFile });
 }
 
 /** The prompts waiting for the user, oldest first. New ones arrive as `promptRaised` events. */

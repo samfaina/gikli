@@ -77,6 +77,14 @@ impl ChangeSet {
 }
 
 impl ChangeSet {
+    /// The path the file at `path` was moved or copied from, if it was.
+    pub(crate) fn original_path_of(&self, path: &Path) -> Option<PathBuf> {
+        self.changes
+            .iter()
+            .find(|change| change.path == path)
+            .and_then(|change| change.original_path.clone())
+    }
+
     /// The files before and after `path` in the changes view when arranged by `grouping`, leaving
     /// out ignored files. A file that is not a change keeps the place it would have as one, as the
     /// user can still be looking at it when it stops being one.
