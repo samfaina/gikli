@@ -50,10 +50,29 @@
       <label class="settings-check"><input id="use-credential-helper" type="checkbox" data-testid="use-credential-helper" /><span id="use-credential-helper-label"></span></label>
       <p id="use-credential-helper-hint" class="hint"></p>
       <label class="settings-check"><input id="clone-submodules-recursively" type="checkbox" data-testid="clone-submodules-recursively" /><span id="clone-submodules-recursively-label"></span></label>
+      <label class="settings-check"><input id="diff-local-side-editable" type="checkbox" data-testid="diff-local-side-editable" /><span id="diff-local-side-editable-label"></span></label>
+      <label class="settings-check"><input id="go-to-next-file-after-last-change" type="checkbox" data-testid="go-to-next-file-after-last-change" /><span id="go-to-next-file-after-last-change-label"></span></label>
     </section>
     <section id="prompts" class="prompts" data-testid="prompts" hidden></section>
     <section id="notifications" class="notifications" data-testid="notifications" aria-live="polite" hidden></section>
     <main id="project" class="project" data-testid="project"></main>
+    <section id="diff" class="diff" data-testid="diff" hidden>
+      <div class="diff-toolbar">
+        <h2 id="diff-title" class="diff-title" data-testid="diff-title"></h2>
+        <button id="diff-previous-difference" type="button" data-testid="diff-previous-difference"></button>
+        <button id="diff-next-difference" type="button" data-testid="diff-next-difference"></button>
+        <button id="diff-previous-file" type="button" data-testid="diff-previous-file"></button>
+        <button id="diff-next-file" type="button" data-testid="diff-next-file"></button>
+        <button id="diff-save" type="button" data-testid="diff-save"></button>
+        <button id="diff-close" type="button" data-testid="diff-close"></button>
+      </div>
+      <div id="diff-message" class="diff-message" data-testid="diff-message" role="status"></div>
+      <div class="diff-sides">
+        <span id="diff-head-label" data-testid="diff-head-label"></span>
+        <span id="diff-local-label" data-testid="diff-local-label"></span>
+      </div>
+      <div id="diff-content" class="diff-content" data-testid="diff-content"></div>
+    </section>
     <section id="operation-log" class="operation-log" data-testid="operation-log" hidden>
       <div class="operation-log-header">
         <h2 id="operation-log-title"></h2>

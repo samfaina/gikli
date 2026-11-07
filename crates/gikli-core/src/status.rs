@@ -76,6 +76,55 @@ impl ChangeSet {
     }
 }
 
+impl ChangeSet {
+    /// The path the file at `path` was moved or copied from, if it was.
+    pub(crate) fn original_path_of(&self, path: &Path) -> Option<PathBuf> {
+        self.changes
+            .iter()
+            .find(|change| change.path == path)
+            .and_then(|change| change.original_path.clone())
+    }
+
+    /// The files before and after `path` in the changes view when arranged by `grouping`, leaving
+    /// out ignored files. A file that is not a change keeps the place it would have as one, as the
+    /// user can still be looking at it when it stops being one.
+    pub(crate) fn neighbors_of(
+        &self,
+        path: &Path,
+        grouping: ChangeGrouping,
+    ) -> (Option<PathBuf>, Option<PathBuf>) {
+        let mut changes: Vec<Change> = self
+            .changes
+            .iter()
+            .filter(|change| change.status != ChangeStatus::Ignored)
+            .cloned()
+            .collect();
+        if !changes.iter().any(|change| change.path == path) {
+            changes.push(Change {
+                path: path.to_path_buf(),
+                status: ChangeStatus::Modified,
+                original_path: None,
+                conflict: None,
+                submodule: None,
+            });
+        }
+        changes.sort_by(|left, right| left.path.cmp(&right.path));
+        let arranged = Self::new(self.repository.clone(), changes, grouping);
+        let mut files = Vec::new();
+        for node in &arranged.nodes {
+            node.collect_files(&mut files);
+        }
+        let Some(place) = files.iter().position(|file| *file == path) else {
+            return (None, None);
+        };
+        let before = place.checked_sub(1).and_then(|before| files.get(before));
+        (
+            before.map(|file| file.to_path_buf()),
+            files.get(place + 1).map(|file| file.to_path_buf()),
+        )
+    }
+}
+
 /// The subfolders and files of one folder, while the tree is being built.
 #[derive(Default)]
 struct FolderContents {
@@ -122,6 +171,18 @@ impl FolderContents {
 }
 
 impl ChangeNode {
+    /// Adds the paths of the files in this row to `files`, in the order the view shows them.
+    fn collect_files<'a>(&'a self, files: &mut Vec<&'a Path>) {
+        match self {
+            Self::Folder { children, .. } => {
+                for child in children {
+                    child.collect_files(files);
+                }
+            }
+            Self::File(change) => files.push(&change.path),
+        }
+    }
+
     /// Whether the row is, or holds, a change other than an ignored file.
     fn has_changes(&self) -> bool {
         match self {

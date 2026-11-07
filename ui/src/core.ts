@@ -32,6 +32,10 @@ export interface Settings {
   useCredentialHelper: boolean;
   /** Whether a clone also clones the submodules of the repository, and theirs. */
   cloneSubmodulesRecursively: boolean;
+  /** Whether the user can edit and save the local side of a diff. */
+  diffLocalSideEditable: boolean;
+  /** Whether moving on from the last difference of a file goes to the next file. */
+  goToNextFileAfterLastChange: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -123,6 +127,61 @@ export interface ChangeSet {
   nodes: ChangeNode[];
 }
 
+/** The lines from `start` up to, and not including, `end`, counted from 0. */
+export interface LineRange {
+  start: number;
+  end: number;
+}
+
+/** Lines that differ between the two sides of a diff. A side without lines here shows where they would go. */
+export interface Difference {
+  head: LineRange;
+  local: LineRange;
+}
+
+/** Unchanged lines the view hides: the same on both sides, and in the same number. */
+export interface UnchangedRegion {
+  head: LineRange;
+  local: LineRange;
+}
+
+/** Why the local side of a diff cannot be edited. */
+export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink";
+
+/** The two versions of a text file and where they differ, with `\n` between lines. */
+export interface TextDiff {
+  /** null when HEAD does not have the file. */
+  head: string | null;
+  /** null when there is no file on disk. */
+  local: string | null;
+  /** Identifies what is on disk: {@link saveLocalFile} takes it back. */
+  localVersion: string;
+  localReadOnly: LocalReadOnly | null;
+  /** From the top of the file down. */
+  differences: Difference[];
+  /** From the top of the file down. */
+  collapsed: UnchangedRegion[];
+}
+
+/** What the diff view can show of a file: a text diff, or nothing of a binary file, a submodule or a nested Repository. */
+export type DiffContent = ({ kind: "text" } & TextDiff) | { kind: "binary" } | { kind: "folder" };
+
+/** A changed file, compared with its version in HEAD. */
+export interface FileDiff {
+  repository: Repository;
+  /** Relative to the Repository root, with `/` between folders. */
+  path: string;
+  /** The path in HEAD it was moved or copied from, which the head side shows. */
+  originalPath: string | null;
+  /** The file before this one in the changes view. */
+  previousFile: string | null;
+  /** The file after this one in the changes view. */
+  nextFile: string | null;
+  /** The file the review moves on to from the last difference of this one, when it moves on. */
+  afterLastDifference: string | null;
+  content: DiffContent;
+}
+
 /** What went wrong, in a failure the core explains. */
 export type ExplainedMessage =
   /** `output` is what the hook wrote. */
@@ -187,6 +246,12 @@ export type Failure =
   | { kind: "indexLockNotRemoved"; lock: string; message: string }
   | { kind: "folderNotTrusted"; folder: string }
   | { kind: "changesUnreadable"; folder: string }
+  | { kind: "diffUnreadable"; path: string }
+  | { kind: "localFileUnreadable"; path: string; message: string }
+  | { kind: "localSideNotEditable"; path: string }
+  /** The file is no longer what the user saw when they started editing it, so it was not written. */
+  | { kind: "localFileChanged"; path: string }
+  | { kind: "localFileNotSaved"; path: string; message: string }
   | { kind: "changesNotWatched"; folder: string; message: string }
   | { kind: "cloneFailed"; url: string; folder: string }
   | { kind: "cancelledCloneNotRemoved"; folder: string; message: string }
@@ -338,6 +403,16 @@ export function setCloneSubmodulesRecursively(recursively: boolean): Promise<Set
   return invoke("set_clone_submodules_recursively", { recursively });
 }
 
+/** Lets the user edit and save the local side of a diff, or turns that off. Rejects with a {@link Failure}. */
+export function setDiffLocalSideEditable(editable: boolean): Promise<Settings> {
+  return invoke("set_diff_local_side_editable", { editable });
+}
+
+/** Makes moving on from the last difference of a file go to the next file, or stay. Rejects with a {@link Failure}. */
+export function setGoToNextFileAfterLastChange(goToNextFile: boolean): Promise<Settings> {
+  return invoke("set_go_to_next_file_after_last_change", { goToNextFile });
+}
+
 /** The prompts waiting for the user, oldest first. New ones arrive as `promptRaised` events. */
 export function pendingPrompts(): Promise<Prompt[]> {
   return invoke("pending_prompts");
@@ -451,6 +526,20 @@ export function windowForProject(folder: string): Promise<ProjectWindow> {
 /** Reads the uncommitted changes of `repository`; calling it again refreshes them. Rejects with a {@link Failure}. */
 export function readChanges(repository: Repository): Promise<ChangeSet> {
   return invoke("read_changes", { repository });
+}
+
+/** The diff of the file at `path`, relative to the Repository root, against HEAD. Rejects with a {@link Failure}. */
+export function readDiff(repository: Repository, path: string): Promise<FileDiff> {
+  return invoke("read_diff", { repository, path });
+}
+
+/**
+ * Saves `text`, with `\n` between lines, as the local side of the diff of the file at `path`; the lines
+ * keep the line endings they have in the file. `version` is the {@link TextDiff.localVersion} of the diff
+ * the user edited. Rejects with a {@link Failure}.
+ */
+export function saveLocalFile(repository: Repository, path: string, text: string, version: string): Promise<FileDiff> {
+  return invoke("save_local_file", { repository, path, text, version });
 }
 
 /** Adds `paths`, relative to the Repository root and taken literally, to the git index. Rejects with a {@link Failure}. */

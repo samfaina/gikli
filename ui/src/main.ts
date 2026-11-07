@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 
 import {
@@ -26,7 +27,9 @@ import {
   runningOperations as runningOperationsOfCore,
   setChangeGrouping,
   setCloneSubmodulesRecursively,
+  setDiffLocalSideEditable,
   setGitPath,
+  setGoToNextFileAfterLastChange,
   setOperationLogSoftWrap,
   setShowIgnoredFiles,
   setUseCredentialHelper,
@@ -61,6 +64,8 @@ import {
   type Repository,
   type RunningOperation,
 } from "./core";
+import { createDiffView } from "./diff-view";
+import { element, hasShortcutKey } from "./dom";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -92,6 +97,8 @@ const operationsView = element<HTMLElement>("operations");
 const promptsView = element<HTMLElement>("prompts");
 const useCredentialHelperInput = element<HTMLInputElement>("use-credential-helper");
 const cloneSubmodulesInput = element<HTMLInputElement>("clone-submodules-recursively");
+const diffLocalSideEditableInput = element<HTMLInputElement>("diff-local-side-editable");
+const goToNextFileInput = element<HTMLInputElement>("go-to-next-file-after-last-change");
 
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
@@ -126,10 +133,40 @@ promptsView.setAttribute("aria-label", t("promptsTitle"));
 element<HTMLElement>("use-credential-helper-label").textContent = t("useCredentialHelper");
 element<HTMLElement>("use-credential-helper-hint").textContent = t("useCredentialHelperHint");
 element<HTMLElement>("clone-submodules-recursively-label").textContent = t("cloneSubmodulesRecursively");
+element<HTMLElement>("diff-local-side-editable-label").textContent = t("diffLocalSideEditable");
+element<HTMLElement>("go-to-next-file-after-last-change-label").textContent = t("goToNextFileAfterLastChange");
 
+const diffView = createDiffView({
+  errorView,
+  opened: () => {
+    projectView.hidden = true;
+  },
+  closed: (path) => {
+    projectView.hidden = false;
+    focusChangeRow(projectView, path);
+  },
+});
+
+// What the user edited in a diff is saved when the window closes. When it cannot be, the window
+// stays, with the reason on screen.
+void getCurrentWindow().onCloseRequested(async (event) => {
+  if (!(await diffView.saveEdits())) {
+    event.preventDefault();
+  }
+});
 
 saveOnChange(useCredentialHelperInput, async (checked) => (await setUseCredentialHelper(checked)).useCredentialHelper);
 saveOnChange(cloneSubmodulesInput, async (checked) => (await setCloneSubmodulesRecursively(checked)).cloneSubmodulesRecursively);
+saveOnChange(diffLocalSideEditableInput, async (checked) => {
+  const saved = await setDiffLocalSideEditable(checked);
+  void diffView.refresh();
+  return saved.diffLocalSideEditable;
+});
+saveOnChange(goToNextFileInput, async (checked) => {
+  const saved = await setGoToNextFileAfterLastChange(checked);
+  void diffView.refresh();
+  return saved.goToNextFileAfterLastChange;
+});
 
 operationLogButton.addEventListener("click", () => {
   const opening = operationLogPanel.hidden;
@@ -162,6 +199,8 @@ settingsButton.addEventListener("click", async () => {
     gitPathInput.value = current.gitPath ?? "";
     useCredentialHelperInput.checked = current.useCredentialHelper;
     cloneSubmodulesInput.checked = current.cloneSubmodulesRecursively;
+    diffLocalSideEditableInput.checked = current.diffLocalSideEditable;
+    goToNextFileInput.checked = current.goToNextFileAfterLastChange;
     gitTestResult.textContent = "";
   }
   settingsPanel.hidden = !opening;
@@ -382,6 +421,9 @@ function handleCoreEvent(event: CoreEvent): void {
       break;
     case "filesChanged":
       shownRepositories.get(event.payload.repository.root)?.refresh();
+      if (diffView.shownRoot() === event.payload.repository.root) {
+        void diffView.refresh();
+      }
       break;
     case "promptRaised":
       showPrompt(event.payload);
@@ -482,6 +524,10 @@ async function showInItsWindow(project: Project): Promise<void> {
 
 /** Shows `project` in this window: the Repositories gikli offers to add, the ones that broke, the ignored ones, and the changes of the others. */
 function showProject(project: Project): void {
+  // The file of another Project is no longer in view: its edits are saved, as when the user closes it.
+  if (project.folder !== shownFolder) {
+    void diffView.close();
+  }
   shownFolder = project.folder;
   showNotifications();
   const name = project.folder.split(/[\\/]/).filter((part) => part !== "").pop() ?? project.folder;
@@ -654,7 +700,13 @@ function repositoryView(repository: Repository): HTMLElement {
       do {
         readAgain = false;
         try {
-          changes.replaceChildren(changeList(await readChanges(repository)));
+          const changeSet = await readChanges(repository);
+          // The row the user was on stays theirs when the rows are drawn again.
+          const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
+          changes.replaceChildren(changeList(changeSet));
+          if (focused !== undefined) {
+            focusChangeRow(changes, focused);
+          }
         } catch (error) {
           changes.replaceChildren(errorView(error, () => void refreshChanges()));
         }
@@ -710,25 +762,34 @@ const CAPABILITY_LABELS: Record<Capability, StringKey> = {
   rebaseUpdateRefs: "capabilityRebaseUpdateRefs",
 };
 
+/** Puts the focus on the row in `container` of the file at `path`, if it has one. */
+function focusChangeRow(container: HTMLElement, path: string): void {
+  for (const row of container.querySelectorAll<HTMLElement>('[data-testid="change"]')) {
+    if (row.dataset.path === path) {
+      row.focus();
+    }
+  }
+}
+
 function changeList(changeSet: ChangeSet): HTMLElement {
   if (changeSet.changes.length === 0) {
     return line("message", t("noChanges"));
   }
-  return nodeList(changeSet.nodes, "");
+  return nodeList(changeSet.repository, changeSet.nodes, "");
 }
 
-/** The rows of one folder, whose path is `folder`, or of the whole view when `folder` is "". */
-function nodeList(nodes: ChangeNode[], folder: string): HTMLUListElement {
+/** The rows of one folder of `repository`, whose path is `folder`, or of the whole view when `folder` is "". */
+function nodeList(repository: Repository, nodes: ChangeNode[], folder: string): HTMLUListElement {
   const list = document.createElement("ul");
   list.className = "changes";
   for (const node of nodes) {
-    list.append(node.kind === "folder" ? folderItem(node) : changeItem(node, folder));
+    list.append(node.kind === "folder" ? folderItem(repository, node) : changeItem(repository, node, folder));
   }
   return list;
 }
 
 /** A folder and its rows. A folder that holds changes, not only ignored files, is highlighted. */
-function folderItem(folder: Extract<ChangeNode, { kind: "folder" }>): HTMLLIElement {
+function folderItem(repository: Repository, folder: Extract<ChangeNode, { kind: "folder" }>): HTMLLIElement {
   const item = document.createElement("li");
   item.className = "change-folder";
   item.dataset.testid = "change-folder";
@@ -736,16 +797,30 @@ function folderItem(folder: Extract<ChangeNode, { kind: "folder" }>): HTMLLIElem
   const name = document.createElement("span");
   name.className = "folder-name";
   name.textContent = folder.path.slice(folder.path.lastIndexOf("/") + 1);
-  item.append(name, nodeList(folder.children, folder.path));
+  item.append(name, nodeList(repository, folder.children, folder.path));
   return item;
 }
 
-/** A changed file, shown by its path relative to `folder`. */
-function changeItem(change: Change, folder: string): HTMLLIElement {
+/**
+ * A changed file of `repository`, shown by its path relative to `folder`. A double-click opens its
+ * diff, as do Enter and Ctrl+D, or Cmd+D on a Mac, on the row. An ignored file is no change to review.
+ */
+function changeItem(repository: Repository, change: Change, folder: string): HTMLLIElement {
   const item = document.createElement("li");
   item.className = "change";
   item.dataset.testid = "change";
   item.dataset.status = change.status;
+  item.dataset.path = change.path;
+  if (change.status !== "ignored") {
+    item.tabIndex = 0;
+    item.addEventListener("dblclick", () => void diffView.open(repository, change.path));
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || (hasShortcutKey(event) && event.key.toLowerCase() === "d")) {
+        event.preventDefault();
+        void diffView.open(repository, change.path);
+      }
+    });
+  }
   const status = document.createElement("span");
   status.className = "change-status";
   status.textContent = t(STATUS_LABELS[change.status]);
@@ -1319,6 +1394,16 @@ function describeFailure(failure: Failure): string {
       return t("failureNotInRepository", { folder: failure.folder });
     case "changesUnreadable":
       return t("failureChangesUnreadable", { folder: failure.folder });
+    case "diffUnreadable":
+      return t("failureDiffUnreadable", { path: failure.path });
+    case "localFileUnreadable":
+      return t("failureLocalFileUnreadable", { path: failure.path, message: failure.message });
+    case "localSideNotEditable":
+      return t("failureLocalSideNotEditable", { path: failure.path });
+    case "localFileChanged":
+      return t("failureLocalFileChanged", { path: failure.path });
+    case "localFileNotSaved":
+      return t("failureLocalFileNotSaved", { path: failure.path, message: failure.message });
     case "changesNotWatched":
       return t("failureChangesNotWatched", { folder: failure.folder, message: failure.message });
     case "cloneFailed":
@@ -1358,10 +1443,3 @@ function line(testId: string, text: string): HTMLParagraphElement {
   return paragraph;
 }
 
-function element<T extends HTMLElement>(id: string): T {
-  const found = document.getElementById(id);
-  if (found === null) {
-    throw new Error(`missing #${id} in index.html`);
-  }
-  return found as T;
-}

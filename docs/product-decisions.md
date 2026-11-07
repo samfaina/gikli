@@ -34,6 +34,21 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - Only HTTP, HTTPS and SSH URLs have these forms. A folder on this machine, a `file://` URL and a `git://` URL offer no choice, and clone as they are.
 - gikli tells a server it cannot reach only from what ssh and curl write, as neither translates it. A repository the server does not have is reported by git in the user's language, with nothing else to tell it by, so it stays the general failure that points to the operation log.
 
+### Diff
+
+- git decides what differs. gikli has it compare the version in HEAD with the file on disk, so what `core.autocrlf` or a clean filter converts is no difference. Without a conversion, a changed line ending is a difference, even though the two sides show the same text.
+- The diff shows what git shows as text. A file git takes as binary shows without a text diff, and so does one that holds a zero byte, whatever git says: with Git LFS, git compares pointers while the file on disk is binary. A submodule or a nested Repository shows without a text diff too.
+- The local side is editable, unless the setting "Edit the local side of a diff" is off. A file that is not UTF-8 and a symbolic link are read-only, as saving what the view shows of them would write something else.
+- Edits are saved with Save, and also when the user moves to another file, closes the diff or closes the window, so moving on never drops them. When the save fails, the user stays where they are, with the reason and a way to discard the edits after confirming.
+- A file that changed on disk after gikli read it is never overwritten. The save fails, and the user can copy what they want to keep and discard the edits.
+- While the user edits, the view follows their edits with CodeMirror's own diff, also after a save, as drawing the editors again would lose the cursor and the undo history. The diff comes from git again the next time the file is read.
+- CodeMirror draws two differences as one when a line of at most two characters, such as `}` or an empty line, is all that separates them, and it has no option to stop that. The next difference stops once for the two, and the line is drawn as changed.
+- A file without a text diff has one place to look, so next difference moves on from it as from a last difference.
+- A saved line keeps the line ending it has in the file. Unchanged lines at the top and bottom of the file keep theirs, and the lines between get the line ending most of the file has. In a file that mixes line endings, two edits far apart in one save can therefore change the line endings between them.
+- Next and previous file follow the changes view as the user arranged it, leaving out ignored files. A file that stops being a change while the user looks at it keeps its place.
+- Shortcuts: double-click, Enter or Ctrl+D (Cmd+D on macOS) on a row opens its diff. In the diff, F7 and Shift+F7 go to the next and previous difference, Ctrl+Alt+Right and Ctrl+Alt+Left (Cmd on macOS) to the next and previous file, Ctrl+S (Cmd+S) saves and Esc closes.
+- A single unchanged line past the context stays visible, as the marker that says it is hidden would take its place.
+
 ### Long operations and hooks
 
 - The user can cancel a running long operation. That ends git and every process it started. gikli never kills a hook by itself and has no timeout, as it cannot tell a hook waiting on the console from a slow one. While a hook runs, the view of the operation names it next to Cancel.
