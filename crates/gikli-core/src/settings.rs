@@ -26,6 +26,10 @@ pub struct Settings {
     pub use_credential_helper: bool,
     /// Whether a clone also clones the submodules of the repository, and theirs.
     pub clone_submodules_recursively: bool,
+    /// Whether the user can edit and save the local side of a diff.
+    pub diff_local_side_editable: bool,
+    /// Whether moving on from the last difference of a file goes to the next file.
+    pub go_to_next_file_after_last_change: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +41,8 @@ impl Default for Settings {
             operation_log_soft_wrap: false,
             use_credential_helper: true,
             clone_submodules_recursively: true,
+            diff_local_side_editable: true,
+            go_to_next_file_after_last_change: true,
         }
     }
 }

@@ -10,8 +10,8 @@
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, Failure, FailureAction, Gikli,
-    GitCheck, HostEnvironment, Notification, NotificationAction, NotificationOutcome,
+    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, Failure, FailureAction, FileDiff,
+    Gikli, GitCheck, HostEnvironment, Notification, NotificationAction, NotificationOutcome,
     OperationLogEntry, Project, ProjectWindow, Prompt, Repository, RunningOperation, Settings,
     answer_askpass_request,
 };
@@ -91,6 +91,22 @@ fn set_clone_submodules_recursively(
     recursively: bool,
 ) -> Result<Settings, Failure> {
     gikli.set_clone_submodules_recursively(recursively)
+}
+
+#[tauri::command]
+fn set_diff_local_side_editable(
+    gikli: State<'_, Gikli>,
+    editable: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_diff_local_side_editable(editable)
+}
+
+#[tauri::command]
+fn set_go_to_next_file_after_last_change(
+    gikli: State<'_, Gikli>,
+    go: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_go_to_next_file_after_last_change(go)
 }
 
 #[tauri::command]
@@ -251,6 +267,26 @@ fn read_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<Chang
 }
 
 #[tauri::command(async)]
+fn read_diff(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    path: String,
+) -> Result<FileDiff, Failure> {
+    gikli.read_diff(&repository, &path)
+}
+
+#[tauri::command(async)]
+fn save_local_file(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    path: String,
+    text: String,
+    version: String,
+) -> Result<FileDiff, Failure> {
+    gikli.save_local_file(&repository, &path, &text, &version)
+}
+
+#[tauri::command(async)]
 fn add_files(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -326,6 +362,8 @@ fn main() {
             set_operation_log_soft_wrap,
             set_use_credential_helper,
             set_clone_submodules_recursively,
+            set_diff_local_side_editable,
+            set_go_to_next_file_after_last_change,
             pending_prompts,
             answer_prompt,
             cancel_prompt,
@@ -347,6 +385,8 @@ fn main() {
             cancel_operation,
             window_for_project,
             read_changes,
+            read_diff,
+            save_local_file,
             add_files,
             watch_changes,
             unwatch_changes,

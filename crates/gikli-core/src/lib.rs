@@ -5,6 +5,7 @@
 
 mod capability;
 mod clone_url;
+mod diff;
 mod events;
 mod explainer;
 mod git;
@@ -34,6 +35,9 @@ use serde::{Deserialize, Serialize};
 
 pub use capability::{Capability, CapabilityState};
 pub use clone_url::CloneUrlForms;
+pub use diff::{
+    DiffContent, Difference, FileDiff, LineRange, LocalReadOnly, TextDiff, UnchangedRegion,
+};
 pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use host::HostEnvironment;
@@ -277,6 +281,34 @@ pub enum Failure {
     ChangesUnreadable {
         folder: PathBuf,
     },
+    /// git could not compare the file at `path` with HEAD. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    DiffUnreadable {
+        path: PathBuf,
+    },
+    /// gikli could not read the file at `path` from disk.
+    #[serde(rename_all = "camelCase")]
+    LocalFileUnreadable {
+        path: PathBuf,
+        message: String,
+    },
+    /// The user cannot edit the file at `path`, as its [`TextDiff::local_read_only`] says.
+    #[serde(rename_all = "camelCase")]
+    LocalSideNotEditable {
+        path: PathBuf,
+    },
+    /// The file at `path` is no longer what the user saw when they started editing it, so gikli did
+    /// not write over it.
+    #[serde(rename_all = "camelCase")]
+    LocalFileChanged {
+        path: PathBuf,
+    },
+    /// gikli could not write the file at `path`.
+    #[serde(rename_all = "camelCase")]
+    LocalFileNotSaved {
+        path: PathBuf,
+        message: String,
+    },
     /// gikli could not watch the Repository at `folder` for changes made outside it. Its changes
     /// still refresh on request.
     #[serde(rename_all = "camelCase")]
@@ -405,6 +437,16 @@ impl Gikli {
     /// Makes a clone also clone the submodules of the repository, and theirs, or leave them out.
     pub fn set_clone_submodules_recursively(&self, recursively: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.clone_submodules_recursively = recursively)
+    }
+
+    /// Lets the user edit and save the local side of a diff, or turns that off.
+    pub fn set_diff_local_side_editable(&self, editable: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.diff_local_side_editable = editable)
+    }
+
+    /// Makes moving on from the last difference of a file go to the next file, or stay.
+    pub fn set_go_to_next_file_after_last_change(&self, go: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.go_to_next_file_after_last_change = go)
     }
 
     /// The application settings.
@@ -893,6 +935,35 @@ impl Gikli {
             status::parse(&invocation.stdout),
             settings.change_grouping,
         ))
+    }
+
+    /// The diff of the file at `path`, relative to the root of `repository`, against HEAD.
+    pub fn read_diff(&self, repository: &Repository, path: &str) -> Result<FileDiff, Failure> {
+        let changes = self.read_changes(repository)?;
+        diff::read(
+            &self.runner(&repository.root)?,
+            &changes,
+            path,
+            &self.settings(),
+        )
+    }
+
+    /// Saves `text`, with `\n` between lines, as the local side of the diff of the file at `path`,
+    /// and returns the diff after that. The lines keep the line endings they have in the file.
+    ///
+    /// `version` is the [`TextDiff::local_version`] of the diff the user edited. When the file no
+    /// longer is what they saw, nothing is written and this returns [`Failure::LocalFileChanged`]:
+    /// neither version gets lost without them knowing.
+    pub fn save_local_file(
+        &self,
+        repository: &Repository,
+        path: &str,
+        text: &str,
+        version: &str,
+    ) -> Result<FileDiff, Failure> {
+        let editable = self.settings().diff_local_side_editable;
+        diff::save(&repository.root, path, text, version, editable)?;
+        self.read_diff(repository, path)
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes

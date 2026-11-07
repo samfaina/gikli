@@ -50,6 +50,9 @@
 }
 
 body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
   margin: 0;
   background: var(--background);
   color: var(--text);
@@ -245,6 +248,90 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* The side-by-side diff takes the room the changes view leaves in the window. */
+.diff {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 240px;
+}
+
+.diff[hidden] {
+  display: none;
+}
+
+.diff-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-title {
+  flex: 1 1 200px;
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.diff-message:not(:empty) {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-message p {
+  margin: 0 0 6px;
+}
+
+.diff-sides {
+  display: flex;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.diff-sides span {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 2px 12px;
+  overflow-wrap: anywhere;
+}
+
+.diff-content {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* One scroller holds both editors, so the two sides scroll as one. */
+.diff-content .cm-mergeView {
+  height: 100%;
+  overflow: auto;
+}
+
+.diff-content .cm-editor {
+  background: var(--background);
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+.diff-content .cm-editor.cm-focused {
+  outline: none;
+}
+
+.diff-content .cm-gutters {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.diff-content .cm-collapsedLines {
+  cursor: pointer;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
 .changes-header {
   display: flex;
   align-items: center;
@@ -316,6 +403,15 @@ button:disabled {
 .change[data-status="conflicted"] .change-path {
   color: var(--status-conflicted);
   font-weight: 600;
+}
+
+.changes li.change[tabindex] {
+  cursor: default;
+}
+
+.changes li.change:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .change-detail {

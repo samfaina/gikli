@@ -31,6 +31,29 @@ describe("gikli", () => {
     assert.deepEqual(await paths(), [added, untracked]);
   });
 
+  it("opens the diff of a changed file on a double-click, and saves the local side", async () => {
+    const untracked = process.env.GIKLI_E2E_UNTRACKED_FILE;
+    const row = await $(`[data-testid="change"][data-path="${untracked}"]`);
+    await row.doubleClick();
+
+    const diff = await $('[data-testid="diff"]');
+    await diff.waitForDisplayed({ timeout: 30000 });
+    assert.equal(await $('[data-testid="diff-title"]').getText(), untracked);
+    const local = await $(".cm-merge-b .cm-content");
+    await local.waitForDisplayed({ timeout: 30000 });
+    assert.match(await local.getText(), /^smoke/);
+
+    await local.click();
+    await browser.keys(["x"]);
+    await $('[data-testid="diff-save"]').click();
+    const file = path.join(process.env.GIKLI_E2E_REPOSITORY, untracked);
+    await browser.waitUntil(() => fs.readFileSync(file, "utf8") !== "smoke\n", { timeout: 30000 });
+
+    await $('[data-testid="diff-close"]').click();
+    await diff.waitForDisplayed({ timeout: 30000, reverse: true });
+    await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+  });
+
   it("brings a prompt to the user and gives git the answer", async () => {
     const sandbox = process.env.GIKLI_E2E_SANDBOX;
     fs.writeFileSync(path.join(sandbox, "ask-for-prompt"), "");
