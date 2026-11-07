@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 describe("gikli", () => {
   it("opens the startup Project and shows its Repository root and the git version", async () => {
@@ -54,5 +55,37 @@ describe("gikli", () => {
     const setting = await $('[data-testid="use-credential-helper"]');
     await setting.waitForDisplayed({ timeout: 30000 });
     assert.equal(await setting.isSelected(), true);
+  });
+
+  it("has the setting to clone submodules on by default", async () => {
+    const setting = await $('[data-testid="clone-submodules-recursively"]');
+    await setting.waitForDisplayed({ timeout: 30000 });
+    assert.equal(await setting.isSelected(), true);
+  });
+
+  it("offers the SSH form of a URL to clone", async () => {
+    await $('[data-testid="toggle-clone"]').click();
+    const url = await $('[data-testid="clone-url"]');
+    await url.setValue("https://example.com/owner/repo.git");
+    const ssh = await $('[data-testid="clone-url-ssh"]');
+    await browser.waitUntil(() => ssh.isEnabled(), { timeout: 30000 });
+
+    await ssh.click();
+
+    assert.equal(await url.getValue(), "git@example.com:owner/repo.git");
+  });
+
+  // The clone opens in a window of its own, which not every WebDriver can reach, so this stops at
+  // the form closing, as it does once the core has opened the clone as a Project.
+  it("clones a repository from a URL", async () => {
+    const remote = process.env.GIKLI_E2E_REMOTE;
+    const target = path.join(process.env.GIKLI_E2E_SANDBOX, "clone");
+
+    await $('[data-testid="clone-url"]').setValue(pathToFileURL(remote).href);
+    await $('[data-testid="clone-folder"]').setValue(target);
+    await $('[data-testid="start-clone"]').click();
+
+    await $('[data-testid="clone"]').waitForDisplayed({ timeout: 30000, reverse: true });
+    assert.ok(fs.existsSync(path.join(target, process.env.GIKLI_E2E_REMOTE_FILE)));
   });
 });

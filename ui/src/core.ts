@@ -30,6 +30,8 @@ export interface Settings {
   operationLogSoftWrap: boolean;
   /** Whether the user's credential helpers answer for credentials and keep them. */
   useCredentialHelper: boolean;
+  /** Whether a clone also clones the submodules of the repository, and theirs. */
+  cloneSubmodulesRecursively: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -131,7 +133,10 @@ export type ExplainedMessage =
   | { kind: "longPaths" }
   | { kind: "authenticationFailed" }
   | { kind: "hostKeyUnknown" }
-  | { kind: "hostKeyChanged" };
+  | { kind: "hostKeyChanged" }
+  | { kind: "serverUnreachable" }
+  | { kind: "cloneTargetNotEmpty"; folder: string }
+  | { kind: "submodulesNotCloned"; folder: string };
 
 /** What the user can do next, in a failure the core explains. */
 export type NextStep =
@@ -142,7 +147,10 @@ export type NextStep =
   | "enableLongPaths"
   | "checkCredentials"
   | "verifyHostKey"
-  | "checkChangedHostKey";
+  | "checkChangedHostKey"
+  | "checkConnection"
+  | "chooseEmptyFolder"
+  | "useOrDeleteClone";
 
 /** Something gikli can do about a failure, once the user has confirmed. */
 export type FailureAction =
@@ -227,6 +235,12 @@ export interface Notification {
 
 /** What acting on a notification changed. */
 export type NotificationOutcome = { outcome: "projectChanged"; payload: Project };
+
+/** The two forms of the URL of a repository. The form it was typed in stays as it was typed. */
+export interface CloneUrlForms {
+  https: string;
+  ssh: string;
+}
 
 /** A git command that takes long enough to show its progress. */
 export type LongOperation =
@@ -318,6 +332,11 @@ export function setUseCredentialHelper(useHelper: boolean): Promise<Settings> {
   return invoke("set_use_credential_helper", { useHelper });
 }
 
+/** Makes a clone also clone submodules, and theirs, or leave them out. Rejects with a {@link Failure}. */
+export function setCloneSubmodulesRecursively(recursively: boolean): Promise<Settings> {
+  return invoke("set_clone_submodules_recursively", { recursively });
+}
+
 /** The prompts waiting for the user, oldest first. New ones arrive as `promptRaised` events. */
 export function pendingPrompts(): Promise<Prompt[]> {
   return invoke("pending_prompts");
@@ -374,6 +393,11 @@ export function runningOperations(): Promise<RunningOperation[]> {
  */
 export function cancelOperation(id: number): Promise<void> {
   return invoke("cancel_operation", { id });
+}
+
+/** The HTTPS and SSH forms of `url`, when it has them: a folder on this machine, for one, has none. */
+export function cloneUrlForms(url: string): Promise<CloneUrlForms | null> {
+  return invoke("clone_url_forms", { url });
 }
 
 /**

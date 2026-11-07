@@ -12,10 +12,32 @@
     <header class="toolbar">
       <button id="open-folder" type="button" data-testid="open-folder"></button>
       <button id="new-repository" type="button" data-testid="new-repository"></button>
+      <button id="toggle-clone" type="button" data-testid="toggle-clone" aria-expanded="false" aria-controls="clone"></button>
       <span id="git-status" class="git-status" data-testid="git-status"></span>
       <button id="toggle-operation-log" class="toolbar-end" type="button" data-testid="toggle-operation-log" aria-expanded="false" aria-controls="operation-log"></button>
       <button id="toggle-settings" type="button" data-testid="toggle-settings" aria-expanded="false" aria-controls="settings"></button>
     </header>
+    <form id="clone" class="settings" data-testid="clone" hidden>
+      <label id="clone-url-label" for="clone-url"></label>
+      <div class="settings-row">
+        <input id="clone-url" type="text" data-testid="clone-url" spellcheck="false" autocomplete="off" />
+      </div>
+      <fieldset class="settings-row url-forms">
+        <legend id="clone-url-form-label"></legend>
+        <label><input id="clone-url-https" type="radio" name="clone-url-form" data-testid="clone-url-https" disabled /><span id="clone-url-https-label"></span></label>
+        <label><input id="clone-url-ssh" type="radio" name="clone-url-form" data-testid="clone-url-ssh" disabled /><span id="clone-url-ssh-label"></span></label>
+      </fieldset>
+      <label id="clone-folder-label" for="clone-folder"></label>
+      <div class="settings-row">
+        <input id="clone-folder" type="text" data-testid="clone-folder" spellcheck="false" autocomplete="off" />
+        <button id="browse-clone-folder" type="button" data-testid="browse-clone-folder"></button>
+      </div>
+      <p id="clone-folder-hint" class="hint"></p>
+      <div class="settings-row clone-actions">
+        <button id="start-clone" type="submit" data-testid="start-clone" disabled></button>
+      </div>
+      <div id="clone-result" data-testid="clone-result" role="status"></div>
+    </form>
     <section id="settings" class="settings" data-testid="settings" hidden>
       <label id="git-path-label" for="git-path"></label>
       <div class="settings-row">
@@ -27,6 +49,7 @@
       <p id="git-test-result" class="git-test-result" data-testid="git-test-result" role="status"></p>
       <label class="settings-check"><input id="use-credential-helper" type="checkbox" data-testid="use-credential-helper" /><span id="use-credential-helper-label"></span></label>
       <p id="use-credential-helper-hint" class="hint"></p>
+      <label class="settings-check"><input id="clone-submodules-recursively" type="checkbox" data-testid="clone-submodules-recursively" /><span id="clone-submodules-recursively-label"></span></label>
     </section>
     <section id="prompts" class="prompts" data-testid="prompts" hidden></section>
     <section id="notifications" class="notifications" data-testid="notifications" aria-live="polite" hidden></section>

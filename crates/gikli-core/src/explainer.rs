@@ -47,6 +47,15 @@ pub enum ExplainedMessage {
     /// The server answers with another host key than the one ssh knows for it, so it may not be
     /// the same server.
     HostKeyChanged,
+    /// git could not get to the server: its name does not resolve, or it does not answer.
+    ServerUnreachable,
+    /// The target of a clone, `folder`, already holds something, so git refused to clone into it.
+    #[serde(rename_all = "camelCase")]
+    CloneTargetNotEmpty { folder: PathBuf },
+    /// The clone into `folder` got its files, and git could not clone its submodules. git leaves
+    /// the folder as it is.
+    #[serde(rename_all = "camelCase")]
+    SubmodulesNotCloned { folder: PathBuf },
 }
 
 /// What the user can do next.
@@ -74,6 +83,13 @@ pub enum NextStep {
     /// Check the new key with whoever runs the server before connecting again, and only then remove
     /// the old one. gikli leaves `known_hosts` to the user, as trusting a key is theirs to decide.
     CheckChangedHostKey,
+    /// Check the URL and the connection to the server, then try again.
+    CheckConnection,
+    /// Choose an empty folder, or empty this one.
+    ChooseEmptyFolder,
+    /// See in the operation log why the submodules failed. The clone can be opened from its folder
+    /// without them, and the folder has to go before cloning into it again.
+    UseOrDeleteClone,
 }
 
 /// Something gikli can do about a failure.
@@ -156,7 +172,51 @@ pub(crate) fn explain(
             NextStep::CheckCredentials,
         ));
     }
+    if any_line(stderr, is_unreachable_server) {
+        return Some(explained(
+            ExplainedMessage::ServerUnreachable,
+            NextStep::CheckConnection,
+        ));
+    }
     None
+}
+
+/// The explanation of the failure of `invocation`, a `git clone` run in `parent` into `target`,
+/// when gikli knows this failure. `target` already held something when `target_was_in_use`, and
+/// `git clone` was to clone submodules when `with_submodules`.
+pub(crate) fn explain_failed_clone(
+    runner: &GitRunner,
+    parent: &Path,
+    target: &Path,
+    invocation: &Invocation,
+    target_was_in_use: bool,
+    with_submodules: bool,
+) -> Option<Explanation> {
+    if target_was_in_use {
+        return Some(explained(
+            ExplainedMessage::CloneTargetNotEmpty {
+                folder: target.to_path_buf(),
+            },
+            NextStep::ChooseEmptyFolder,
+        ));
+    }
+    explain(runner, parent, invocation).or_else(|| {
+        // git removes a clone that fails before it has its files, and goes on to the submodules
+        // once it has them.
+        (with_submodules && holds_submodules(target) && target.join(".git").exists()).then(|| {
+            explained(
+                ExplainedMessage::SubmodulesNotCloned {
+                    folder: target.to_path_buf(),
+                },
+                NextStep::UseOrDeleteClone,
+            )
+        })
+    })
+}
+
+/// Whether the files of the repository at `folder` name any submodules.
+pub(crate) fn holds_submodules(folder: &Path) -> bool {
+    folder.join(".gitmodules").is_file()
 }
 
 fn explained(message: ExplainedMessage, next_step: NextStep) -> Explanation {
@@ -226,6 +286,16 @@ fn is_refused_by_http_server(line: &str) -> bool {
                     .next()
                     .is_some_and(|status| FORBIDDING_STATUSES.contains(&status))
         })
+}
+
+/// What ssh and curl write when they cannot get to a server, which neither translates. What a server
+/// says about servers of its own comes after `remote: `.
+fn is_unreachable_server(line: &str) -> bool {
+    line.starts_with("ssh: Could not resolve hostname ")
+        || line.starts_with("ssh: connect to host ")
+        || (!line.starts_with("remote: ")
+            && (line.contains("Could not resolve host: ")
+                || line.contains("Failed to connect to ")))
 }
 
 /// What a run cancelled in `folder` left in the user's way, with what to do about it: the lock of

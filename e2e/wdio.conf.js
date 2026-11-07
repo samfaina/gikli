@@ -18,6 +18,9 @@ const exe = process.platform === "win32" ? ".exe" : "";
 /** The one uncommitted change in the smoke test's repository, a file git does not track yet. */
 const UNTRACKED_FILE = "smoke file.txt";
 
+/** The one file in the smoke test's remote. */
+const REMOTE_FILE = "remote file.txt";
+
 /**
  * A temporary folder with a git repository holding {@link UNTRACKED_FILE}, isolated from the
  * developer's git configuration.
@@ -37,13 +40,37 @@ function createRepository() {
   }
   fs.writeFileSync(path.join(repository, UNTRACKED_FILE), "smoke\n");
   installPromptingFsmonitor(sandbox, repository, gitconfig);
-  return { sandbox, repository };
+  return { sandbox, repository, remote: createRemote(sandbox, gitconfig) };
+}
+
+/** A bare remote in `sandbox` holding {@link REMOTE_FILE} in one commit. */
+function createRemote(sandbox, gitconfig) {
+  const remote = path.join(sandbox, "remote.git");
+  const work = path.join(sandbox, "remote work");
+  const git = (cwd, ...args) => {
+    const run = spawnSync("git", args, {
+      cwd,
+      env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1" },
+    });
+    if (run.status !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${run.stderr}`);
+    }
+  };
+  fs.mkdirSync(remote);
+  fs.mkdirSync(work);
+  git(remote, "init", "--quiet", "--bare");
+  git(work, "init", "--quiet");
+  fs.writeFileSync(path.join(work, REMOTE_FILE), "smoke\n");
+  git(work, "add", "--all");
+  git(work, "-c", "user.name=gikli", "-c", "user.email=gikli@example.com", "commit", "--quiet", "--message", "First commit");
+  git(work, "push", "--quiet", remote, "main");
+  return remote;
 }
 
 /**
  * Makes the next read of the changes after `ask-for-prompt` appears in `sandbox` raise a prompt,
- * and leave the answer in `prompt-answer`. The app has no clone or fetch to ask for credentials
- * yet, so the file system monitor git runs in `git status` asks instead, through gikli's askpass.
+ * and leave the answer in `prompt-answer`. The file system monitor git runs in `git status` asks,
+ * through gikli's askpass, so the test needs no server that wants credentials.
  */
 function installPromptingFsmonitor(sandbox, repository, gitconfig) {
   const monitor = path.join(sandbox, "fsmonitor");
@@ -86,6 +113,8 @@ if (!process.env.GIKLI_E2E_REPOSITORY) {
   process.env.GIKLI_E2E_SANDBOX = created.sandbox;
   process.env.GIKLI_E2E_REPOSITORY = created.repository;
   process.env.GIKLI_E2E_UNTRACKED_FILE = UNTRACKED_FILE;
+  process.env.GIKLI_E2E_REMOTE = created.remote;
+  process.env.GIKLI_E2E_REMOTE_FILE = REMOTE_FILE;
 }
 
 /**

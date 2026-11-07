@@ -10,9 +10,10 @@
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeGrouping, ChangeSet, Failure, FailureAction, Gikli, GitCheck,
-    HostEnvironment, Notification, NotificationAction, NotificationOutcome, OperationLogEntry,
-    Project, ProjectWindow, Prompt, Repository, RunningOperation, Settings, answer_askpass_request,
+    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, Failure, FailureAction, Gikli,
+    GitCheck, HostEnvironment, Notification, NotificationAction, NotificationOutcome,
+    OperationLogEntry, Project, ProjectWindow, Prompt, Repository, RunningOperation, Settings,
+    answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -82,6 +83,14 @@ fn set_use_credential_helper(
     use_helper: bool,
 ) -> Result<Settings, Failure> {
     gikli.set_use_credential_helper(use_helper)
+}
+
+#[tauri::command]
+fn set_clone_submodules_recursively(
+    gikli: State<'_, Gikli>,
+    recursively: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_clone_submodules_recursively(recursively)
 }
 
 #[tauri::command]
@@ -181,6 +190,11 @@ fn running_operations(gikli: State<'_, Gikli>) -> Vec<RunningOperation> {
 #[tauri::command]
 fn cancel_operation(gikli: State<'_, Gikli>, id: u64) {
     gikli.cancel_operation(id);
+}
+
+#[tauri::command]
+fn clone_url_forms(gikli: State<'_, Gikli>, url: String) -> Option<CloneUrlForms> {
+    gikli.clone_url_forms(&url)
 }
 
 #[tauri::command(async)]
@@ -311,6 +325,7 @@ fn main() {
             set_change_grouping,
             set_operation_log_soft_wrap,
             set_use_credential_helper,
+            set_clone_submodules_recursively,
             pending_prompts,
             answer_prompt,
             cancel_prompt,
@@ -326,6 +341,7 @@ fn main() {
             ignore_repository,
             remove_repository,
             create_repository,
+            clone_url_forms,
             clone_repository,
             running_operations,
             cancel_operation,

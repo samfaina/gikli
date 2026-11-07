@@ -4,6 +4,7 @@
 //! and the events it listens to. The UI and the tests use this same interface.
 
 mod capability;
+mod clone_url;
 mod events;
 mod explainer;
 mod git;
@@ -32,6 +33,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 pub use capability::{Capability, CapabilityState};
+pub use clone_url::CloneUrlForms;
 pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use host::HostEnvironment;
@@ -400,6 +402,11 @@ impl Gikli {
         self.change_settings(|settings| settings.use_credential_helper = use_helper)
     }
 
+    /// Makes a clone also clone the submodules of the repository, and theirs, or leave them out.
+    pub fn set_clone_submodules_recursively(&self, recursively: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.clone_submodules_recursively = recursively)
+    }
+
     /// The application settings.
     pub fn settings(&self) -> Settings {
         lock(&self.settings).clone()
@@ -692,14 +699,25 @@ impl Gikli {
         self.operations.cancel(id);
     }
 
+    /// The HTTPS and SSH forms of `url`, for the user to choose between before they clone, when it
+    /// has them. Nothing reaches git or the operation log.
+    pub fn clone_url_forms(&self, url: &str) -> Option<CloneUrlForms> {
+        clone_url::forms_of(url)
+    }
+
     /// Clones the repository at `url` into `folder`, which must not exist or be empty, and opens
     /// it as a Project. The clone runs as a [`LongOperation`] that reports its progress; the
     /// rest of the core keeps answering meanwhile. A password in `url` goes to git and shows
     /// nowhere else.
     ///
-    /// When the user cancels it during a hook that runs after the checkout, the clone is complete:
-    /// it opens as a Project, with [`NotificationKind::HookNotFinished`] raised. When they cancel it
-    /// earlier, it returns [`Failure::OperationCancelled`] and leaves `folder` as it found it.
+    /// Its submodules, and theirs, are cloned too, unless
+    /// [`Settings::clone_submodules_recursively`] says otherwise.
+    ///
+    /// When the user cancels it during a hook that runs after the checkout, with no submodules left
+    /// to clone, the clone is complete: it opens as a Project, with
+    /// [`NotificationKind::HookNotFinished`] raised. When they cancel it earlier, or while there are
+    /// submodules left, it returns [`Failure::OperationCancelled`] and leaves `folder` as it found
+    /// it.
     pub fn clone_repository(&self, url: &str, folder: &Path) -> Result<Project, Failure> {
         let runner = self.runner(folder)?;
         let target = std::path::absolute(folder).map_err(|_| Failure::FolderNotFound {
@@ -724,21 +742,32 @@ impl Gikli {
             url: shown_url.clone(),
             folder: target.clone(),
         };
-        let args = ["clone", "--progress", "--", url, &name];
+        let with_submodules = self.settings().clone_submodules_recursively;
+        let mut args = vec!["clone", "--progress"];
+        if with_submodules {
+            args.push("--recurse-submodules");
+        }
+        args.extend(["--", url, &name]);
         let invocation = self.run_operation(&runner, operation, parent, &args)?;
         if invocation.cancelled {
-            return self.end_cancelled_clone(&target, found, invocation);
+            return self.end_cancelled_clone(&target, found, invocation, with_submodules);
         }
         if !invocation.success {
-            return Err(failure_of(
+            let explanation = explainer::explain_failed_clone(
                 &runner,
                 parent,
+                &target,
                 &invocation.without_clone_reports(),
-                Failure::CloneFailed {
+                matches!(found, FoundFolder::Contents),
+                with_submodules,
+            );
+            return Err(match explanation {
+                Some(explanation) => Failure::Explained { explanation },
+                None => Failure::CloneFailed {
                     url: shown_url,
-                    folder: target.clone(),
+                    folder: target,
                 },
-            ));
+            });
         }
         self.open_project(&target)
     }
@@ -766,11 +795,14 @@ impl Gikli {
         target: &Path,
         found: FoundFolder,
         clone: Invocation,
+        with_submodules: bool,
     ) -> Result<Project, Failure> {
         let checked_out = clone
             .last_hook
             .is_some_and(|hook| HOOKS_AFTER_CHECKOUT.contains(&hook.as_str()));
-        if !checked_out {
+        // git goes on to the submodules after those hooks, so these did not get to all it had to do.
+        let complete = checked_out && !(with_submodules && explainer::holds_submodules(target));
+        if !complete {
             return match found.restore(target) {
                 Ok(()) => Err(Failure::OperationCancelled { left_behind: None }),
                 Err(error) => Err(Failure::CancelledCloneNotRemoved {

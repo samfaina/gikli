@@ -24,6 +24,8 @@ pub struct Settings {
     /// Whether the user's credential helpers answer for credentials and keep them. When off, git
     /// asks the user every time and nothing saves the answers.
     pub use_credential_helper: bool,
+    /// Whether a clone also clones the submodules of the repository, and theirs.
+    pub clone_submodules_recursively: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             change_grouping: ChangeGrouping::default(),
             operation_log_soft_wrap: false,
             use_credential_helper: true,
+            clone_submodules_recursively: true,
         }
     }
 }
