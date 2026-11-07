@@ -17,9 +17,10 @@ const QUIET_PERIOD: Duration = Duration::from_millis(250);
 /// The longest a burst that does not stop is held back before it is announced anyway.
 const LONGEST_WAIT: Duration = Duration::from_secs(2);
 
-/// Folders of a git directory whose changes never change the changes view: git's object store
-/// and its reflogs. They count at any depth, so those of submodules under `modules/` count too.
-const UNWATCHED_GIT_FOLDERS: &[&str] = &["objects", "logs"];
+/// Folders of a git directory whose changes never change the changes view: git's object store,
+/// its reflogs, and gikli's own files, which it writes when it reads the changes. They count at any
+/// depth, so those of submodules under `modules/` and worktrees under `worktrees/` count too.
+const UNWATCHED_GIT_FOLDERS: &[&str] = &["objects", "logs", "gikli"];
 
 /// Watches one Repository until dropped.
 pub(crate) struct ChangesWatcher {

@@ -31,6 +31,14 @@ describe("gikli", () => {
     assert.deepEqual(await paths(), [added, untracked]);
   });
 
+  it("shows the active Changelist named Changes, and new files in Unversioned Files", async () => {
+    const changelist = await $('[data-testid="changelist"]');
+    await changelist.waitForDisplayed({ timeout: 30000 });
+    assert.equal(await changelist.getAttribute("data-active"), "true");
+    assert.equal(await $('[data-testid="changelist-name"]').getText(), "Changes");
+    await $('[data-testid="unversioned-files"] [data-testid="change-path"]').waitForDisplayed({ timeout: 30000 });
+  });
+
   it("opens the diff of a changed file on a double-click, and saves the local side", async () => {
     const untracked = process.env.GIKLI_E2E_UNTRACKED_FILE;
     const row = await $(`[data-testid="change"][data-path="${untracked}"]`);

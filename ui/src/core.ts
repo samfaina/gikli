@@ -119,12 +119,33 @@ export type ChangeNode =
   | { kind: "folder"; path: string; hasChanges: boolean; children: ChangeNode[] }
   | ({ kind: "file" } & Change);
 
-export interface ChangeSet {
-  repository: Repository;
+/** Changes the view shows together. */
+export interface ChangeGroup {
   /** Ordered by path. */
   changes: Change[];
   /** The changes arranged as the user chose. */
   nodes: ChangeNode[];
+}
+
+/** A named group of uncommitted changes that belongs to gikli and that git does not know about. */
+export interface Changelist {
+  id: string;
+  name: string;
+  /** Whether this is the Active changelist, the one new changes go into. */
+  active: boolean;
+  group: ChangeGroup;
+}
+
+export interface ChangeSet {
+  repository: Repository;
+  /** Ordered by path. */
+  changes: Change[];
+  /** Exactly one is active. */
+  changelists: Changelist[];
+  /** The new files git does not track yet. */
+  unversionedFiles: ChangeGroup;
+  /** The files git ignores, when the user turned ignored files on. */
+  ignoredFiles: ChangeGroup;
 }
 
 /** The lines from `start` up to, and not including, `end`, counted from 0. */
@@ -252,6 +273,10 @@ export type Failure =
   /** The file is no longer what the user saw when they started editing it, so it was not written. */
   | { kind: "localFileChanged"; path: string }
   | { kind: "localFileNotSaved"; path: string; message: string }
+  | { kind: "changelistGone"; id: string }
+  | { kind: "changelistsUnreadable"; file: string; message: string }
+  | { kind: "changelistsFromNewerGikli"; file: string; version: number }
+  | { kind: "changelistsNotSaved"; file: string; message: string }
   | { kind: "changesNotWatched"; folder: string; message: string }
   | { kind: "cloneFailed"; url: string; folder: string }
   | { kind: "cancelledCloneNotRemoved"; folder: string; message: string }
@@ -523,9 +548,14 @@ export function windowForProject(folder: string): Promise<ProjectWindow> {
   return invoke("window_for_project", { folder });
 }
 
-/** Reads the uncommitted changes of `repository`; calling it again refreshes them. Rejects with a {@link Failure}. */
+/** Reads the uncommitted changes of `repository`, sorted into its Changelists; calling it again refreshes them. Rejects with a {@link Failure}. */
 export function readChanges(repository: Repository): Promise<ChangeSet> {
   return invoke("read_changes", { repository });
+}
+
+/** Makes the Changelist `id` the Active changelist of `repository`. Rejects with a {@link Failure}. */
+export function setActiveChangelist(repository: Repository, id: string): Promise<ChangeSet> {
+  return invoke("set_active_changelist", { repository, id });
 }
 
 /** The diff of the file at `path`, relative to the Repository root, against HEAD. Rejects with a {@link Failure}. */

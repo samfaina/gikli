@@ -68,7 +68,11 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - The Active changelist cannot be deleted; another one must be made active first. Deleting any other Changelist moves its changes to the Active changelist. At least one Changelist always exists.
 - "Changes" is only the initial Changelist. It can be renamed and deleted like any other.
 - A file belongs to a Changelist only while it has changes. A file committed outside gikli leaves its Changelist, and a later change to it goes to the Active changelist. gikli does not remember earlier assignments.
-- In Scope 1 a changed file belongs to exactly one Changelist, and later edits stay in that Changelist.
+- In Scope 1 a changed file belongs to exactly one Changelist, and later edits stay in that Changelist. So do moves git reports as renames: the moved file takes the place of the file it was.
+- gikli notices a commit made while it was closed: a file in a commit HEAD reached since the last read leaves its Changelist, even when it has changed again. Going back in history commits nothing, so a file still changed stays where it is.
+- A change made before the user sets another Changelist active stays in the Active changelist of its time, even when gikli had not read it yet.
+- The changes view shows the Changelists in order, then Unversioned Files, then ignored files in a group of their own. Next and previous file follow that order. A file that stops being a change while the user looks at it has left its Changelist, so they treat it as a change in the Active changelist.
+- Changelists that gikli cannot read, or that a newer gikli saved, stop the changes view with a message and stay as they are on disk: gikli does not write over what it does not understand. Assignments that cannot be saved do not stop the view, as the next read works them out again, but setting the Active changelist then fails, as that choice would be lost.
 - A commit in Changelist mode takes the working tree content of the selected files (`git commit --only`). Index entries for files that are not selected keep their state; gikli does not touch or clear them.
 - New files appear in Unversioned Files without a prompt and are added when they are selected in a commit. Deleted files appear as deleted, and committing them records the removal. The "add new files" setting (ask / always / never) exists and defaults to never.
 

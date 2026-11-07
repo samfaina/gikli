@@ -49,15 +49,8 @@ impl ProjectRegistry {
     /// Writes the registry to `file`, creating its folder. The file is replaced at once, so a
     /// crash while writing leaves the previous registry.
     pub fn save(&self, file: &Path) -> io::Result<()> {
-        if let Some(folder) = file.parent() {
-            fs::create_dir_all(folder)?;
-        }
         let json = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        let mut partial = file.as_os_str().to_owned();
-        partial.push(".partial");
-        let partial = PathBuf::from(partial);
-        fs::write(&partial, json)?;
-        fs::rename(&partial, file)
+        write_at_once(file, &json)
     }
 
     /// What gikli remembers about the Project at `folder`, if it opened it before.
@@ -69,6 +62,19 @@ impl ProjectRegistry {
     pub fn remember(&mut self, folder: PathBuf, project: RememberedProject) {
         self.projects.insert(folder, project);
     }
+}
+
+/// Writes `contents` to `file`, creating its folder. The file is replaced at once, so a crash while
+/// writing leaves what it held before.
+pub(crate) fn write_at_once(file: &Path, contents: &[u8]) -> io::Result<()> {
+    if let Some(folder) = file.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    let mut partial = file.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    fs::write(&partial, contents)?;
+    fs::rename(&partial, file)
 }
 
 /// The folders below `folder` that hold a `.git` entry, so may be the roots of Repositories,

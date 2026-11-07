@@ -344,6 +344,26 @@ button:disabled {
   font-size: 1rem;
 }
 
+.change-group {
+  margin: 0 0 10px;
+}
+
+.change-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.change-group-name {
+  font-weight: 600;
+}
+
+.changelist-active {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
 .changes {
   list-style: none;
   margin: 0;

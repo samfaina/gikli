@@ -25,6 +25,7 @@ import {
   readChanges,
   removeRepository,
   runningOperations as runningOperationsOfCore,
+  setActiveChangelist,
   setChangeGrouping,
   setCloneSubmodulesRecursively,
   setDiffLocalSideEditable,
@@ -45,6 +46,7 @@ import {
   type ChangeNode,
   type ChangeSet,
   type ChangeStatus,
+  type Changelist,
   type CloneUrlForms,
   type ConflictKind,
   type Failure,
@@ -685,6 +687,14 @@ function repositoryView(repository: Repository): HTMLElement {
   );
   void showUnavailableFeatures(repository, features);
 
+  const setActive = async (list: Changelist): Promise<void> => {
+    try {
+      await setActiveChangelist(repository, list.id);
+      void refreshChanges();
+    } catch (error) {
+      changes.prepend(errorView(error));
+    }
+  };
   // One read at a time: a request while one runs reads once more when it ends, so requests from
   // the watcher and the button never pile up.
   let reading = false;
@@ -703,7 +713,7 @@ function repositoryView(repository: Repository): HTMLElement {
           const changeSet = await readChanges(repository);
           // The row the user was on stays theirs when the rows are drawn again.
           const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
-          changes.replaceChildren(changeList(changeSet));
+          changes.replaceChildren(changeList(changeSet, (list) => void setActive(list)));
           if (focused !== undefined) {
             focusChangeRow(changes, focused);
           }
@@ -771,14 +781,73 @@ function focusChangeRow(container: HTMLElement, path: string): void {
   }
 }
 
-function changeList(changeSet: ChangeSet): HTMLElement {
-  if (changeSet.changes.length === 0) {
-    return line("message", t("noChanges"));
+/** The Changelists of a Repository, each with its changes, then Unversioned Files and the ignored files when there are any. */
+function changeList(changeSet: ChangeSet, setActive: (list: Changelist) => void): HTMLElement {
+  const view = document.createElement("div");
+  const { repository, unversionedFiles, ignoredFiles } = changeSet;
+  for (const list of changeSet.changelists) {
+    view.append(changelistView(repository, list, setActive));
   }
-  return nodeList(changeSet.repository, changeSet.nodes, "");
+  if (changeSet.changes.length === 0) {
+    view.append(line("message", t("noChanges")));
+  }
+  if (unversionedFiles.nodes.length > 0) {
+    view.append(changeGroupView(repository, "unversioned-files", groupName(t("unversionedFiles")), unversionedFiles.nodes));
+  }
+  if (ignoredFiles.nodes.length > 0) {
+    view.append(changeGroupView(repository, "ignored-files", groupName(t("ignoredFiles")), ignoredFiles.nodes));
+  }
+  return view;
 }
 
-/** The rows of one folder of `repository`, whose path is `folder`, or of the whole view when `folder` is "". */
+/** A Changelist and its changes. Any other than the Active changelist offers to become it. */
+function changelistView(repository: Repository, list: Changelist, setActive: (list: Changelist) => void): HTMLElement {
+  const name = groupName(list.name);
+  name.dataset.testid = "changelist-name";
+  const header: HTMLElement[] = [name];
+  if (list.active) {
+    const active = document.createElement("span");
+    active.className = "changelist-active";
+    active.textContent = t("activeChangelist");
+    header.push(active);
+  } else {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.testid = "set-active-changelist";
+    button.textContent = t("setActiveChangelist");
+    button.addEventListener("click", () => setActive(list));
+    header.push(button);
+  }
+  const view = changeGroupView(repository, "changelist", header, list.group.nodes);
+  view.dataset.active = String(list.active);
+  return view;
+}
+
+function groupName(text: string): HTMLSpanElement {
+  const name = document.createElement("span");
+  name.className = "change-group-name";
+  name.textContent = text;
+  return name;
+}
+
+/** Changes the view shows together, under a `header`. */
+function changeGroupView(
+  repository: Repository,
+  testId: string,
+  header: HTMLElement | HTMLElement[],
+  nodes: ChangeNode[],
+): HTMLElement {
+  const view = document.createElement("section");
+  view.className = "change-group";
+  view.dataset.testid = testId;
+  const title = document.createElement("div");
+  title.className = "change-group-header";
+  title.append(...[header].flat());
+  view.append(title, nodeList(repository, nodes, ""));
+  return view;
+}
+
+/** The rows of one folder of `repository`, whose path is `folder`, or of a whole group when `folder` is "". */
 function nodeList(repository: Repository, nodes: ChangeNode[], folder: string): HTMLUListElement {
   const list = document.createElement("ul");
   list.className = "changes";
@@ -1404,6 +1473,14 @@ function describeFailure(failure: Failure): string {
       return t("failureLocalFileChanged", { path: failure.path });
     case "localFileNotSaved":
       return t("failureLocalFileNotSaved", { path: failure.path, message: failure.message });
+    case "changelistGone":
+      return t("failureChangelistGone");
+    case "changelistsUnreadable":
+      return t("failureChangelistsUnreadable", { file: failure.file, message: failure.message });
+    case "changelistsFromNewerGikli":
+      return t("failureChangelistsFromNewerGikli", { file: failure.file });
+    case "changelistsNotSaved":
+      return t("failureChangelistsNotSaved", { file: failure.file, message: failure.message });
     case "changesNotWatched":
       return t("failureChangesNotWatched", { folder: failure.folder, message: failure.message });
     case "cloneFailed":

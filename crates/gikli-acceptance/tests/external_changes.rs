@@ -125,6 +125,22 @@ fn reading_the_changes_is_not_announced_as_a_change() {
     assert_eq!(next_announcement(&events, &watched, SILENCE), None);
 }
 
+/// The command that changes the Active changelist returns the changes itself.
+#[test]
+fn setting_the_active_changelist_is_not_announced_as_a_change() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    let (gikli, watched, events) = watch(&sandbox, &repository);
+    let change_set = gikli.read_changes(&watched).expect("read changes");
+
+    gikli
+        .set_active_changelist(&watched, &change_set.changelists[0].id)
+        .expect("set the Active changelist");
+
+    assert_eq!(next_announcement(&events, &watched, SILENCE), None);
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
+}
+
 /// A linked worktree keeps its index and HEAD in a git directory outside its working tree.
 #[test]
 fn staging_a_file_from_a_terminal_in_a_linked_worktree_is_announced() {
