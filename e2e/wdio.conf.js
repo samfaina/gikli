@@ -5,12 +5,18 @@
 // WebDriver matching the WebView2 Runtime is downloaded on first run; on Linux, install
 // `webkit2gtk-driver` (`webkitgtk-webdriver` from Ubuntu 26.04 on).
 // tauri-driver does not support macOS.
+//
+// With GIKLI_E2E_WEBVIEW2_DEBUG_PORT set, the smoke test runs without tauri-driver; see where the
+// mode is chosen below.
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SevereServiceError } from "webdriverio";
+
+import { attachPort, respondsBefore, waitForDevTools } from "./attach.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const exe = process.platform === "win32" ? ".exe" : "";
@@ -23,7 +29,9 @@ const UNTRACKED_FILE = "smoke file.txt";
  * developer's git configuration.
  */
 function createRepository() {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gikli-e2e-")));
+  // The native realpath, as the app canonicalizes the folder it opens: on Windows it expands 8.3
+  // short names, such as RUNNER~1 in the runner's temporary folder, which the JavaScript one keeps.
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gikli-e2e-")));
   const gitconfig = path.join(sandbox, ".gitconfig");
   fs.writeFileSync(gitconfig, "[init]\n\tdefaultBranch = main\n");
   const repository = path.join(sandbox, "smoke repo");
@@ -124,23 +132,106 @@ function webView2Version() {
   throw new Error("The WebView2 Runtime is not installed; gikli needs it to run on Windows.");
 }
 
+/** The Edge WebDriver matching the WebView2 Runtime, downloaded on first use. */
+async function edgeDriver() {
+  const { download } = await import("edgedriver");
+  const version = webView2Version();
+  console.log(`WebView2 Runtime ${version}; using the Edge WebDriver for it.`);
+  // One folder per version: edgedriver reuses whatever driver its folder holds.
+  const cache = path.join(os.tmpdir(), "gikli-msedgedriver", version);
+  return download(version, cache);
+}
+
+/** Spawn options that send a child's output where the smoke test's goes. */
+const inheritOutput = { stdio: ["ignore", process.stdout, process.stderr] };
+
+/** Starts `command`, and resolves with it once it runs; rejects if it cannot start. */
+async function start(command, args, options) {
+  const child = spawn(command, args, { ...inheritOutput, ...options });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  return child;
+}
+
+/** Stops `child`, if it runs, and resolves once it has exited. */
+async function stop(child) {
+  if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    child.kill();
+    await exited;
+  }
+}
+
 const application = path.join(targetDirectory(), "debug", `gikli${exe}`);
+/** Where the WebDriver the session talks to listens: tauri-driver, or msedgedriver in attach mode. */
+const driverPort = 4444;
+/** The environment gikli runs in: it opens the smoke test's repository on startup. */
+function appEnvironment() {
+  return { ...process.env, GIKLI_PROJECT_FOLDER: process.env.GIKLI_E2E_REPOSITORY };
+}
+
+// The mode, chosen by GIKLI_E2E_WEBVIEW2_DEBUG_PORT alone. Without it, the smoke test goes through
+// tauri-driver, as a developer runs it on Windows and Linux. With it, the config launches gikli
+// itself and attaches msedgedriver to the DevTools port WebView2 opened ("attach mode").
+//
+// Attach mode exists for the GitHub-hosted Windows runner, where WebView2 ignores the WEBVIEW2_*
+// variables, so it never gets msedgedriver's --remote-debugging-port and tauri-driver's session
+// fails after minutes with "DevToolsActivePort file doesn't exist"; tauri-driver rewrites
+// ms:edgeOptions, so no debuggerAddress can go through it. There, a CI step opens a fixed port
+// with the AdditionalBrowserArguments policy for gikli.exe and names it in the variable. Nothing
+// here writes that policy: it is machine-wide and would leave the port open on a developer's
+// machine. See https://github.com/samfaina/gikli/issues/54.
+const debugPort = attachPort();
 let tauriDriver;
+let attached = { app: undefined, driver: undefined };
+
+/**
+ * Launches gikli, waits for WebView2's DevTools on {@link debugPort}, and starts msedgedriver on
+ * {@link driverPort}. Throws, having stopped what it started, if either does not come up.
+ */
+async function launchAttached() {
+  if (process.platform !== "win32") {
+    throw new SevereServiceError("GIKLI_E2E_WEBVIEW2_DEBUG_PORT is for Windows, where gikli runs on WebView2.");
+  }
+  try {
+    const driver = await edgeDriver();
+    attached.app = await start(application, [], { env: appEnvironment() });
+    await waitForDevTools(debugPort);
+    attached.driver = await start(driver, [`--port=${driverPort}`]);
+    if (!(await respondsBefore(`http://127.0.0.1:${driverPort}/status`, Date.now() + 30000))) {
+      throw new Error(`msedgedriver did not start on port ${driverPort} within 30 s.`);
+    }
+  } catch (error) {
+    await stopAttached();
+    throw new SevereServiceError(error.message);
+  }
+}
+
+/** Stops what {@link launchAttached} started, if anything. */
+async function stopAttached() {
+  await Promise.all([stop(attached.driver), stop(attached.app)]);
+  attached = { app: undefined, driver: undefined };
+}
 
 export const config = {
   runner: "local",
   specs: ["./smoke.e2e.js"],
   maxInstances: 1,
   hostname: "127.0.0.1",
-  port: 4444,
+  port: driverPort,
   capabilities: [
     {
       maxInstances: 1,
-      // tauri-driver speaks classic WebDriver only.
+      // tauri-driver speaks classic WebDriver only, and attach mode does too, so the specs run
+      // the same way in both modes.
       "wdio:enforceWebDriverClassic": true,
-      // The repository reaches the app through GIKLI_PROJECT_FOLDER (see beforeSession):
-      // WebView2's driver hands `args` to the webview, not to the app.
-      "tauri:options": { application },
+      ...(debugPort === undefined
+        ? // The repository reaches the app through GIKLI_PROJECT_FOLDER (see appEnvironment):
+          // WebView2's driver hands `args` to the webview, not to the app.
+          { "tauri:options": { application } }
+        : { browserName: "webview2", "ms:edgeOptions": { debuggerAddress: `127.0.0.1:${debugPort}` } }),
     },
   ],
   logLevel: "warn",
@@ -148,7 +239,10 @@ export const config = {
   reporters: ["spec"],
   mochaOpts: { ui: "bdd", timeout: 60000 },
 
-  onPrepare: () => {
+  // In attach mode the app and msedgedriver run here, in the launcher, because only an error
+  // thrown from onPrepare stops the run: one from beforeSession is logged and the session is
+  // attempted anyway.
+  onPrepare: async () => {
     if (process.platform === "darwin") {
       throw new Error("tauri-driver does not support macOS; run the smoke test on Windows or Linux.");
     }
@@ -158,24 +252,26 @@ export const config = {
       shell: true,
     });
     if (build.status !== 0) {
-      throw new Error("building gikli failed");
+      // In attach mode the run must stop here, or it would launch an app this build did not make.
+      throw new (debugPort === undefined ? Error : SevereServiceError)("building gikli failed");
+    }
+    if (debugPort !== undefined) {
+      await launchAttached();
     }
   },
 
   beforeSession: async () => {
+    if (debugPort !== undefined) {
+      return;
+    }
     const args = [];
     if (process.platform === "win32") {
-      const { download } = await import("edgedriver");
-      const version = webView2Version();
-      console.log(`WebView2 Runtime ${version}; using the Edge WebDriver for it.`);
-      // One folder per version: edgedriver reuses whatever driver its folder holds.
-      const cache = path.join(os.tmpdir(), "gikli-msedgedriver", version);
-      args.push("--native-driver", await download(version, cache));
+      args.push("--native-driver", await edgeDriver());
     }
     const driver = path.join(os.homedir(), ".cargo", "bin", `tauri-driver${exe}`);
     tauriDriver = spawn(fs.existsSync(driver) ? driver : "tauri-driver", args, {
-      stdio: ["ignore", process.stdout, process.stderr],
-      env: { ...process.env, GIKLI_PROJECT_FOLDER: process.env.GIKLI_E2E_REPOSITORY },
+      ...inheritOutput,
+      env: appEnvironment(),
     });
     await new Promise((resolve) => setTimeout(resolve, 1000));
   },
@@ -184,7 +280,8 @@ export const config = {
     tauriDriver?.kill();
   },
 
-  onComplete: () => {
+  onComplete: async () => {
+    await stopAttached();
     fs.rmSync(process.env.GIKLI_E2E_SANDBOX, { recursive: true, force: true });
   },
 };
