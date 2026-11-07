@@ -150,6 +150,37 @@ button:disabled {
   flex: none;
 }
 
+/* The choice between the HTTPS and SSH forms of the URL to clone. */
+.url-forms {
+  align-items: center;
+  margin: 8px 0;
+  padding: 0;
+  border: 0;
+}
+
+.url-forms legend {
+  float: left;
+  margin-right: 8px;
+  padding: 0;
+  font-weight: 600;
+}
+
+.settings .url-forms label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: normal;
+}
+
+.settings .url-forms input {
+  flex: none;
+}
+
+.clone-actions {
+  margin-top: 8px;
+}
+
 /* What git or ssh asks the user: the operation waits for the answer. */
 .prompts {
   display: flex;

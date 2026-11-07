@@ -9,6 +9,8 @@ import {
   capabilities,
   checkGit,
   clearOperationLog,
+  cloneRepository,
+  cloneUrlForms,
   dismissNotification,
   createRepository,
   formatVersion,
@@ -23,6 +25,7 @@ import {
   removeRepository,
   runningOperations as runningOperationsOfCore,
   setChangeGrouping,
+  setCloneSubmodulesRecursively,
   setGitPath,
   setOperationLogSoftWrap,
   setShowIgnoredFiles,
@@ -39,6 +42,7 @@ import {
   type ChangeNode,
   type ChangeSet,
   type ChangeStatus,
+  type CloneUrlForms,
   type ConflictKind,
   type Failure,
   type GitCheck,
@@ -61,6 +65,15 @@ import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
 const newRepositoryButton = element<HTMLButtonElement>("new-repository");
+const cloneButton = element<HTMLButtonElement>("toggle-clone");
+const clonePanel = element<HTMLFormElement>("clone");
+const cloneUrlInput = element<HTMLInputElement>("clone-url");
+const cloneUrlHttpsInput = element<HTMLInputElement>("clone-url-https");
+const cloneUrlSshInput = element<HTMLInputElement>("clone-url-ssh");
+const cloneFolderInput = element<HTMLInputElement>("clone-folder");
+const browseCloneFolderButton = element<HTMLButtonElement>("browse-clone-folder");
+const startCloneButton = element<HTMLButtonElement>("start-clone");
+const cloneResult = element<HTMLElement>("clone-result");
 const gitStatus = element<HTMLElement>("git-status");
 const projectView = element<HTMLElement>("project");
 const settingsButton = element<HTMLButtonElement>("toggle-settings");
@@ -78,12 +91,24 @@ const notificationsView = element<HTMLElement>("notifications");
 const operationsView = element<HTMLElement>("operations");
 const promptsView = element<HTMLElement>("prompts");
 const useCredentialHelperInput = element<HTMLInputElement>("use-credential-helper");
+const cloneSubmodulesInput = element<HTMLInputElement>("clone-submodules-recursively");
 
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
 openButton.disabled = true;
 newRepositoryButton.textContent = t("newRepository");
 newRepositoryButton.disabled = true;
+cloneButton.textContent = t("cloneRepository");
+cloneButton.disabled = true;
+clonePanel.setAttribute("aria-label", t("cloneTitle"));
+element<HTMLElement>("clone-url-label").textContent = t("cloneUrlLabel");
+element<HTMLElement>("clone-url-form-label").textContent = t("cloneUrlFormLabel");
+element<HTMLElement>("clone-url-https-label").textContent = t("cloneUrlFormHttps");
+element<HTMLElement>("clone-url-ssh-label").textContent = t("cloneUrlFormSsh");
+element<HTMLElement>("clone-folder-label").textContent = t("cloneFolderLabel");
+element<HTMLElement>("clone-folder-hint").textContent = t("cloneFolderHint");
+browseCloneFolderButton.textContent = t("cloneFolderBrowse");
+startCloneButton.textContent = t("cloneStart");
 gitStatus.textContent = t("checkingGit");
 showMessage(t("noProject"));
 settingsButton.textContent = t("settings");
@@ -100,18 +125,11 @@ notificationsView.setAttribute("aria-label", t("notificationsTitle"));
 promptsView.setAttribute("aria-label", t("promptsTitle"));
 element<HTMLElement>("use-credential-helper-label").textContent = t("useCredentialHelper");
 element<HTMLElement>("use-credential-helper-hint").textContent = t("useCredentialHelperHint");
+element<HTMLElement>("clone-submodules-recursively-label").textContent = t("cloneSubmodulesRecursively");
 
-useCredentialHelperInput.addEventListener("change", async () => {
-  useCredentialHelperInput.disabled = true;
-  try {
-    useCredentialHelperInput.checked = (await setUseCredentialHelper(useCredentialHelperInput.checked)).useCredentialHelper;
-  } catch (error) {
-    useCredentialHelperInput.checked = !useCredentialHelperInput.checked;
-    report(error);
-  } finally {
-    useCredentialHelperInput.disabled = false;
-  }
-});
+
+saveOnChange(useCredentialHelperInput, async (checked) => (await setUseCredentialHelper(checked)).useCredentialHelper);
+saveOnChange(cloneSubmodulesInput, async (checked) => (await setCloneSubmodulesRecursively(checked)).cloneSubmodulesRecursively);
 
 operationLogButton.addEventListener("click", () => {
   const opening = operationLogPanel.hidden;
@@ -143,6 +161,7 @@ settingsButton.addEventListener("click", async () => {
     const current = await settings();
     gitPathInput.value = current.gitPath ?? "";
     useCredentialHelperInput.checked = current.useCredentialHelper;
+    cloneSubmodulesInput.checked = current.cloneSubmodulesRecursively;
     gitTestResult.textContent = "";
   }
   settingsPanel.hidden = !opening;
@@ -213,7 +232,97 @@ newRepositoryButton.addEventListener("click", async () => {
   }
 });
 
+cloneButton.addEventListener("click", () => {
+  const opening = clonePanel.hidden;
+  clonePanel.hidden = !opening;
+  cloneButton.setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    cloneUrlInput.focus();
+  }
+});
+
+cloneUrlInput.addEventListener("input", () => void updateCloneUrlChoice());
+cloneFolderInput.addEventListener("input", updateStartClone);
+cloneUrlHttpsInput.addEventListener("change", () => chooseCloneUrlForm("https"));
+cloneUrlSshInput.addEventListener("change", () => chooseCloneUrlForm("ssh"));
+
+browseCloneFolderButton.addEventListener("click", async () => {
+  const folder = await open({ directory: true, title: t("cloneFolderDialogTitle") });
+  if (typeof folder === "string") {
+    cloneFolderInput.value = folder;
+    updateStartClone();
+  }
+});
+
+clonePanel.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  cloning = true;
+  updateStartClone();
+  cloneResult.replaceChildren();
+  try {
+    const project = await cloneRepository(cloneUrlInput.value.trim(), cloneFolderInput.value.trim());
+    clonePanel.reset();
+    clonePanel.hidden = true;
+    cloneButton.setAttribute("aria-expanded", "false");
+    await updateCloneUrlChoice();
+    await showInItsWindow(project);
+  } catch (error) {
+    cloneResult.replaceChildren(errorView(error));
+  } finally {
+    cloning = false;
+    updateStartClone();
+  }
+});
+
 void start();
+
+/** Saves a setting when the user changes `input`, with what `save` says was saved. When it fails, `input` goes back. */
+function saveOnChange(input: HTMLInputElement, save: (checked: boolean) => Promise<boolean>): void {
+  input.addEventListener("change", async () => {
+    input.disabled = true;
+    try {
+      input.checked = await save(input.checked);
+    } catch (error) {
+      input.checked = !input.checked;
+      report(error);
+    } finally {
+      input.disabled = false;
+    }
+  });
+}
+
+/** Whether this window is cloning, which it does one at a time. */
+let cloning = false;
+
+/** The forms of the URL in the URL field, once the core has given them. */
+let shownCloneUrlForms: CloneUrlForms | null = null;
+
+/** Offers the choice between HTTPS and SSH when the URL has those forms, with the one it is in chosen. */
+async function updateCloneUrlChoice(): Promise<void> {
+  updateStartClone();
+  const url = cloneUrlInput.value.trim();
+  const forms = url === "" ? null : await cloneUrlForms(url);
+  // The user typed on while the core answered: the answer to what they typed last counts.
+  if (url !== cloneUrlInput.value.trim()) {
+    return;
+  }
+  shownCloneUrlForms = forms;
+  cloneUrlHttpsInput.disabled = cloneUrlSshInput.disabled = forms === null;
+  cloneUrlHttpsInput.checked = forms?.https === url;
+  cloneUrlSshInput.checked = forms?.ssh === url;
+}
+
+/** Puts the chosen form of the URL in the URL field. */
+function chooseCloneUrlForm(form: keyof CloneUrlForms): void {
+  if (shownCloneUrlForms !== null) {
+    cloneUrlInput.value = shownCloneUrlForms[form];
+  }
+}
+
+/** A clone takes a URL and a folder, and can start once nothing else is cloning here. */
+function updateStartClone(): void {
+  startCloneButton.disabled = cloning || cloneUrlInput.value.trim() === "" || cloneFolderInput.value.trim() === "";
+}
 
 /** The folder of the Project this window shows, once it shows one. */
 let shownFolder: string | null = null;
@@ -314,6 +423,7 @@ async function start(): Promise<void> {
   // any other folder reports why it cannot open.
   openButton.disabled = false;
   newRepositoryButton.disabled = false;
+  cloneButton.disabled = false;
   const folder = await startupFolder();
   if (folder !== null) {
     await openFolder(folder);
@@ -355,6 +465,11 @@ async function openFolder(folder: string): Promise<void> {
     report(error);
     return;
   }
+  await showInItsWindow(project);
+}
+
+/** Shows `project` in this window or in a window of its own. */
+async function showInItsWindow(project: Project): Promise<void> {
   try {
     const shown = await windowForProject(project.folder);
     if (shown.kind === "here") {
@@ -1116,6 +1231,16 @@ function describeExplainedMessage(message: ExplainedMessage): string {
       return t("failureHostKeyUnknown");
     case "hostKeyChanged":
       return t("failureHostKeyChanged");
+    case "serverUnreachable":
+      return t("failureServerUnreachable");
+    case "cloneTargetNotEmpty":
+      return t("failureCloneTargetNotEmpty", { folder: message.folder });
+    case "submodulesNotCloned": {
+      const notCloned = t("failureSubmodulesNotCloned", { folder: message.folder });
+      return message.cause === null
+        ? notCloned
+        : t("failureSubmodulesNotClonedCause", { message: notCloned, cause: describeExplainedMessage(message.cause) });
+    }
   }
 }
 
@@ -1128,6 +1253,9 @@ const NEXT_STEPS: Record<NextStep, StringKey> = {
   checkCredentials: "nextStepCheckCredentials",
   verifyHostKey: "nextStepVerifyHostKey",
   checkChangedHostKey: "nextStepCheckChangedHostKey",
+  checkConnection: "nextStepCheckConnection",
+  chooseEmptyFolder: "nextStepChooseEmptyFolder",
+  useOrDeleteClone: "nextStepUseOrDeleteClone",
 };
 
 const FAILURE_ACTION_LABELS: Record<FailureAction["action"], StringKey> = {

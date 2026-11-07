@@ -228,6 +228,141 @@ fn a_clone_cancelled_before_any_hook_runs_leaves_nothing_behind() {
     );
 }
 
+/// A bare remote with a submodule, and the file that exists once a clone holds on the transfer of
+/// the submodule. Only that transfer holds: the Repository around it comes through.
+fn remote_with_a_held_submodule(sandbox: &Sandbox) -> (TestRepository, PathBuf) {
+    sandbox.allow_local_submodules();
+    let submodule = sandbox.bare_remote("submodule.git");
+    let work = sandbox.repository("submodule-work");
+    work.write("inside.txt", "draft\n");
+    work.commit_all("First commit");
+    work.add_remote("origin", &submodule);
+    work.git(&["push", "--quiet", "origin", "main"]);
+    let remote = sandbox.bare_remote("remote.git");
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "draft\n");
+    let url = file_url(submodule.root());
+    work.git(&["submodule", "add", "--quiet", &url, "inside"]);
+    work.commit_all("First commit");
+    work.add_remote("origin", &remote);
+    work.git(&["push", "--quiet", "origin", "main"]);
+
+    let holding = sandbox.root().join("submodule-is-held");
+    let script = sandbox.root().join("hold-submodule.sh");
+    fs::write(
+        &script,
+        format!(
+            "case \"$PWD\" in */submodule.git)\n{}\n;; esac\nexec \"$@\"\n",
+            holds_after_creating(&holding)
+        ),
+    )
+    .expect("write the script");
+    sandbox.configure(&format!(
+        "[uploadpack]\n\tpackObjectsHook = sh '{}'\n",
+        as_git_writes_it(&script)
+    ));
+    (remote, holding)
+}
+
+/// Clones `remote`, cancels once `holding` exists, and returns what the clone returned.
+fn cancel_a_clone_held_at(
+    gikli: &Gikli,
+    remote: &TestRepository,
+    holding: &Path,
+    target: &Path,
+) -> Result<Project, Failure> {
+    let url = file_url(remote.root());
+    std::thread::scope(|scope| {
+        let clone = scope.spawn(|| gikli.clone_repository(&url, target));
+        wait_for_file(holding);
+        gikli.cancel_operation(the_running_operation(gikli).id);
+        result_of(clone)
+    })
+}
+
+#[test]
+fn a_clone_cancelled_while_it_clones_submodules_leaves_nothing_behind() {
+    let sandbox = Sandbox::new();
+    let (remote, holding) = remote_with_a_held_submodule(&sandbox);
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli();
+
+    let result = cancel_a_clone_held_at(&gikli, &remote, &holding, &target);
+
+    assert_eq!(
+        result,
+        Err(Failure::OperationCancelled { left_behind: None })
+    );
+    assert!(!target.exists(), "only the clone had created the folder");
+    assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+}
+
+/// The hook that ran after the checkout does not make the clone complete: its submodules are not
+/// there yet.
+#[test]
+fn a_clone_cancelled_while_it_clones_submodules_after_a_hook_leaves_nothing_behind() {
+    let sandbox = Sandbox::new();
+    let (remote, holding) = remote_with_a_held_submodule(&sandbox);
+    sandbox.hook("post-checkout", "exit 0");
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli();
+
+    let result = cancel_a_clone_held_at(&gikli, &remote, &holding, &target);
+
+    assert_eq!(
+        result,
+        Err(Failure::OperationCancelled { left_behind: None })
+    );
+    assert!(!target.exists(), "only the clone had created the folder");
+    assert_eq!(gikli.notifications(), vec![]);
+}
+
+/// Creates the returned file and blocks, in the hook `post-checkout` of the sandbox.
+fn block_in_post_checkout(sandbox: &Sandbox) -> PathBuf {
+    let holding = sandbox.root().join("hook-is-held");
+    sandbox.hook("post-checkout", &holds_after_creating(&holding));
+    holding
+}
+
+#[test]
+fn a_clone_cancelled_in_a_hook_before_its_submodules_leaves_nothing_behind() {
+    let sandbox = Sandbox::new();
+    let (remote, _) = remote_with_a_held_submodule(&sandbox);
+    let holding = block_in_post_checkout(&sandbox);
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli();
+
+    let result = cancel_a_clone_held_at(&gikli, &remote, &holding, &target);
+
+    assert_eq!(
+        result,
+        Err(Failure::OperationCancelled { left_behind: None })
+    );
+    assert!(!target.exists(), "only the clone had created the folder");
+}
+
+#[test]
+fn with_submodules_left_out_a_clone_cancelled_in_a_hook_is_complete() {
+    let sandbox = Sandbox::new();
+    let (remote, _) = remote_with_a_held_submodule(&sandbox);
+    let holding = block_in_post_checkout(&sandbox);
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli();
+    gikli
+        .set_clone_submodules_recursively(false)
+        .expect("change the setting");
+
+    let result = cancel_a_clone_held_at(&gikli, &remote, &holding, &target);
+
+    result.expect("the clone is complete, so it opens");
+    assert_eq!(
+        sandbox
+            .existing_repository(&target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
+}
+
 #[test]
 fn a_folder_that_existed_before_a_cancelled_clone_keeps_existing_empty() {
     let sandbox = Sandbox::new();
