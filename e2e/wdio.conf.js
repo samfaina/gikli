@@ -29,7 +29,9 @@ const UNTRACKED_FILE = "smoke file.txt";
  * developer's git configuration.
  */
 function createRepository() {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gikli-e2e-")));
+  // The native realpath, as the app canonicalizes the folder it opens: on Windows it expands 8.3
+  // short names, such as RUNNER~1 in the runner's temporary folder, which the JavaScript one keeps.
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gikli-e2e-")));
   const gitconfig = path.join(sandbox, ".gitconfig");
   fs.writeFileSync(gitconfig, "[init]\n\tdefaultBranch = main\n");
   const repository = path.join(sandbox, "smoke repo");
