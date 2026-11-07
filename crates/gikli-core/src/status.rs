@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::Repository;
+use crate::changelists::Changelists;
 use crate::git::path_from_bytes;
 
 /// The uncommitted changes of one Repository.
@@ -14,6 +15,32 @@ use crate::git::path_from_bytes;
 #[serde(rename_all = "camelCase")]
 pub struct ChangeSet {
     pub repository: Repository,
+    /// One entry per changed file, ordered by path.
+    pub changes: Vec<Change>,
+    /// The Changelists of the Repository, each with its changes. Exactly one is active.
+    pub changelists: Vec<Changelist>,
+    /// The new files git does not track yet.
+    pub unversioned_files: ChangeGroup,
+    /// The files git ignores, listed only when the user turns ignored files on.
+    pub ignored_files: ChangeGroup,
+}
+
+/// A named group of uncommitted changes that belongs to gikli and that git does not know about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Changelist {
+    /// What identifies the Changelist, whatever its name.
+    pub id: String,
+    pub name: String,
+    /// Whether this is the Active changelist, the one new changes go into.
+    pub active: bool,
+    pub group: ChangeGroup,
+}
+
+/// Changes that the changes view shows together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeGroup {
     /// One entry per changed file, ordered by path.
     pub changes: Vec<Change>,
     /// The changes as the view shows them, grouped as the user chose.
@@ -51,13 +78,9 @@ pub enum ChangeNode {
     File(Change),
 }
 
-impl ChangeSet {
-    /// The `changes` of `repository`, with their rows arranged by `grouping`.
-    pub(crate) fn new(
-        repository: Repository,
-        changes: Vec<Change>,
-        grouping: ChangeGrouping,
-    ) -> Self {
+impl ChangeGroup {
+    /// The `changes`, with their rows arranged by `grouping`.
+    fn new(changes: Vec<Change>, grouping: ChangeGrouping) -> Self {
         let nodes = match grouping {
             ChangeGrouping::Flat => changes.iter().cloned().map(ChangeNode::File).collect(),
             ChangeGrouping::Folder => {
@@ -68,15 +91,50 @@ impl ChangeSet {
                 root.into_nodes(Path::new(""))
             }
         };
-        Self {
-            repository,
-            changes,
-            nodes,
-        }
+        Self { changes, nodes }
     }
 }
 
 impl ChangeSet {
+    /// The `changes` of `repository`, sorted into `lists` and arranged by `grouping`.
+    pub(crate) fn new(
+        repository: Repository,
+        changes: Vec<Change>,
+        lists: &Changelists,
+        grouping: ChangeGrouping,
+    ) -> Self {
+        let mut in_lists = vec![Vec::new(); lists.lists().len()];
+        let mut unversioned = Vec::new();
+        let mut ignored = Vec::new();
+        for change in &changes {
+            if change.status.is_in_changelists() {
+                in_lists[lists.place_of(&change.path)].push(change.clone());
+            } else if change.status == ChangeStatus::Untracked {
+                unversioned.push(change.clone());
+            } else {
+                ignored.push(change.clone());
+            }
+        }
+        let changelists = lists
+            .lists()
+            .iter()
+            .zip(in_lists)
+            .map(|(list, changes)| Changelist {
+                id: list.id.clone(),
+                name: list.name.clone(),
+                active: list.id == lists.active(),
+                group: ChangeGroup::new(changes, grouping),
+            })
+            .collect();
+        Self {
+            repository,
+            changes,
+            changelists,
+            unversioned_files: ChangeGroup::new(unversioned, grouping),
+            ignored_files: ChangeGroup::new(ignored, grouping),
+        }
+    }
+
     /// The path the file at `path` was moved or copied from, if it was.
     pub(crate) fn original_path_of(&self, path: &Path) -> Option<PathBuf> {
         self.changes
@@ -86,20 +144,22 @@ impl ChangeSet {
     }
 
     /// The files before and after `path` in the changes view when arranged by `grouping`, leaving
-    /// out ignored files. A file that is not a change keeps the place it would have as one, as the
-    /// user can still be looking at it when it stops being one.
+    /// out ignored files. A file that is not a change takes the place it would have as a change in
+    /// the Active changelist, as the user can still be looking at it when it stops being one.
     pub(crate) fn neighbors_of(
         &self,
         path: &Path,
         grouping: ChangeGrouping,
     ) -> (Option<PathBuf>, Option<PathBuf>) {
-        let mut changes: Vec<Change> = self
-            .changes
+        let mut groups: Vec<Vec<Change>> = self
+            .changelists
             .iter()
-            .filter(|change| change.status != ChangeStatus::Ignored)
-            .cloned()
+            .map(|list| list.group.changes.clone())
             .collect();
-        if !changes.iter().any(|change| change.path == path) {
+        groups.push(self.unversioned_files.changes.clone());
+        let is_a_change = groups.iter().flatten().any(|change| change.path == path);
+        let active = self.changelists.iter().position(|list| list.active);
+        if !is_a_change && let Some(changes) = active.map(|active| &mut groups[active]) {
             changes.push(Change {
                 path: path.to_path_buf(),
                 status: ChangeStatus::Modified,
@@ -107,21 +167,19 @@ impl ChangeSet {
                 conflict: None,
                 submodule: None,
             });
+            changes.sort_by(|left, right| left.path.cmp(&right.path));
         }
-        changes.sort_by(|left, right| left.path.cmp(&right.path));
-        let arranged = Self::new(self.repository.clone(), changes, grouping);
         let mut files = Vec::new();
-        for node in &arranged.nodes {
-            node.collect_files(&mut files);
+        for changes in groups {
+            for node in ChangeGroup::new(changes, grouping).nodes {
+                node.collect_files(&mut files);
+            }
         }
-        let Some(place) = files.iter().position(|file| *file == path) else {
+        let Some(place) = files.iter().position(|file| file == path) else {
             return (None, None);
         };
         let before = place.checked_sub(1).and_then(|before| files.get(before));
-        (
-            before.map(|file| file.to_path_buf()),
-            files.get(place + 1).map(|file| file.to_path_buf()),
-        )
+        (before.cloned(), files.get(place + 1).cloned())
     }
 }
 
@@ -172,14 +230,14 @@ impl FolderContents {
 
 impl ChangeNode {
     /// Adds the paths of the files in this row to `files`, in the order the view shows them.
-    fn collect_files<'a>(&'a self, files: &mut Vec<&'a Path>) {
+    fn collect_files(&self, files: &mut Vec<PathBuf>) {
         match self {
             Self::Folder { children, .. } => {
                 for child in children {
                     child.collect_files(files);
                 }
             }
-            Self::File(change) => files.push(&change.path),
+            Self::File(change) => files.push(change.path.clone()),
         }
     }
 
@@ -278,6 +336,14 @@ pub enum ChangeStatus {
     Conflicted,
 }
 
+impl ChangeStatus {
+    /// Whether a file with this status belongs to a Changelist. New files are in Unversioned Files
+    /// until they are added, and ignored files are no changes.
+    pub(crate) fn is_in_changelists(self) -> bool {
+        !matches!(self, Self::Untracked | Self::Ignored)
+    }
+}
+
 /// What each side of a conflict did to the file. "Us" is the branch the operation runs on and
 /// "them" the changes it brings in, as git names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -331,6 +397,9 @@ pub(crate) fn status_args(show_ignored: bool) -> Vec<&'static str> {
         "-z",
         "--untracked-files=all",
         "--find-renames",
+        // For the commit HEAD is on. Counting commits against the upstream can take long.
+        "--branch",
+        "--no-ahead-behind",
     ];
     if show_ignored {
         args.push("--ignored=matching");
@@ -338,8 +407,32 @@ pub(crate) fn status_args(show_ignored: bool) -> Vec<&'static str> {
     args
 }
 
-/// Reads the output of `git` [`status_args`].
-pub(crate) fn parse(output: &[u8]) -> Vec<Change> {
+/// What git reports about the working tree of a Repository, in one read.
+pub(crate) struct Status {
+    pub changes: Vec<Change>,
+    /// The commit HEAD is on, or None when it is on no commit yet.
+    pub head: Option<String>,
+}
+
+impl Status {
+    /// Reads the output of `git` [`status_args`].
+    pub fn parse(output: &[u8]) -> Self {
+        Self {
+            changes: parse_changes(output),
+            head: parse_head(output),
+        }
+    }
+}
+
+fn parse_head(output: &[u8]) -> Option<String> {
+    output
+        .split(|byte| *byte == 0)
+        .find_map(|record| record.strip_prefix(b"# branch.oid "))
+        .filter(|oid| *oid != b"(initial)")
+        .map(|oid| String::from_utf8_lossy(oid).into_owned())
+}
+
+fn parse_changes(output: &[u8]) -> Vec<Change> {
     let mut records = output.split(|byte| *byte == 0);
     let mut changes = Vec::new();
     while let Some(record) = records.next() {

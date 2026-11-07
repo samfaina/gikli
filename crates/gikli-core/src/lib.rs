@@ -4,6 +4,7 @@
 //! and the events it listens to. The UI and the tests use this same interface.
 
 mod capability;
+mod changelists;
 mod clone_url;
 mod diff;
 mod events;
@@ -47,11 +48,13 @@ pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
 pub use settings::Settings;
 pub use status::{
-    Change, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, ConflictKind, SubmoduleState,
+    Change, ChangeGroup, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, Changelist,
+    ConflictKind, SubmoduleState,
 };
 pub use version::GitVersion;
 pub use window::ProjectWindow;
 
+use changelists::{ChangelistStore, Changelists};
 use events::EventBus;
 use git::{GitProgram, GitRunner, Invocation};
 use notifications::Notifications;
@@ -72,6 +75,9 @@ pub struct Gikli {
     projects_file: PathBuf,
     /// The Repositories registered in each Project gikli opened.
     projects: Mutex<ProjectRegistry>,
+    /// Held while the Changelists of a Repository are read, changed and saved, so one change does
+    /// not write over another.
+    changelists: Mutex<()>,
     /// The Project each open window shows.
     windows: Mutex<ProjectWindows>,
     /// The result of looking for git, once gikli has looked.
@@ -309,6 +315,35 @@ pub enum Failure {
         path: PathBuf,
         message: String,
     },
+    /// The Changelist is gone, for example because another window deleted it.
+    ChangelistGone {
+        id: String,
+    },
+    /// gikli could not read the Changelists in `file`, and left it as it is.
+    #[serde(rename_all = "camelCase")]
+    ChangelistsUnreadable {
+        file: PathBuf,
+        message: String,
+    },
+    /// The Changelists in `file` have no Active changelist, so new changes would have nowhere to go.
+    /// gikli left the file as it is.
+    #[serde(rename_all = "camelCase")]
+    ActiveChangelistMissing {
+        file: PathBuf,
+    },
+    /// A newer gikli saved the Changelists in `file`, in a `version` of the format this one does not
+    /// know, so it left it as it is.
+    #[serde(rename_all = "camelCase")]
+    ChangelistsFromNewerGikli {
+        file: PathBuf,
+        version: u32,
+    },
+    /// The Changelists could not be written to `file`, so they were not changed.
+    #[serde(rename_all = "camelCase")]
+    ChangelistsNotSaved {
+        file: PathBuf,
+        message: String,
+    },
     /// gikli could not watch the Repository at `folder` for changes made outside it. Its changes
     /// still refresh on request.
     #[serde(rename_all = "camelCase")]
@@ -331,6 +366,7 @@ impl Gikli {
             settings_file,
             projects: Mutex::new(ProjectRegistry::load(&projects_file)),
             projects_file,
+            changelists: Mutex::default(),
             windows: Mutex::default(),
             git: Mutex::default(),
             wsl_git: Mutex::default(),
@@ -915,8 +951,32 @@ impl Gikli {
         Ok(())
     }
 
-    /// Reads the uncommitted changes of `repository`. Reading again refreshes them.
+    /// Reads the uncommitted changes of `repository`, sorted into its Changelists, which follow
+    /// what the read finds. Reading again refreshes them.
     pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
+        self.read_changes_with_choice(repository, |_| Ok(()))
+    }
+
+    /// Makes the Changelist `id` of `repository` the Active changelist, the one new changes go into
+    /// from here on, and returns the changes after that. A change made before this stays in the
+    /// Active changelist of its time, even when gikli had not read it yet.
+    pub fn set_active_changelist(
+        &self,
+        repository: &Repository,
+        id: &str,
+    ) -> Result<ChangeSet, Failure> {
+        self.read_changes_with_choice(repository, |lists| lists.set_active(id))
+    }
+
+    /// Reads the changes of `repository`, makes its Changelists follow them, and applies `choice`,
+    /// something the user chose. When a choice cannot be saved, this fails and nothing changes.
+    /// What the read found alone is worked out again on the next read, so it does not stop the user
+    /// seeing their changes when it cannot be saved.
+    fn read_changes_with_choice(
+        &self,
+        repository: &Repository,
+        choice: impl FnOnce(&mut Changelists) -> Result<(), Failure>,
+    ) -> Result<ChangeSet, Failure> {
         let runner = self.runner(&repository.root)?;
         let settings = self.settings();
         let invocation = runner
@@ -935,9 +995,33 @@ impl Gikli {
                 },
             ));
         }
+        let status = status::Status::parse(&invocation.stdout);
+        let git_dir = runner
+            .git_dir(&repository.root)
+            .map_err(git_failed_to_start)?
+            .ok_or_else(|| Failure::ChangesUnreadable {
+                folder: repository.root.clone(),
+            })?;
+        let store = ChangelistStore::in_git_dir(&git_dir);
+        let lists = {
+            let _only_one_at_a_time = lock(&self.changelists);
+            let found = store.load()?;
+            let mut followed = found.clone();
+            followed.follow(&status, &runner, &repository.root);
+            let mut chosen = followed.clone();
+            choice(&mut chosen)?;
+            if chosen != found {
+                let saved = store.save(&chosen);
+                if chosen != followed {
+                    saved.map_err(|error| store.not_saved(&error))?;
+                }
+            }
+            chosen
+        };
         Ok(ChangeSet::new(
             repository.clone(),
-            status::parse(&invocation.stdout),
+            status.changes,
+            &lists,
             settings.change_grouping,
         ))
     }

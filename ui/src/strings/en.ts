@@ -31,6 +31,10 @@ export const en = {
   refreshChanges: "Refresh",
   readingChanges: "Reading changes…",
   noChanges: "No changes.",
+  unversionedFiles: "Unversioned Files",
+  ignoredFiles: "Ignored Files",
+  activeChangelist: "active",
+  setActiveChangelist: "Set active",
   statusModified: "Modified",
   statusAdded: "Added",
   statusDeleted: "Deleted",
@@ -93,6 +97,14 @@ export const en = {
   failureNotInRepository: "{folder} is not inside a git repository.",
   failureChangesUnreadable:
     "git could not read the changes in {folder}. Check that it is still a git repository, then refresh.",
+  failureChangelistGone: "That Changelist no longer exists. Refresh to see the ones that do.",
+  failureChangelistsUnreadable:
+    "gikli cannot read the Changelists in {file} ({message}) and left the file as it is. Fix it, or move it away to start again with one Changelist.",
+  failureActiveChangelistMissing:
+    "The Changelists in {file} have no Active changelist, and gikli left the file as it is. Fix it, or move it away to start again with one Changelist.",
+  failureChangelistsFromNewerGikli:
+    "A newer gikli saved the Changelists in {file}, so this one left the file as it is. Update gikli to work with this Repository.",
+  failureChangelistsNotSaved: "gikli could not save the Changelists to {file} ({message}), so nothing changed.",
   failureChangesNotWatched:
     "gikli cannot watch {folder} for changes made outside it ({message}). Use Refresh to see them.",
   failureDiffUnreadable: "git could not compare {path} with HEAD. The operation log shows git's output.",

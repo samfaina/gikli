@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TestRepository, file_url};
+use gikli_acceptance::{Sandbox, TWO_CHANGELISTS, TestRepository, file_url};
 use gikli_core::{
     ChangeGrouping, DiffContent, Difference, Failure, FileDiff, Gikli, LineRange, LocalReadOnly,
     Repository, TextDiff, UnchangedRegion,
@@ -854,6 +854,41 @@ fn a_setting_keeps_the_review_in_the_file_after_its_last_difference() {
     assert_eq!(
         repository.status_by_git(),
         vec![" M a.txt", " M b/c.txt", " M z.txt"]
+    );
+}
+
+/// The Changelists come first, in their order, then Unversioned Files.
+#[test]
+fn previous_and_next_file_go_through_the_changelists_and_then_unversioned_files() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    for path in ["a.txt", "z.txt"] {
+        repository.write(path, "one\n");
+    }
+    repository.commit_all("Initial commit");
+    repository.store_changelists(TWO_CHANGELISTS);
+    repository.write("z.txt", "two\n");
+    let gikli = sandbox.gikli();
+    let repository_opened = opened(&gikli, &repository);
+    gikli
+        .set_active_changelist(&repository_opened, "feature")
+        .expect("set the Active changelist");
+    repository.write("a.txt", "two\n");
+    repository.write("new.txt", "new\n");
+
+    let first = read_diff(&gikli, &repository, "z.txt");
+    let middle = read_diff(&gikli, &repository, "a.txt");
+    let last = read_diff(&gikli, &repository, "new.txt");
+
+    assert_eq!(first.previous_file, None);
+    assert_eq!(first.next_file, Some(PathBuf::from("a.txt")));
+    assert_eq!(middle.previous_file, Some(PathBuf::from("z.txt")));
+    assert_eq!(middle.next_file, Some(PathBuf::from("new.txt")));
+    assert_eq!(last.previous_file, Some(PathBuf::from("a.txt")));
+    assert_eq!(last.next_file, None);
+    assert_eq!(
+        repository.status_by_git(),
+        vec![" M a.txt", " M z.txt", "?? new.txt"]
     );
 }
 

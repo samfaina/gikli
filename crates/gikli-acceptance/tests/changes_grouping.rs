@@ -41,6 +41,8 @@ fn repository_with_changes_in_folders(sandbox: &Sandbox) -> TestRepository {
     repository.write("README.md", "hello, world\n");
     repository.delete("docs/guide.md");
     repository.write("src/main.rs", "fn main() { run() }\n");
+    repository.write("src/ui/added.rs", "pub fn added() {}\n");
+    repository.git(&["add", "src/ui/added.rs"]);
     repository.write("src/ui/view.rs", "pub fn view() {}\n");
     repository
 }
@@ -58,7 +60,7 @@ fn changes_are_grouped_by_folder_by_default() {
         ChangeGrouping::Folder
     );
     assert_eq!(
-        change_set.nodes,
+        change_set.changelists[0].group.nodes,
         vec![
             folder(
                 "docs",
@@ -72,7 +74,7 @@ fn changes_are_grouped_by_folder_by_default() {
                     folder(
                         "src/ui",
                         true,
-                        vec![file("src/ui/view.rs", ChangeStatus::Untracked)]
+                        vec![file("src/ui/added.rs", ChangeStatus::Added)]
                     ),
                     file("src/main.rs", ChangeStatus::Modified),
                 ]
@@ -81,11 +83,24 @@ fn changes_are_grouped_by_folder_by_default() {
         ]
     );
     assert_eq!(
+        change_set.unversioned_files.nodes,
+        vec![folder(
+            "src",
+            true,
+            vec![folder(
+                "src/ui",
+                true,
+                vec![file("src/ui/view.rs", ChangeStatus::Untracked)]
+            )]
+        )]
+    );
+    assert_eq!(
         repository.status_by_git(),
         vec![
             " M README.md",
             " D docs/guide.md",
             " M src/main.rs",
+            "A  src/ui/added.rs",
             "?? src/ui/view.rs"
         ]
     );
@@ -104,20 +119,25 @@ fn changes_are_shown_as_a_flat_list_when_the_user_chooses_it_and_stay_so() {
 
     assert_eq!(settings.change_grouping, ChangeGrouping::Flat);
     assert_eq!(
-        change_set.nodes,
+        change_set.changelists[0].group.nodes,
         vec![
             file("README.md", ChangeStatus::Modified),
             file("docs/guide.md", ChangeStatus::Deleted),
             file("src/main.rs", ChangeStatus::Modified),
-            file("src/ui/view.rs", ChangeStatus::Untracked),
+            file("src/ui/added.rs", ChangeStatus::Added),
         ]
     );
-    assert_eq!(repository.status_by_git().len(), 4);
+    assert_eq!(
+        change_set.unversioned_files.nodes,
+        vec![file("src/ui/view.rs", ChangeStatus::Untracked)]
+    );
+    assert_eq!(repository.status_by_git().len(), 5);
 }
 
-/// Ignored files are not changes: a folder that holds nothing else is not highlighted.
+/// Ignored files are not changes, so they are in a group of their own, whose folders are not
+/// highlighted.
 #[test]
-fn a_folder_that_holds_only_ignored_files_has_no_changes() {
+fn ignored_files_are_shown_on_their_own_in_folders_with_no_changes() {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("app");
     repository.write(".gitignore", "*.log\n");
@@ -133,29 +153,7 @@ fn a_folder_that_holds_only_ignored_files_has_no_changes() {
     let change_set = read_changes(&gikli, &repository);
 
     assert_eq!(
-        change_set.nodes,
-        vec![folder(
-            "logs",
-            true,
-            vec![
-                folder(
-                    "logs/today",
-                    true,
-                    vec![
-                        file("logs/today/app.log", ChangeStatus::Ignored),
-                        file("logs/today/summary.md", ChangeStatus::Untracked),
-                    ]
-                ),
-                file("logs/app.log", ChangeStatus::Ignored),
-            ]
-        )]
-    );
-    repository.delete("logs/today/summary.md");
-
-    let change_set = read_changes(&gikli, &repository);
-
-    assert_eq!(
-        change_set.nodes,
+        change_set.ignored_files.nodes,
         vec![folder(
             "logs",
             false,
@@ -170,7 +168,26 @@ fn a_folder_that_holds_only_ignored_files_has_no_changes() {
         )]
     );
     assert_eq!(
-        repository.git(&["status", "--porcelain", "-z", "--ignored"]),
-        "!! logs/\0"
+        change_set.unversioned_files.nodes,
+        vec![folder(
+            "logs",
+            true,
+            vec![folder(
+                "logs/today",
+                true,
+                vec![file("logs/today/summary.md", ChangeStatus::Untracked)]
+            )]
+        )]
+    );
+    assert!(change_set.changelists[0].group.nodes.is_empty());
+    assert_eq!(
+        repository.git(&[
+            "status",
+            "--porcelain",
+            "-z",
+            "--ignored",
+            "--untracked-files=all"
+        ]),
+        "?? logs/today/summary.md\0!! logs/app.log\0!! logs/today/app.log\0"
     );
 }

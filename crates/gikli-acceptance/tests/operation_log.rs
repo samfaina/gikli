@@ -106,10 +106,10 @@ fn clearing_the_operation_log_empties_it_and_later_commands_are_logged_again() {
         .read_changes(&project.repositories[0])
         .expect("read changes");
     let after = gikli.operation_log();
-    assert_eq!(after.len(), 1);
     assert!(after[0].args.contains(&"status".to_owned()));
     assert!(
-        before.iter().all(|entry| entry.id < cleared_before) && after[0].id >= cleared_before,
+        before.iter().all(|entry| entry.id < cleared_before)
+            && after.iter().all(|entry| entry.id >= cleared_before),
         "a window can tell the cleared entries from the new ones"
     );
     assert_eq!(repository.status_by_git(), Vec::<String>::new());

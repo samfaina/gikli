@@ -24,6 +24,19 @@ use http_remote::Refusal;
 /// Makes git take every repository for someone else's.
 const OWNED_BY_SOMEONE_ELSE: &str = "GIT_TEST_ASSUME_DIFFERENT_OWNER";
 
+/// Two Changelists in the format gikli stores them in, version 1: Changes, which is active, and
+/// Feature, with no files. Creating a Changelist from the app comes with #15; this also pins the
+/// format, which every later gikli must still read.
+pub const TWO_CHANGELISTS: &str = r#"{
+  "version": 1,
+  "active": "changes",
+  "head": null,
+  "changelists": [
+    { "id": "changes", "name": "Changes", "files": [] },
+    { "id": "feature", "name": "Feature", "files": [] }
+  ]
+}"#;
+
 /// A temporary folder with its own git configuration, holding the repositories of one test.
 pub struct Sandbox {
     dir: Option<TempDir>,
@@ -600,6 +613,19 @@ impl TestRepository {
             root: dunce::canonicalize(root).expect("canonicalize worktree folder"),
             env: self.env.clone(),
         }
+    }
+
+    /// The file that holds the Changelists of this repository, in the git directory git names.
+    pub fn changelists_file(&self) -> PathBuf {
+        let git_dir = self.git(&["rev-parse", "--absolute-git-dir"]);
+        dunce::simplified(Path::new(git_dir.trim())).join("gikli/changelists.json")
+    }
+
+    /// Gives this repository the Changelists in `json`.
+    pub fn store_changelists(&self, json: &str) {
+        let file = self.changelists_file();
+        fs::create_dir_all(file.parent().expect("file has a folder")).expect("create folder");
+        fs::write(file, json).expect("write Changelists");
     }
 
     /// Stages everything and commits it with plain git.

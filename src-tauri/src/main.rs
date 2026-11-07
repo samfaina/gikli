@@ -267,6 +267,15 @@ fn read_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<Chang
 }
 
 #[tauri::command(async)]
+fn set_active_changelist(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    id: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.set_active_changelist(&repository, &id)
+}
+
+#[tauri::command(async)]
 fn read_diff(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -385,6 +394,7 @@ fn main() {
             cancel_operation,
             window_for_project,
             read_changes,
+            set_active_changelist,
             read_diff,
             save_local_file,
             add_files,
