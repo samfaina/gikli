@@ -45,7 +45,7 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - CodeMirror draws two differences as one when a line of at most two characters, such as `}` or an empty line, is all that separates them, and it has no option to stop that. The next difference stops once for the two, and the line is drawn as changed.
 - A file without a text diff has one place to look, so next difference moves on from it as from a last difference.
 - A saved line keeps the line ending it has in the file. Unchanged lines at the top and bottom of the file keep theirs, and the lines between get the line ending most of the file has. In a file that mixes line endings, two edits far apart in one save can therefore change the line endings between them.
-- Next and previous file follow the changes view as the user arranged it, leaving out ignored files. A file that stops being a change while the user looks at it keeps its place.
+- Next and previous file follow the changes view as the user arranged it, leaving out ignored files. A file that stops being a change while the user looks at it keeps a place in that order, as a change in the Active changelist, the one it would go to if it changed again.
 - Shortcuts: double-click, Enter or Ctrl+D (Cmd+D on macOS) on a row opens its diff. In the diff, F7 and Shift+F7 go to the next and previous difference, Ctrl+Alt+Right and Ctrl+Alt+Left (Cmd on macOS) to the next and previous file, Ctrl+S (Cmd+S) saves and Esc closes.
 - A single unchanged line past the context stays visible, as the marker that says it is hidden would take its place.
 
@@ -69,9 +69,9 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - "Changes" is only the initial Changelist. It can be renamed and deleted like any other.
 - A file belongs to a Changelist only while it has changes. A file committed outside gikli leaves its Changelist, and a later change to it goes to the Active changelist. gikli does not remember earlier assignments.
 - In Scope 1 a changed file belongs to exactly one Changelist, and later edits stay in that Changelist. So do moves git reports as renames: the moved file takes the place of the file it was.
-- gikli notices a commit made while it was closed: a file in a commit HEAD reached since the last read leaves its Changelist, even when it has changed again. Going back in history commits nothing, so a file still changed stays where it is.
+- gikli notices a commit made while it was closed: a file in a commit HEAD reached since the last read leaves its Changelist, even when it has changed again. Going back in history or rewording a commit commits nothing, so a file still changed stays where it is.
 - A change made before the user sets another Changelist active stays in the Active changelist of its time, even when gikli had not read it yet.
-- The changes view shows the Changelists in order, then Unversioned Files, then ignored files in a group of their own. Next and previous file follow that order. A file that stops being a change while the user looks at it has left its Changelist, so they treat it as a change in the Active changelist.
+- The changes view shows the Changelists in order, then Unversioned Files, then ignored files in a group of their own. Next and previous file follow that order.
 - Changelists that gikli cannot read, or that a newer gikli saved, stop the changes view with a message and stay as they are on disk: gikli does not write over what it does not understand. Assignments that cannot be saved do not stop the view, as the next read works them out again, but setting the Active changelist then fails, as that choice would be lost.
 - A commit in Changelist mode takes the working tree content of the selected files (`git commit --only`). Index entries for files that are not selected keep their state; gikli does not touch or clear them.
 - New files appear in Unversioned Files without a prompt and are added when they are selected in a commit. Deleted files appear as deleted, and committing them records the removal. The "add new files" setting (ask / always / never) exists and defaults to never.

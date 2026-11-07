@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::Failure;
 use crate::git::{GitRunner, path_from_bytes};
 use crate::project::write_at_once;
-use crate::status::{Change, ChangeStatus};
+use crate::status::{Change, ChangeStatus, Status};
 
 /// The version of the format this gikli writes. Whatever changes the format raises it, and gikli
 /// goes on reading every earlier version.
@@ -122,16 +122,16 @@ impl Changelists {
             .iter()
             .filter(|change| change.status.is_in_changelists())
         {
-            files[self.place_after_move(change)].insert(change.path.to_string_lossy().into_owned());
+            files[self.place_for(change)].insert(change.path.to_string_lossy().into_owned());
         }
         for (list, files) in self.changelists.iter_mut().zip(files) {
             list.files = files;
         }
     }
 
-    /// The place in [`Self::lists`] of the Changelist `change` belongs to. A moved file that is not
+    /// The place in [`Self::lists`] of the Changelist `change` goes into. A moved file that is not
     /// in one yet takes the place of the file it was. A copy is a new file.
-    fn place_after_move(&self, change: &Change) -> usize {
+    fn place_for(&self, change: &Change) -> usize {
         let was_in = change
             .original_path
             .as_deref()
@@ -142,9 +142,10 @@ impl Changelists {
             .unwrap_or_else(|| self.active_place())
     }
 
-    /// The files of these Changelists that are in commits HEAD reached since [`Self::head`], on its
-    /// way to `new_head`. Going back in history commits nothing. When git cannot say, for example
-    /// because the commit is gone, there are none: they stay where they are.
+    /// The files committed since [`Self::head`], now that HEAD is on `new_head`: those that differ
+    /// between the two commits. Going back in history commits nothing, and neither does rewording a
+    /// commit. When git cannot say, for example because the commit is gone, there are none: the
+    /// files stay where they are.
     fn committed_since(
         &self,
         new_head: Option<&str>,
@@ -156,8 +157,16 @@ impl Changelists {
         };
         let invocation = match &self.head {
             Some(head) => {
-                let range = format!("{head}...{new_head}");
-                runner.run(root, &["diff", "--name-only", "-z", "--no-renames", &range])
+                let went_back = runner
+                    .run(root, &["merge-base", "--is-ancestor", new_head, head])
+                    .is_ok_and(|invocation| invocation.success);
+                if went_back {
+                    return BTreeSet::new();
+                }
+                runner.run(
+                    root,
+                    &["diff", "--name-only", "-z", "--no-renames", head, new_head],
+                )
             }
             // Everything in the first commit came into the history with it.
             None => runner.run(
@@ -186,13 +195,6 @@ impl Changelists {
     fn holds_files(&self) -> bool {
         self.changelists.iter().any(|list| !list.files.is_empty())
     }
-}
-
-/// What git reports about the working tree of a Repository, in one read.
-pub(crate) struct Status {
-    pub changes: Vec<Change>,
-    /// The commit HEAD is on, or None when it is on no commit yet.
-    pub head: Option<String>,
 }
 
 /// Where the Changelists of one Repository, or of one linked worktree, are kept.
@@ -235,7 +237,9 @@ impl ChangelistStore {
         let lists: Changelists =
             serde_json::from_slice(&json).map_err(|error| self.unreadable(error))?;
         if !lists.changelists.iter().any(|list| list.id == lists.active) {
-            return Err(self.unreadable("the Active changelist is not one of the Changelists"));
+            return Err(Failure::ActiveChangelistMissing {
+                file: self.file.clone(),
+            });
         }
         Ok(lists)
     }

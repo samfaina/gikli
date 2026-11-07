@@ -275,6 +275,7 @@ export type Failure =
   | { kind: "localFileNotSaved"; path: string; message: string }
   | { kind: "changelistGone"; id: string }
   | { kind: "changelistsUnreadable"; file: string; message: string }
+  | { kind: "activeChangelistMissing"; file: string }
   | { kind: "changelistsFromNewerGikli"; file: string; version: number }
   | { kind: "changelistsNotSaved"; file: string; message: string }
   | { kind: "changesNotWatched"; folder: string; message: string }

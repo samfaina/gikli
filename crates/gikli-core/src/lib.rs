@@ -54,7 +54,7 @@ pub use status::{
 pub use version::GitVersion;
 pub use window::ProjectWindow;
 
-use changelists::{ChangelistStore, Changelists, Status};
+use changelists::{ChangelistStore, Changelists};
 use events::EventBus;
 use git::{GitProgram, GitRunner, Invocation};
 use notifications::Notifications;
@@ -324,6 +324,12 @@ pub enum Failure {
     ChangelistsUnreadable {
         file: PathBuf,
         message: String,
+    },
+    /// The Changelists in `file` have no Active changelist, so new changes would have nowhere to go.
+    /// gikli left the file as it is.
+    #[serde(rename_all = "camelCase")]
+    ActiveChangelistMissing {
+        file: PathBuf,
     },
     /// A newer gikli saved the Changelists in `file`, in a `version` of the format this one does not
     /// know, so it left it as it is.
@@ -948,7 +954,7 @@ impl Gikli {
     /// Reads the uncommitted changes of `repository`, sorted into its Changelists, which follow
     /// what the read finds. Reading again refreshes them.
     pub fn read_changes(&self, repository: &Repository) -> Result<ChangeSet, Failure> {
-        self.read_changes_and(repository, |_| Ok(()))
+        self.read_changes_with_choice(repository, |_| Ok(()))
     }
 
     /// Makes the Changelist `id` of `repository` the Active changelist, the one new changes go into
@@ -959,14 +965,14 @@ impl Gikli {
         repository: &Repository,
         id: &str,
     ) -> Result<ChangeSet, Failure> {
-        self.read_changes_and(repository, |lists| lists.set_active(id))
+        self.read_changes_with_choice(repository, |lists| lists.set_active(id))
     }
 
     /// Reads the changes of `repository`, makes its Changelists follow them, and applies `choice`,
     /// something the user chose. When a choice cannot be saved, this fails and nothing changes.
     /// What the read found alone is worked out again on the next read, so it does not stop the user
     /// seeing their changes when it cannot be saved.
-    fn read_changes_and(
+    fn read_changes_with_choice(
         &self,
         repository: &Repository,
         choice: impl FnOnce(&mut Changelists) -> Result<(), Failure>,
@@ -989,10 +995,7 @@ impl Gikli {
                 },
             ));
         }
-        let status = Status {
-            changes: status::parse(&invocation.stdout),
-            head: status::parse_head(&invocation.stdout),
-        };
+        let status = status::Status::parse(&invocation.stdout);
         let git_dir = runner
             .git_dir(&repository.root)
             .map_err(git_failed_to_start)?

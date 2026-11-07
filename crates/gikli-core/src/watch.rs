@@ -57,7 +57,8 @@ impl ChangesWatcher {
 
 /// Whether `event` is a change to a file that can change the changes view. Reading a file is
 /// not: git reads the working tree every time gikli reads the changes. Neither is anything in
-/// the [`UNWATCHED_GIT_FOLDERS`] of the `git_dirs`.
+/// the [`UNWATCHED_GIT_FOLDERS`] of the `git_dirs`, nor a git directory itself being modified:
+/// that only says something inside it changed, which has an event of its own.
 fn is_change(event: &notify::Event, git_dirs: &[PathBuf]) -> bool {
     let reads = matches!(
         event.kind,
@@ -67,10 +68,11 @@ fn is_change(event: &notify::Event, git_dirs: &[PathBuf]) -> bool {
     );
     !reads
         && (event.paths.is_empty()
-            || event
-                .paths
-                .iter()
-                .any(|path| !is_in_unwatched_git_folder(path, git_dirs)))
+            || event.paths.iter().any(|path| {
+                !is_in_unwatched_git_folder(path, git_dirs)
+                    && !(matches!(event.kind, EventKind::Modify(_))
+                        && git_dirs.iter().any(|git_dir| git_dir == path))
+            }))
 }
 
 fn is_in_unwatched_git_folder(path: &Path, git_dirs: &[PathBuf]) -> bool {

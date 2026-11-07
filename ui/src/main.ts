@@ -792,10 +792,10 @@ function changeList(changeSet: ChangeSet, setActive: (list: Changelist) => void)
     view.append(line("message", t("noChanges")));
   }
   if (unversionedFiles.nodes.length > 0) {
-    view.append(changeGroupView(repository, "unversioned-files", groupName(t("unversionedFiles")), unversionedFiles.nodes));
+    view.append(changeGroupView(repository, "unversioned-files", [groupName(t("unversionedFiles"))], unversionedFiles.nodes));
   }
   if (ignoredFiles.nodes.length > 0) {
-    view.append(changeGroupView(repository, "ignored-files", groupName(t("ignoredFiles")), ignoredFiles.nodes));
+    view.append(changeGroupView(repository, "ignored-files", [groupName(t("ignoredFiles"))], ignoredFiles.nodes));
   }
   return view;
 }
@@ -831,18 +831,13 @@ function groupName(text: string): HTMLSpanElement {
 }
 
 /** Changes the view shows together, under a `header`. */
-function changeGroupView(
-  repository: Repository,
-  testId: string,
-  header: HTMLElement | HTMLElement[],
-  nodes: ChangeNode[],
-): HTMLElement {
+function changeGroupView(repository: Repository, testId: string, header: HTMLElement[], nodes: ChangeNode[]): HTMLElement {
   const view = document.createElement("section");
   view.className = "change-group";
   view.dataset.testid = testId;
   const title = document.createElement("div");
   title.className = "change-group-header";
-  title.append(...[header].flat());
+  title.append(...header);
   view.append(title, nodeList(repository, nodes, ""));
   return view;
 }
@@ -1477,6 +1472,8 @@ function describeFailure(failure: Failure): string {
       return t("failureChangelistGone");
     case "changelistsUnreadable":
       return t("failureChangelistsUnreadable", { file: failure.file, message: failure.message });
+    case "activeChangelistMissing":
+      return t("failureActiveChangelistMissing", { file: failure.file });
     case "changelistsFromNewerGikli":
       return t("failureChangelistsFromNewerGikli", { file: failure.file });
     case "changelistsNotSaved":

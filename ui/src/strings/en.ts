@@ -100,6 +100,8 @@ export const en = {
   failureChangelistGone: "That Changelist no longer exists. Refresh to see the ones that do.",
   failureChangelistsUnreadable:
     "gikli cannot read the Changelists in {file} ({message}) and left the file as it is. Fix it, or move it away to start again with one Changelist.",
+  failureActiveChangelistMissing:
+    "The Changelists in {file} have no Active changelist, and gikli left the file as it is. Fix it, or move it away to start again with one Changelist.",
   failureChangelistsFromNewerGikli:
     "A newer gikli saved the Changelists in {file}, so this one left the file as it is. Update gikli to work with this Repository.",
   failureChangelistsNotSaved: "gikli could not save the Changelists to {file} ({message}), so nothing changed.",

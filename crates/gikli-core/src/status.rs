@@ -151,16 +151,15 @@ impl ChangeSet {
         path: &Path,
         grouping: ChangeGrouping,
     ) -> (Option<PathBuf>, Option<PathBuf>) {
-        let mut groups: Vec<(bool, Vec<Change>)> = self
+        let mut groups: Vec<Vec<Change>> = self
             .changelists
             .iter()
-            .map(|list| (list.active, list.group.changes.clone()))
+            .map(|list| list.group.changes.clone())
             .collect();
-        groups.push((false, self.unversioned_files.changes.clone()));
-        let is_a_change = groups
-            .iter()
-            .any(|(_, changes)| changes.iter().any(|change| change.path == path));
-        if !is_a_change && let Some((_, changes)) = groups.iter_mut().find(|(active, _)| *active) {
+        groups.push(self.unversioned_files.changes.clone());
+        let is_a_change = groups.iter().flatten().any(|change| change.path == path);
+        let active = self.changelists.iter().position(|list| list.active);
+        if !is_a_change && let Some(changes) = active.map(|active| &mut groups[active]) {
             changes.push(Change {
                 path: path.to_path_buf(),
                 status: ChangeStatus::Modified,
@@ -171,7 +170,7 @@ impl ChangeSet {
             changes.sort_by(|left, right| left.path.cmp(&right.path));
         }
         let mut files = Vec::new();
-        for (_, changes) in groups {
+        for changes in groups {
             for node in ChangeGroup::new(changes, grouping).nodes {
                 node.collect_files(&mut files);
             }
@@ -408,9 +407,24 @@ pub(crate) fn status_args(show_ignored: bool) -> Vec<&'static str> {
     args
 }
 
-/// The commit HEAD is on, from the output of `git` [`status_args`], or None when it is on no commit
-/// yet.
-pub(crate) fn parse_head(output: &[u8]) -> Option<String> {
+/// What git reports about the working tree of a Repository, in one read.
+pub(crate) struct Status {
+    pub changes: Vec<Change>,
+    /// The commit HEAD is on, or None when it is on no commit yet.
+    pub head: Option<String>,
+}
+
+impl Status {
+    /// Reads the output of `git` [`status_args`].
+    pub fn parse(output: &[u8]) -> Self {
+        Self {
+            changes: parse_changes(output),
+            head: parse_head(output),
+        }
+    }
+}
+
+fn parse_head(output: &[u8]) -> Option<String> {
     output
         .split(|byte| *byte == 0)
         .find_map(|record| record.strip_prefix(b"# branch.oid "))
@@ -418,8 +432,7 @@ pub(crate) fn parse_head(output: &[u8]) -> Option<String> {
         .map(|oid| String::from_utf8_lossy(oid).into_owned())
 }
 
-/// Reads the output of `git` [`status_args`].
-pub(crate) fn parse(output: &[u8]) -> Vec<Change> {
+fn parse_changes(output: &[u8]) -> Vec<Change> {
     let mut records = output.split(|byte| *byte == 0);
     let mut changes = Vec::new();
     while let Some(record) = records.next() {

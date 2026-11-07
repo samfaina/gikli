@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TestRepository, file_url};
+use gikli_acceptance::{Sandbox, TWO_CHANGELISTS, TestRepository, file_url};
 use gikli_core::{
     ChangeGrouping, DiffContent, Difference, Failure, FileDiff, Gikli, LineRange, LocalReadOnly,
     Repository, TextDiff, UnchangedRegion,
@@ -866,26 +866,15 @@ fn previous_and_next_file_go_through_the_changelists_and_then_unversioned_files(
         repository.write(path, "one\n");
     }
     repository.commit_all("Initial commit");
-    let git_dir = repository.git(&["rev-parse", "--absolute-git-dir"]);
-    let store = PathBuf::from(git_dir.trim()).join("gikli");
-    std::fs::create_dir_all(&store).expect("create folder");
-    std::fs::write(
-        store.join("changelists.json"),
-        r#"{
-          "version": 1,
-          "active": "feature",
-          "head": null,
-          "changelists": [
-            { "id": "changes", "name": "Changes", "files": ["z.txt"] },
-            { "id": "feature", "name": "Feature", "files": [] }
-          ]
-        }"#,
-    )
-    .expect("write Changelists");
+    repository.store_changelists(TWO_CHANGELISTS);
     repository.write("z.txt", "two\n");
+    let gikli = sandbox.gikli();
+    let repository_opened = opened(&gikli, &repository);
+    gikli
+        .set_active_changelist(&repository_opened, "feature")
+        .expect("set the Active changelist");
     repository.write("a.txt", "two\n");
     repository.write("new.txt", "new\n");
-    let gikli = sandbox.gikli();
 
     let first = read_diff(&gikli, &repository, "z.txt");
     let middle = read_diff(&gikli, &repository, "a.txt");

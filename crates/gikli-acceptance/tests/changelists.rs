@@ -1,24 +1,9 @@
 //! Changelists: the changes view groups changes into Changelists, new changes go to the Active
 //! changelist, and the Changelists follow what actually happens in git.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TWO_CHANGELISTS, TestRepository};
 use gikli_core::{ChangeSet, Changelist, Failure, Gikli};
-
-/// Two Changelists in the format gikli stores them in, version 1: Changes, which is active, and
-/// Feature. Creating a Changelist from the app comes with #15; this also pins the format, which
-/// every later gikli must still read.
-const TWO_CHANGELISTS: &str = r#"{
-  "version": 1,
-  "active": "changes",
-  "head": null,
-  "changelists": [
-    { "id": "changes", "name": "Changes", "files": [] },
-    { "id": "feature", "name": "Feature", "files": [] }
-  ]
-}"#;
+use std::fs;
 
 /// Opens the repository's folder as a Project and reads the changes of its Repository.
 fn read_changes(gikli: &Gikli, repository: &TestRepository) -> ChangeSet {
@@ -71,22 +56,9 @@ fn committed_repository(sandbox: &Sandbox) -> TestRepository {
     repository
 }
 
-/// The file that holds the Changelists of `repository`, in the git directory git names.
-fn changelists_file(repository: &TestRepository) -> PathBuf {
-    let git_dir = repository.git(&["rev-parse", "--absolute-git-dir"]);
-    dunce::simplified(Path::new(git_dir.trim())).join("gikli/changelists.json")
-}
-
-/// Gives `repository` the Changelists in `json`.
-fn store_changelists(repository: &TestRepository, json: &str) {
-    let file = changelists_file(repository);
-    fs::create_dir_all(file.parent().expect("file has a folder")).expect("create folder");
-    fs::write(file, json).expect("write Changelists");
-}
-
 fn repository_with_two_changelists(sandbox: &Sandbox) -> TestRepository {
     let repository = committed_repository(sandbox);
-    store_changelists(&repository, TWO_CHANGELISTS);
+    repository.store_changelists(TWO_CHANGELISTS);
     repository
 }
 
@@ -246,8 +218,8 @@ fn each_linked_worktree_keeps_its_own_changelists() {
     let sandbox = Sandbox::new();
     let main = committed_repository(&sandbox);
     let worktree = main.linked_worktree("feature");
-    store_changelists(&main, TWO_CHANGELISTS);
-    store_changelists(&worktree, TWO_CHANGELISTS);
+    main.store_changelists(TWO_CHANGELISTS);
+    worktree.store_changelists(TWO_CHANGELISTS);
     main.write("README.md", "in main\n");
     worktree.write("notes.md", "in the worktree\n");
     let gikli = sandbox.gikli();
@@ -280,7 +252,7 @@ fn changelists_saved_by_a_newer_gikli_are_refused_and_left_as_they_are() {
     let sandbox = Sandbox::new();
     let repository = committed_repository(&sandbox);
     let newer = r#"{ "version": 2, "somethingNew": true }"#;
-    store_changelists(&repository, newer);
+    repository.store_changelists(newer);
     repository.write("README.md", "hello, world\n");
     let gikli = sandbox.gikli();
     let project = gikli.open_project(repository.root()).expect("open project");
@@ -297,7 +269,7 @@ fn changelists_saved_by_a_newer_gikli_are_refused_and_left_as_they_are() {
         }
     );
     assert_eq!(
-        fs::read_to_string(changelists_file(&repository)).expect("read Changelists"),
+        fs::read_to_string(repository.changelists_file()).expect("read Changelists"),
         newer
     );
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);
@@ -308,7 +280,7 @@ fn changelists_saved_by_a_newer_gikli_are_refused_and_left_as_they_are() {
 fn changelists_gikli_cannot_read_are_reported_and_left_as_they_are() {
     let sandbox = Sandbox::new();
     let repository = committed_repository(&sandbox);
-    store_changelists(&repository, "not what gikli wrote");
+    repository.store_changelists("not what gikli wrote");
     repository.write("README.md", "hello, world\n");
     let gikli = sandbox.gikli();
     let project = gikli.open_project(repository.root()).expect("open project");
@@ -323,7 +295,7 @@ fn changelists_gikli_cannot_read_are_reported_and_left_as_they_are() {
         "{failure:?}"
     );
     assert_eq!(
-        fs::read_to_string(changelists_file(&repository)).expect("read Changelists"),
+        fs::read_to_string(repository.changelists_file()).expect("read Changelists"),
         "not what gikli wrote"
     );
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);
@@ -334,8 +306,7 @@ fn changelists_gikli_cannot_read_are_reported_and_left_as_they_are() {
 fn changelists_without_their_active_changelist_are_reported() {
     let sandbox = Sandbox::new();
     let repository = committed_repository(&sandbox);
-    store_changelists(
-        &repository,
+    repository.store_changelists(
         r#"{ "version": 1, "active": "gone", "head": null, "changelists": [] }"#,
     );
     let gikli = sandbox.gikli();
@@ -346,7 +317,7 @@ fn changelists_without_their_active_changelist_are_reported() {
         .expect_err("gikli cannot use this");
 
     assert!(
-        matches!(failure, Failure::ChangelistsUnreadable { .. }),
+        matches!(failure, Failure::ActiveChangelistMissing { .. }),
         "{failure:?}"
     );
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
@@ -358,7 +329,7 @@ fn changelists_that_cannot_be_saved_do_not_stop_the_changes_being_read() {
     let sandbox = Sandbox::new();
     let repository = committed_repository(&sandbox);
     repository.write("README.md", "hello, world\n");
-    let file = changelists_file(&repository);
+    let file = repository.changelists_file();
     fs::write(file.parent().expect("file has a folder"), "in the way").expect("write file");
 
     let change_set = read_changes(&sandbox.gikli(), &repository);
@@ -372,7 +343,7 @@ fn changelists_that_cannot_be_saved_do_not_stop_the_changes_being_read() {
 fn setting_active_a_changelist_when_it_cannot_be_saved_fails_and_changes_nothing() {
     let sandbox = Sandbox::new();
     let repository = repository_with_two_changelists(&sandbox);
-    let file = changelists_file(&repository);
+    let file = repository.changelists_file();
     fs::create_dir(file.with_extension("json.partial")).expect("create folder");
     let gikli = sandbox.gikli();
     let project = gikli.open_project(repository.root()).expect("open project");
@@ -535,7 +506,7 @@ fn a_file_in_the_first_commit_and_changed_again_while_gikli_was_closed_goes_to_t
  {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("app");
-    store_changelists(&repository, TWO_CHANGELISTS);
+    repository.store_changelists(TWO_CHANGELISTS);
     repository.write("README.md", "hello\n");
     repository.write("notes.md", "notes\n");
     repository.git(&["add", "README.md", "notes.md"]);
@@ -569,6 +540,48 @@ fn a_changed_file_stays_in_its_changelist_when_head_moves_back() {
     assert_eq!(paths_in(&change_set, "Changes"), vec!["README.md"]);
     assert!(paths_in(&change_set, "Feature").is_empty());
     assert_eq!(repository.status_by_git(), vec!["MM README.md"]);
+}
+
+/// Rewording the last commit commits nothing, even when the file is in that commit.
+#[test]
+fn a_changed_file_stays_in_its_changelist_when_the_last_commit_is_reworded() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_two_changelists(&sandbox);
+    repository.write("README.md", "second\n");
+    repository.commit_all("Second");
+    repository.write("README.md", "second, edited\n");
+    set_active(&sandbox.gikli(), &repository, "feature");
+
+    repository.git(&["commit", "--quiet", "--amend", "--message", "Reworded"]);
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+    assert_eq!(paths_in(&change_set, "Changes"), vec!["README.md"]);
+    assert!(paths_in(&change_set, "Feature").is_empty());
+    assert_eq!(repository.status_by_git(), vec![" M README.md"]);
+}
+
+/// Added to the last commit, the file was committed like in any other commit.
+#[test]
+fn a_file_amended_into_the_last_commit_and_changed_again_goes_to_the_active_changelist() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_change_in_an_inactive_changelist(&sandbox);
+    repository.write("notes.md", "more notes\n");
+    read_changes(&sandbox.gikli(), &repository);
+    repository.git(&["add", "README.md"]);
+    repository.git(&["commit", "--quiet", "--amend", "--message", "Amended"]);
+    repository.write("README.md", "hello again\n");
+
+    let change_set = read_changes(&sandbox.gikli(), &repository);
+
+    assert!(paths_in(&change_set, "Changes").is_empty());
+    assert_eq!(
+        paths_in(&change_set, "Feature"),
+        vec!["README.md", "notes.md"]
+    );
+    assert_eq!(
+        repository.status_by_git(),
+        vec![" M README.md", " M notes.md"]
+    );
 }
 
 /// A commit that leaves `notes.md` out says nothing about it.
