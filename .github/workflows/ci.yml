@@ -128,22 +128,43 @@ jobs:
       - name: Typecheck the UI
         run: npm run typecheck
 
+      - name: Test how the smoke test attaches to the app
+        run: npm run test:e2e-attach
+
       - name: Install tauri-driver
         if: runner.os == 'Linux'
         run: cargo install tauri-driver --locked
 
+      # On this runner WebView2 ignores the WEBVIEW2_* variables, so tauri-driver cannot start a
+      # session (issue #54). This policy opens a fixed DevTools port in gikli's WebView2 instead,
+      # and the variable makes the smoke test attach to it. Nothing but this step writes the policy:
+      # it is machine-wide and would leave the port open on a developer's machine.
+      - name: Open a DevTools port in gikli's WebView2 for the smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PORT: 9222
+        run: |
+          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name 'gikli.exe' -Value "--remote-debugging-port=$env:PORT" -PropertyType String -Force | Out-Null
+          "GIKLI_E2E_WEBVIEW2_DEBUG_PORT=$env:PORT" >> $env:GITHUB_ENV
+
       - name: Smoke test
-        if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum npm run test:e2e
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run --auto-servernum npm run test:e2e
+          else
+            npm run test:e2e
+          fi
 
       - name: Smoke test (skipped)
-        if: runner.os != 'Linux'
+        if: runner.os == 'macOS'
         shell: bash
         env:
-          REASON: >-
-            ${{ runner.os == 'macOS'
-              && 'tauri-driver does not support macOS'
-              || 'on the GitHub-hosted Windows runner, WebView2 ignores the WEBVIEW2_* variables and msedgedriver never finds DevToolsActivePort (issue #54)' }}
+          REASON: tauri-driver does not support macOS
         run: |
           message="The end-to-end smoke test did not run on this job: $REASON."
           echo "::warning title=Smoke test skipped::$message"

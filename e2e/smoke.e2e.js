@@ -5,6 +5,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+/**
+ * The Refresh button, once no read of the changes is under way. It is disabled during one, as when
+ * the watcher saw a file change, and WebDriver drops a click on a disabled button silently.
+ */
+async function idleRefresh() {
+  const refresh = await $('[data-testid="refresh-changes"]');
+  await refresh.waitForEnabled({ timeout: 30000 });
+  return refresh;
+}
+
 describe("gikli", () => {
   it("opens the startup Project and shows its Repository root and the git version", async () => {
     const repository = process.env.GIKLI_E2E_REPOSITORY;
@@ -64,8 +74,10 @@ describe("gikli", () => {
 
   it("brings a prompt to the user and gives git the answer", async () => {
     const sandbox = process.env.GIKLI_E2E_SANDBOX;
+    // A read already under way would take the marker, and its prompt would keep Refresh disabled.
+    const refresh = await idleRefresh();
     fs.writeFileSync(path.join(sandbox, "ask-for-prompt"), "");
-    await $('[data-testid="refresh-changes"]').click();
+    await refresh.click();
 
     const prompt = await $('[data-testid="prompt"]');
     await prompt.waitForDisplayed({ timeout: 30000 });
