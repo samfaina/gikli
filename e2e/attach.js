@@ -20,7 +20,7 @@ export function attachPort(env = process.env) {
 /**
  * Whether `url` answers with a success before `deadline` (a time in ms), polling until it does.
  */
-export async function answers(url, deadline) {
+export async function respondsBefore(url, deadline) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) });
@@ -40,7 +40,7 @@ export async function answers(url, deadline) {
  * that points at the policy that opens the port.
  */
 export async function waitForDevTools(port, { timeout = 30000 } = {}) {
-  if (!(await answers(`http://127.0.0.1:${port}/json/version`, Date.now() + timeout))) {
+  if (!(await respondsBefore(`http://127.0.0.1:${port}/json/version`, Date.now() + timeout))) {
     throw new Error(
       `WebView2's DevTools did not answer on port ${port} within ${timeout / 1000} s of launching gikli. ` +
         String.raw`Is the HKLM\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments policy ` +
