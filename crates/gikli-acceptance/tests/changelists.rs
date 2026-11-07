@@ -625,5 +625,8 @@ fn a_file_whose_path_is_not_utf8_stays_in_its_changelist() {
 
     assert_eq!(list(&change_set, "Changes").group.changes.len(), 1);
     assert!(list(&change_set, "Feature").group.changes.is_empty());
-    assert_eq!(repository.status_by_git().len(), 1);
+    assert_eq!(
+        repository.git(&["status", "--porcelain"]),
+        " M \"caf\\351.md\"\n"
+    );
 }
