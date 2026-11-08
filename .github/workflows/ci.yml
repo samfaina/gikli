@@ -128,8 +128,8 @@ jobs:
       - name: Typecheck the UI
         run: npm run typecheck
 
-      - name: Test how the smoke test attaches to the app
-        run: npm run test:e2e-attach
+      - name: Test the smoke test's helpers
+        run: npm run test:e2e-helpers
 
       - name: Install tauri-driver
         if: runner.os == 'Linux'

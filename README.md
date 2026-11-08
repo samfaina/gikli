@@ -47,7 +47,7 @@ npm run dev             # run the app with the UI hot-reloading
 npm run build           # build the app for this platform
 cargo test --workspace  # core tests through the application interface
 npm run typecheck       # typecheck the UI
-npm run test:e2e-attach # tests of how the smoke test attaches to the app on Windows CI
+npm run test:e2e-helpers # tests of how the smoke test attaches on Windows CI and double-clicks
 npm run test:e2e        # smoke test: builds the app, launches it, opens a Project
 npm test                # all of the above checks
 ```
