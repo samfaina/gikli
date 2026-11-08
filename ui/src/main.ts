@@ -506,7 +506,7 @@ async function openFolder(folder: string): Promise<void> {
   try {
     project = await openProject(folder);
   } catch (error) {
-    report(error);
+    report(error, () => void openFolder(folder));
     return;
   }
   await showInItsWindow(project);
@@ -1456,6 +1456,10 @@ function describeFailure(failure: Failure): string {
       return t("failureFolderNotFound", { folder: failure.folder });
     case "notInRepository":
       return t("failureNotInRepository", { folder: failure.folder });
+    case "notAWorkingTree":
+      return t("failureNotAWorkingTree", { folder: failure.folder });
+    case "projectNotOpened":
+      return t("failureProjectNotOpened", { folder: failure.folder });
     case "changesUnreadable":
       return t("failureChangesUnreadable", { folder: failure.folder });
     case "diffUnreadable":
@@ -1501,12 +1505,15 @@ function showMessage(text: string): void {
   projectView.replaceChildren(line("message", text));
 }
 
-/** Reports an error from the core: in place of the start message, or above the Project this window shows. */
-function report(error: unknown): void {
+/**
+ * Reports an error from the core: in place of the start message, or above the Project this window shows.
+ * `retry`, if given, runs once the user has done what an explained failure offers.
+ */
+function report(error: unknown, retry?: () => void): void {
   if (shownFolder === null) {
-    projectView.replaceChildren(errorView(error));
+    projectView.replaceChildren(errorView(error, retry));
   } else {
-    projectView.prepend(errorView(error));
+    projectView.prepend(errorView(error, retry));
   }
 }
 

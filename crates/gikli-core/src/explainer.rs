@@ -4,8 +4,9 @@
 //! Classification never reads git's translated sentences. It relies on what stays the same in
 //! every language: what git records in its trace of the run, the file names and the commands it
 //! quotes, the sentences git never translates and those of programs that have no translations,
-//! such as ssh and curl, and the state of the repository. ADR-0001 pins what gikli parses, but
-//! git's error output has no format to pin, which is why only these fixed parts of it count.
+//! such as ssh and curl, the sentences of a run git was told not to translate, and the state of the
+//! repository. ADR-0001 pins what gikli parses, but git's error output has no format to pin, which
+//! is why only these fixed parts of it count.
 
 use std::path::{Path, PathBuf};
 
@@ -350,6 +351,23 @@ fn remove_lock(lock: &Path) -> Result<(), Failure> {
         message: error.to_string(),
     })
 }
+
+/// Whether `invocation`, a run git was told to write in its own language, found no repository at or
+/// above its folder. Anything else that stops git must not read as this.
+pub(crate) fn found_no_repository(invocation: &Invocation) -> bool {
+    invocation.stderr.lines().any(|line| {
+        NO_REPOSITORY_FOUND
+            .iter()
+            .any(|sentence| line.starts_with(sentence))
+    })
+}
+
+/// How git starts to say it found no repository, before it says where it stopped looking: at the
+/// root of the disk or at the edge of a file system. Both in the words git uses untranslated.
+const NO_REPOSITORY_FOUND: [&str; 2] = [
+    "fatal: not a git repository (or any of the parent directories)",
+    "fatal: not a git repository (or any parent up to mount point ",
+];
 
 /// How git for Windows reports a path that is too long. It is the text of the system's error,
 /// which comes from Windows' C library in English, not from git's translations.

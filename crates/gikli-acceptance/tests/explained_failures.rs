@@ -170,6 +170,119 @@ fn dubious_ownership_is_explained_and_the_folder_is_trusted_only_when_the_user_t
     assert_eq!(repository.status_by_git(), ["?? notes.txt"]);
 }
 
+#[test]
+fn a_folder_of_a_repository_refused_for_its_owner_is_explained_and_opens_once_trusted() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("shared drive");
+    if !git_checks_ownership(&repository) {
+        return;
+    }
+    let root = repository_of(&repository);
+    let folder = as_git_writes_it(&root.root);
+    let subfolder = repository.folder("src");
+    let gikli = sandbox.gikli_in(sandbox.host_where_repositories_belong_to_someone_else());
+
+    let opened = gikli.open_project(&subfolder);
+
+    let trust = FailureAction::TrustFolder {
+        repository: Repository {
+            root: subfolder.clone(),
+        },
+        folder: folder.clone(),
+    };
+    assert_eq!(
+        opened,
+        Err(Failure::Explained {
+            explanation: Explanation {
+                message: ExplainedMessage::DubiousOwnership {
+                    folder: folder.clone()
+                },
+                next_step: NextStep::TrustFolder,
+                actions: vec![trust.clone()],
+            }
+        })
+    );
+    assert!(
+        !repository.git_succeeds(&["config", "--global", "--get-all", "safe.directory"]),
+        "explaining trusts nothing"
+    );
+
+    gikli.take_failure_action(&trust).expect("trust the folder");
+
+    let project = gikli
+        .open_project(&subfolder)
+        .expect("open project once trusted");
+    assert_eq!(project.repositories, vec![root]);
+    assert_eq!(
+        repository
+            .git(&["config", "--global", "--get-all", "safe.directory"])
+            .trim_end(),
+        folder
+    );
+}
+
+#[test]
+fn a_project_git_refuses_after_it_was_opened_is_explained_instead_of_shown_as_broken() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    if !git_checks_ownership(&repository) {
+        return;
+    }
+    sandbox
+        .gikli()
+        .open_project(repository.root())
+        .expect("open project");
+    let gikli = sandbox.gikli_in(sandbox.host_where_repositories_belong_to_someone_else());
+
+    let opened = gikli.open_project(repository.root());
+
+    let Err(Failure::Explained { explanation }) = opened else {
+        panic!("got {opened:?}");
+    };
+    assert_eq!(explanation.next_step, NextStep::TrustFolder);
+    assert_eq!(gikli.notifications(), vec![]);
+
+    gikli
+        .take_failure_action(&explanation.actions[0])
+        .expect("trust the folder");
+
+    let project = gikli
+        .open_project(repository.root())
+        .expect("open project once trusted");
+    assert_eq!(project.repositories, vec![repository_of(&repository)]);
+    assert_eq!(project.invalid_repositories, vec![]);
+    assert!(repository.git_succeeds(&["config", "--global", "--get-all", "safe.directory"]));
+}
+
+#[test]
+fn opening_a_refused_repository_is_explained_the_same_when_git_speaks_another_language() {
+    let sandbox = Sandbox::new();
+    let shared = sandbox.repository("shared");
+    if !git_checks_ownership(&shared) {
+        return;
+    }
+    let gikli = sandbox.gikli_in(speaking(
+        sandbox.host_where_repositories_belong_to_someone_else(),
+        "de",
+    ));
+
+    let opened = gikli.open_project(shared.root());
+
+    let Err(Failure::Explained { explanation }) = opened else {
+        panic!("got {opened:?}");
+    };
+    assert_eq!(
+        explanation.message,
+        ExplainedMessage::DubiousOwnership {
+            folder: as_git_writes_it(&repository_of(&shared).root)
+        }
+    );
+    assert!(
+        !shared.git_succeeds(&["config", "--global", "--get-all", "safe.directory"]),
+        "explaining trusts nothing"
+    );
+}
+
 /// A repository with one commit and a new file, whose index is locked by a file some git left
 /// behind. Returns the lock, as plain git's own path to it.
 fn repository_with_a_stale_lock(sandbox: &Sandbox, name: &str) -> (TestRepository, PathBuf) {

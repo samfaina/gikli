@@ -798,6 +798,22 @@ impl WslRepository {
         wsl_output(&self.wsl, None, &["chmod", "+x", linux_path]);
     }
 
+    /// Whether plain git inside WSL considers `linux_path` part of a repository.
+    pub fn is_inside_repository_by_git(&self, linux_path: &str) -> bool {
+        Command::new(&self.wsl)
+            .args([
+                "--cd",
+                linux_path,
+                "--exec",
+                "git",
+                "rev-parse",
+                "--git-dir",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
     /// Whether anything is at `linux_path`.
     pub fn file_exists(&self, linux_path: &str) -> bool {
         Command::new(&self.wsl)

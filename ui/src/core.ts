@@ -263,6 +263,9 @@ export type Failure =
   | { kind: "notARepositoryRoot"; folder: string }
   | { kind: "folderNotFound"; folder: string }
   | { kind: "notInRepository"; folder: string }
+  /** A bare repository or the inside of a git directory: gikli opens working trees. */
+  | { kind: "notAWorkingTree"; folder: string }
+  | { kind: "projectNotOpened"; folder: string }
   | { kind: "filesNotAdded"; folder: string }
   | { kind: "indexLockNotRemoved"; lock: string; message: string }
   | { kind: "folderNotTrusted"; folder: string }

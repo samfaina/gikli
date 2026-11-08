@@ -95,6 +95,9 @@ export const en = {
   failureNotARepositoryRoot: "{folder} is not the root of a git repository.",
   failureFolderNotFound: "There is no folder at {folder}.",
   failureNotInRepository: "{folder} is not inside a git repository.",
+  failureNotAWorkingTree:
+    "{folder} is a bare repository or part of a git directory. gikli opens working trees, not bare repositories.",
+  failureProjectNotOpened: "git could not open {folder}. The operation log shows git's output.",
   failureChangesUnreadable:
     "git could not read the changes in {folder}. Check that it is still a git repository, then refresh.",
   failureChangelistGone: "That Changelist no longer exists. Refresh to see the ones that do.",

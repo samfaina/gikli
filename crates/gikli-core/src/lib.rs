@@ -202,6 +202,17 @@ pub enum Failure {
     NotInRepository {
         folder: PathBuf,
     },
+    /// `folder` is a bare repository or inside a git directory. gikli opens working trees.
+    #[serde(rename_all = "camelCase")]
+    NotAWorkingTree {
+        folder: PathBuf,
+    },
+    /// git could not open `folder`, for a reason gikli does not know. The operation log holds git's
+    /// output.
+    #[serde(rename_all = "camelCase")]
+    ProjectNotOpened {
+        folder: PathBuf,
+    },
     /// The settings could not be written to disk, so they were not changed.
     SettingsNotSaved {
         message: String,
@@ -525,12 +536,13 @@ impl Gikli {
     /// neither registered nor ignored.
     pub fn open_project(&self, folder: &Path) -> Result<Project, Failure> {
         let place = self.project_folder(folder)?;
+        place.ensure_can_open()?;
         let (remembered, opened_before) = {
             let mut projects = lock(&self.projects);
             match projects.remembered(&place.folder) {
                 Some(remembered) => (remembered.clone(), true),
                 None => {
-                    let remembered = RememberedProject::first_open(place.toplevel.as_ref());
+                    let remembered = RememberedProject::first_open(place.toplevel.as_ref().ok());
                     if !remembered.repositories.is_empty() {
                         projects.remember(place.folder.clone(), remembered.clone());
                         // Remembered on a best-effort basis: when the registry cannot be saved,
@@ -544,9 +556,7 @@ impl Gikli {
         let project = place.project(&remembered)?;
         // A folder opened before keeps opening, even when the user ignored all it holds.
         if !opened_before && project.holds_nothing() {
-            return Err(Failure::NotInRepository {
-                folder: project.folder,
-            });
+            return Err(place.nothing_to_open());
         }
         self.notifications.withdraw_settled(&project);
         self.raise_project_notifications(&project);
@@ -707,7 +717,7 @@ impl Gikli {
             let mut remembered = projects
                 .remembered(&place.folder)
                 .cloned()
-                .unwrap_or_else(|| RememberedProject::first_open(place.toplevel.as_ref()));
+                .unwrap_or_else(|| RememberedProject::first_open(place.toplevel.as_ref().ok()));
             change(&mut remembered);
             let mut changed = projects.clone();
             changed.remember(place.folder.clone(), remembered.clone());
@@ -1220,8 +1230,8 @@ struct ProjectFolder {
     runner: GitRunner,
     /// The folder, in its absolute form.
     folder: PathBuf,
-    /// The root of the Repository the folder is in, if any.
-    toplevel: Option<PathBuf>,
+    /// The root of the Repository the folder is in, or the run of git that could not give one.
+    toplevel: Result<PathBuf, Invocation>,
 }
 
 impl ProjectFolder {
@@ -1271,7 +1281,53 @@ impl ProjectFolder {
     /// Whether the repository at `root` belongs in this Project: it is at or inside the folder,
     /// or it is the Repository the folder is in.
     fn holds(&self, root: &Path) -> bool {
-        root.starts_with(&self.folder) || self.toplevel.as_deref() == Some(root)
+        root.starts_with(&self.folder)
+            || self
+                .toplevel
+                .as_ref()
+                .is_ok_and(|toplevel| toplevel == root)
+    }
+
+    /// Fails when this folder cannot open as a Project, whatever it holds: when the failure explainer
+    /// knows why git could not look at it, as a Repository git refuses is not a broken one and the
+    /// user can do something about it, and in a git directory that knows its working tree, where git
+    /// gives a root that does not hold the folder.
+    fn ensure_can_open(&self) -> Result<(), Failure> {
+        match &self.toplevel {
+            Err(failed) => match explainer::explain(&self.runner, &self.folder, failed) {
+                Some(explanation) => Err(Failure::Explained { explanation }),
+                None => Ok(()),
+            },
+            Ok(root) if !self.folder.starts_with(root) && self.is_outside_work_tree()? => {
+                Err(Failure::NotAWorkingTree {
+                    folder: self.folder.clone(),
+                })
+            }
+            Ok(_) => Ok(()),
+        }
+    }
+
+    /// Why this folder, which shows no Repository at all, cannot open as a Project.
+    fn nothing_to_open(&self) -> Failure {
+        let folder = self.folder.clone();
+        if self
+            .toplevel
+            .as_ref()
+            .is_err_and(explainer::found_no_repository)
+        {
+            return Failure::NotInRepository { folder };
+        }
+        match self.is_outside_work_tree() {
+            Ok(true) => Failure::NotAWorkingTree { folder },
+            Ok(false) => Failure::ProjectNotOpened { folder },
+            Err(failure) => failure,
+        }
+    }
+
+    fn is_outside_work_tree(&self) -> Result<bool, Failure> {
+        self.runner
+            .is_outside_work_tree(&self.folder)
+            .map_err(git_failed_to_start)
     }
 }
 
@@ -1291,7 +1347,7 @@ fn is_repository_root(runner: &GitRunner, folder: &Path) -> Result<bool, Failure
         return Ok(false);
     }
     let toplevel = runner.toplevel(folder).map_err(git_failed_to_start)?;
-    Ok(toplevel.is_some_and(|root| canonicalize(&root).unwrap_or(root) == folder))
+    Ok(toplevel.is_ok_and(|root| canonicalize(&root).unwrap_or(root) == folder))
 }
 
 /// The absolute form of `folder`, which must exist.

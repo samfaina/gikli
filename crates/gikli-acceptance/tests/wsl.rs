@@ -2,11 +2,12 @@
 //! `\\wsl$`.
 #![cfg(windows)]
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use gikli_acceptance::{Sandbox, WslRepository, fake_git, real_wsl};
 use gikli_core::{
-    Change, ChangeStatus, GitCheck, GitSource, GitVersion, HostEnvironment, Repository,
+    Change, ChangeStatus, Failure, GitCheck, GitSource, GitVersion, HostEnvironment, Repository,
 };
 
 #[test]
@@ -160,6 +161,49 @@ fn a_repository_under_wsl_localhost_keeps_that_form() {
     let project = gikli.open_project(&localhost).expect("open project");
 
     assert_eq!(project.repositories, vec![Repository { root: localhost }]);
+}
+
+/// git inside WSL gives no way up from such a folder and no error, so only asking for the root as well
+/// tells this apart from the root of a Repository.
+#[test]
+fn a_git_directory_under_a_wsl_share_is_not_opened_as_it_has_no_working_tree() {
+    let Some(repository) = WslRepository::create() else {
+        eprintln!("skipped: no WSL with git on this machine");
+        return;
+    };
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli_in(host_with_stand_in_git_and_real_wsl(&sandbox));
+    let git_directory = repository.root().join(".git");
+
+    let opened = gikli.open_project(&git_directory);
+
+    assert_eq!(
+        opened,
+        Err(Failure::NotAWorkingTree {
+            folder: git_directory
+        })
+    );
+    assert_eq!(
+        repository.git(&["-C", ".git", "rev-parse", "--is-inside-work-tree"]),
+        "false\n"
+    );
+}
+
+#[test]
+fn a_folder_outside_any_repository_under_a_wsl_share_is_not_opened() {
+    let Some(repository) = WslRepository::create() else {
+        eprintln!("skipped: no WSL with git on this machine");
+        return;
+    };
+    let folder = repository.windows_path_beside("notes");
+    fs::create_dir(&folder).expect("create folder");
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli_in(host_with_stand_in_git_and_real_wsl(&sandbox));
+
+    let opened = gikli.open_project(&folder);
+
+    assert_eq!(opened, Err(Failure::NotInRepository { folder }));
+    assert!(!repository.is_inside_repository_by_git(&repository.linux_path_beside("notes")));
 }
 
 /// An environment whose PATH holds the stand-in git, then the real `wsl.exe`.
