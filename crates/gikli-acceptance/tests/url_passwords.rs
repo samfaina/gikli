@@ -247,6 +247,30 @@ fn only_the_password_of_a_url_goes_away() {
         ),
         ("git@host:org/repo.git", "git@host:org/repo.git"),
         ("file:///srv/ada:lace@home", "file:///srv/ada:lace@home"),
+        (
+            "file://C:/Users/me@x/repo.git",
+            "file://C:/Users/me@x/repo.git",
+        ),
+        (
+            "file:///C:/Users/me@x/repo.git",
+            "file:///C:/Users/me@x/repo.git",
+        ),
+        (
+            "file://ada:s3cret@host/repo.git",
+            "file://ada:s3cret@host/repo.git",
+        ),
+        (
+            "file://C:/Users/me@x/a.git and https://ada:s3cret@two/y",
+            "file://C:/Users/me@x/a.git and https://ada:***@two/y",
+        ),
+        (
+            "myfile://ada:s3cret@host/repo.git",
+            "myfile://ada:***@host/repo.git",
+        ),
+        (
+            "git+file://ada:s3cret@host/repo.git",
+            "git+file://ada:***@host/repo.git",
+        ),
     ];
     let sandbox = Sandbox::new();
     let remote = remote_with_a_commit(&sandbox);
