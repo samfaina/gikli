@@ -5,6 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { doubleClickUntilDisplayed } from "./double-click.js";
+
 /**
  * The Refresh button, once no read of the changes is under way. It is disabled during one, as when
  * the watcher saw a file change, and WebDriver drops a click on a disabled button silently.
@@ -53,11 +55,8 @@ describe("gikli", () => {
 
   it("opens the diff of a changed file on a double-click, and saves the local side", async () => {
     const untracked = process.env.GIKLI_E2E_UNTRACKED_FILE;
-    const row = await $(`[data-testid="change"][data-path="${untracked}"]`);
-    await row.doubleClick();
+    const diff = await doubleClickUntilDisplayed(browser, `[data-testid="change"][data-path="${untracked}"]`, '[data-testid="diff"]');
 
-    const diff = await $('[data-testid="diff"]');
-    await diff.waitForDisplayed({ timeout: 30000 });
     assert.equal(await $('[data-testid="diff-title"]').getText(), untracked);
     const local = await $(".cm-merge-b .cm-content");
     await local.waitForDisplayed({ timeout: 30000 });
