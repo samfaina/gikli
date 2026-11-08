@@ -24,6 +24,28 @@ async function expectRepositoryRoot(folder) {
   assert.ok((await root.getText()).includes(folder), `expected ${folder} on screen`);
 }
 
+/** Fills the open clone form to clone the smoke test's remote into `target`, and starts the clone. */
+async function startClone(target) {
+  await $('[data-testid="clone-url"]').setValue(pathToFileURL(process.env.GIKLI_E2E_REMOTE).href);
+  await $('[data-testid="clone-folder"]').setValue(target);
+  await $('[data-testid="start-clone"]').click();
+}
+
+/** Runs `check` in the window that opened since `windowsBefore`, then returns to the current window. */
+async function inNewWindow(windowsBefore, check) {
+  const current = await browser.getWindowHandle();
+  const opened = await browser.waitUntil(
+    async () => (await browser.getWindowHandles()).find((handle) => !windowsBefore.includes(handle)),
+    { timeout: 30000, timeoutMsg: "no new window opened" },
+  );
+  try {
+    await browser.switchToWindow(opened);
+    await check();
+  } finally {
+    await browser.switchToWindow(current);
+  }
+}
+
 describe("gikli", () => {
   it("opens the startup Project and shows its Repository root and the git version", async () => {
     await expectRepositoryRoot(process.env.GIKLI_E2E_REPOSITORY);
@@ -120,30 +142,45 @@ describe("gikli", () => {
   });
 
   it("clones a repository from a URL and opens the clone as a Project in a window of its own", async () => {
-    const remote = process.env.GIKLI_E2E_REMOTE;
     const target = path.join(process.env.GIKLI_E2E_SANDBOX, "clone");
-    const mainWindow = await browser.getWindowHandle();
     const windowsBefore = await browser.getWindowHandles();
 
-    await $('[data-testid="clone-url"]').setValue(pathToFileURL(remote).href);
-    await $('[data-testid="clone-folder"]').setValue(target);
-    await $('[data-testid="start-clone"]').click();
+    await startClone(target);
 
     await $('[data-testid="clone"]').waitForDisplayed({ timeout: 30000, reverse: true });
-    const cloneWindow = await browser.waitUntil(
-      async () => (await browser.getWindowHandles()).find((handle) => !windowsBefore.includes(handle)),
-      { timeout: 30000, timeoutMsg: "no window opened for the clone" },
-    );
-    try {
-      await browser.switchToWindow(cloneWindow);
-      await expectRepositoryRoot(target);
-    } finally {
-      // The cases after this one run in the main window.
-      await browser.switchToWindow(mainWindow);
-    }
+    await inNewWindow(windowsBefore, () => expectRepositoryRoot(target));
   });
 
   it("keeps showing the startup Project in the main window after a clone", async () => {
     await expectRepositoryRoot(process.env.GIKLI_E2E_REPOSITORY);
+  });
+
+  it("cancels a clone from the view of running operations while its post-checkout hook blocks", async () => {
+    const sandbox = process.env.GIKLI_E2E_SANDBOX;
+    const target = path.join(sandbox, "cancelled clone");
+    const windowsBefore = await browser.getWindowHandles();
+
+    fs.writeFileSync(path.join(sandbox, "block-post-checkout"), "");
+    await $('[data-testid="toggle-clone"]').click();
+    await startClone(target);
+
+    const hook = await $('[data-testid="operation"] [data-testid="operation-hook"]');
+    await hook.waitForDisplayed({ timeout: 30000 });
+    assert.match(await hook.getText(), /post-checkout/);
+    const cancel = await $('[data-testid="operation"] [data-testid="cancel-operation"]');
+    await cancel.waitForDisplayed({ timeout: 30000 });
+    await cancel.click();
+
+    // Counted afresh: the view is rebuilt on every event, and an element held from before is gone.
+    await browser.waitUntil(async () => (await $$('[data-testid="operation"]')).length === 0, {
+      timeout: 30000,
+      timeoutMsg: "the operation stayed in the view",
+    });
+    await inNewWindow(windowsBefore, async () => {
+      await expectRepositoryRoot(target);
+      const notification = await $('[data-testid="notification"][data-kind="hookNotFinished"]');
+      await notification.waitForDisplayed({ timeout: 30000 });
+      assert.match(await notification.getText(), /post-checkout/);
+    });
   });
 });
