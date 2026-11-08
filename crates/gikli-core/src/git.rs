@@ -9,6 +9,9 @@
 //! Credential helpers are the other exception. gikli adds one of its own after the user's, which
 //! only notes that a remote refused the credentials, and the "Use credential helper" setting can
 //! turn the user's off.
+//!
+//! The run that looks for the root of a repository is told not to translate its messages
+//! (`LC_ALL=C`), as nothing but one of git's sentences says that there is no repository.
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -130,8 +133,9 @@ impl GitProgram {
             Self::Native(_) => &["rev-parse", "--path-format=absolute", "--show-toplevel"],
             // git inside WSL prints Linux paths, and where a Windows drive appears inside WSL
             // depends on the distribution's settings. The way up from the folder, as `../`
-            // steps, needs no translation.
-            Self::Wsl { .. } => &["rev-parse", "--show-cdup"],
+            // steps, needs no translation. Outside a working tree that way up is empty and git
+            // does not fail, as it does when it also has to give the root.
+            Self::Wsl { .. } => &["rev-parse", "--show-toplevel", "--show-cdup"],
         }
     }
 
@@ -140,7 +144,10 @@ impl GitProgram {
         let output = output.strip_suffix(b"\n").unwrap_or(output);
         match self {
             Self::Native(_) => path_from_bytes(output),
-            Self::Wsl { .. } => folder.join(String::from_utf8_lossy(output).as_ref()),
+            Self::Wsl { .. } => {
+                let output = String::from_utf8_lossy(output);
+                folder.join(output.rsplit('\n').next().unwrap_or_default())
+            }
         }
     }
 }
@@ -245,7 +252,30 @@ impl GitRunner {
 
     /// Runs git with `args` in `folder`, for a command nobody needs to see or stop.
     pub fn run(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
-        let (mut command, entry, mut trace) = self.command(folder, args);
+        let (command, entry, trace) = self.command(folder, args);
+        self.run_to_the_end(command, entry, trace)
+    }
+
+    /// Runs git with `args` in `folder` as [`Self::run`] does, with git writing its messages in its
+    /// own language whatever the user's is, for a failure no fixed part of the output tells apart.
+    fn run_untranslated(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
+        let (mut command, entry, trace) = self.command(folder, args);
+        command.env("LC_ALL", "C");
+        if matches!(self.program, GitProgram::Wsl { .. }) {
+            let mut shared = self.host.get("WSLENV").unwrap_or_default().to_owned();
+            shared.push(":LC_ALL");
+            command.env("WSLENV", shared);
+        }
+        self.run_to_the_end(command, entry, trace)
+    }
+
+    /// Runs `command`, which nobody needs to see or stop.
+    fn run_to_the_end(
+        &self,
+        mut command: Command,
+        entry: OperationLogEntry,
+        mut trace: RunTrace,
+    ) -> std::io::Result<Invocation> {
         let output = command.output().map(|mut output| {
             let mut stderr = trace.take_events_from(&output.stderr);
             stderr.extend(trace.stderr_ended());
@@ -381,13 +411,22 @@ impl GitRunner {
             .then(|| folder.join(path_from_bytes(output))))
     }
 
-    /// The root of the repository `folder` is in, as Windows sees it, or None when `folder` is
-    /// not in a repository.
-    pub fn toplevel(&self, folder: &Path) -> std::io::Result<Option<PathBuf>> {
-        let invocation = self.run(folder, self.program.toplevel_args())?;
-        Ok(invocation
-            .success
-            .then(|| self.program.toplevel(folder, &invocation.stdout)))
+    /// The root of the repository `folder` is in, as Windows sees it, or the run of git that could
+    /// not give one, which says why in words [`crate::explainer`] can read.
+    pub fn toplevel(&self, folder: &Path) -> std::io::Result<Result<PathBuf, Invocation>> {
+        let invocation = self.run_untranslated(folder, self.program.toplevel_args())?;
+        Ok(if invocation.success {
+            Ok(self.program.toplevel(folder, &invocation.stdout))
+        } else {
+            Err(invocation)
+        })
+    }
+
+    /// Whether git says that `folder` is in a repository and outside any working tree, as a bare
+    /// repository and the inside of a git directory are.
+    pub fn is_outside_work_tree(&self, folder: &Path) -> std::io::Result<bool> {
+        let invocation = self.run(folder, &["rev-parse", "--is-inside-work-tree"])?;
+        Ok(invocation.success && invocation.stdout == b"false\n")
     }
 }
 
