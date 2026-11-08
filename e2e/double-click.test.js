@@ -12,7 +12,7 @@ const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
 const ROW = '[data-testid="change"][data-path="smoke file.txt"]';
 const DIFF = '[data-testid="diff"]';
 /** Quick enough for a test: the double-click that opens the diff shows it at once here. */
-const OPTIONS = { attempts: 3, within: 200 };
+const QUICK_RETRIES = { attempts: 3, timeout: 200 };
 const STALE = { error: "stale element reference", message: "stale element reference" };
 
 async function readJson(request) {
@@ -31,14 +31,15 @@ function reply(response, value, status = 200) {
  * A WebDriver server showing one change row and a diff view, closed until a double-click on the
  * row's current element reaches it.
  *
- * - `rebuildsAfterFind`: how many times finding the row is followed by a rebuild of the list, which
- *   gives the row a new element id and leaves the one just handed out stale.
+ * - `rebuildsAfterFind`: how many times finding the row is followed by a rebuild of the changes
+ *   view, which gives the row a new element id and leaves the one just handed out stale.
  * - `lostDoubleClicks`: how many double-clicks on the current element leave the diff closed.
  * - `failure`: the WebDriver error every double-click gets, as `{ error, message }`.
+ * - `opensAfter`: how many ms the diff takes to open after the double-click that opens it.
  *
  * `doubleClicks` holds the element id of each double-click received, in order.
  */
-function changeListServer({ rebuildsAfterFind = 0, lostDoubleClicks = 0, failure } = {}) {
+function changesViewServer({ rebuildsAfterFind = 0, lostDoubleClicks = 0, failure, opensAfter = 0 } = {}) {
   const state = { doubleClicks: [], rebuilds: rebuildsAfterFind, lost: lostDoubleClicks, row: 1, diffOpen: false };
 
   const find = (selector) => {
@@ -80,7 +81,7 @@ function changeListServer({ rebuildsAfterFind = 0, lostDoubleClicks = 0, failure
         if (state.lost > 0) {
           state.lost -= 1;
         } else {
-          state.diffOpen = true;
+          setTimeout(() => (state.diffOpen = true), opensAfter);
         }
         reply(response, null);
       }
@@ -115,57 +116,67 @@ async function connect(t, server) {
 }
 
 describe("doubleClickUntilDisplayed", () => {
-  it("double-clicks a row found afresh when the list is rebuilt after the row was found", async (t) => {
-    const { server, state } = changeListServer({ rebuildsAfterFind: 1 });
+  it("double-clicks a row found afresh when the changes view is rebuilt after the row was found", async (t) => {
+    const { server, state } = changesViewServer({ rebuildsAfterFind: 1 });
     const browser = await connect(t, server);
 
-    await doubleClickUntilDisplayed(browser, ROW, DIFF, OPTIONS);
+    const diff = await doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES);
 
+    assert.equal(diff.elementId, "diff");
     assert.equal(state.diffOpen, true);
     assert.equal(state.doubleClicks.at(0), "row-1");
     assert.equal(state.doubleClicks.at(-1), "row-2");
   });
 
   it("stops with the stale element error when the row goes stale on every attempt", async (t) => {
-    const { server, state } = changeListServer({ rebuildsAfterFind: Infinity });
+    const { server, state } = changesViewServer({ rebuildsAfterFind: Infinity });
     const browser = await connect(t, server);
 
-    await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, OPTIONS), { name: "stale element reference" });
+    await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES), { name: "stale element reference" });
 
     // WebdriverIO repeats each attempt with the same id, so an attempt is a distinct id.
-    assert.equal(new Set(state.doubleClicks).size, OPTIONS.attempts);
+    assert.equal(new Set(state.doubleClicks).size, QUICK_RETRIES.attempts);
     assert.equal(state.diffOpen, false);
   });
 
   it("does not retry an error other than a stale element", async (t) => {
     const failure = { error: "move target out of bounds", message: "the row is off screen" };
-    const { server, state } = changeListServer({ failure });
+    const { server, state } = changesViewServer({ failure });
     const browser = await connect(t, server);
 
-    await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, OPTIONS), { name: failure.error });
+    await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES), { name: failure.error });
 
     assert.equal(state.doubleClicks.length, 1);
   });
 
   it("double-clicks again when a double-click left the diff closed, and only then", async (t) => {
-    const { server, state } = changeListServer({ lostDoubleClicks: 1 });
+    const { server, state } = changesViewServer({ lostDoubleClicks: 1 });
     const browser = await connect(t, server);
 
-    await doubleClickUntilDisplayed(browser, ROW, DIFF, OPTIONS);
+    await doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES);
 
     assert.equal(state.diffOpen, true);
     assert.equal(state.doubleClicks.length, 2);
   });
 
-  it("fails, naming the diff view, when no double-click opens it", async (t) => {
-    const { server, state } = changeListServer({ lostDoubleClicks: Infinity });
+  it("waits for a diff that is slow to open without double-clicking again", async (t) => {
+    const { server, state } = changesViewServer({ opensAfter: QUICK_RETRIES.timeout / 2 });
     const browser = await connect(t, server);
 
-    await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, OPTIONS), (error) => {
+    await doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES);
+
+    assert.equal(state.doubleClicks.length, 1);
+  });
+
+  it("fails, naming the diff view, when no double-click opens it", async (t) => {
+    const { server, state } = changesViewServer({ lostDoubleClicks: Infinity });
+    const browser = await connect(t, server);
+
+    await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES), (error) => {
       assert.ok(error.message.includes(DIFF), error.message);
       return true;
     });
 
-    assert.equal(state.doubleClicks.length, OPTIONS.attempts);
+    assert.equal(state.doubleClicks.length, QUICK_RETRIES.attempts);
   });
 });

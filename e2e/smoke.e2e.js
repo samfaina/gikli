@@ -55,9 +55,8 @@ describe("gikli", () => {
 
   it("opens the diff of a changed file on a double-click, and saves the local side", async () => {
     const untracked = process.env.GIKLI_E2E_UNTRACKED_FILE;
-    await doubleClickUntilDisplayed(browser, `[data-testid="change"][data-path="${untracked}"]`, '[data-testid="diff"]');
+    const diff = await doubleClickUntilDisplayed(browser, `[data-testid="change"][data-path="${untracked}"]`, '[data-testid="diff"]');
 
-    const diff = await $('[data-testid="diff"]');
     assert.equal(await $('[data-testid="diff-title"]').getText(), untracked);
     const local = await $(".cm-merge-b .cm-content");
     await local.waitForDisplayed({ timeout: 30000 });
