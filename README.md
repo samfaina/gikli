@@ -56,10 +56,10 @@ needs `webkit2gtk-driver` (WebKitWebDriver). tauri-driver does not support macOS
 smoke test does not run.
 
 CI (`.github/workflows/ci.yml`) builds the app and runs these checks on every pull request
-against `main` and every push to `main`, on Windows, macOS and Linux, and once more on Linux
-against git 2.34, the oldest supported version. The smoke test runs on every job but macOS's,
-which reports it as skipped. On Windows it runs without tauri-driver, which cannot start a
-session on the GitHub-hosted runner (#54): a CI step opens a WebView2 DevTools port with the
+against `main` and every push to `main`, on Windows, macOS and Linux, and once more on Windows
+and on Linux against git 2.34, the oldest supported version. The smoke test runs on every job
+but macOS's, which reports it as skipped. On Windows it runs without tauri-driver, which cannot
+start a session on the GitHub-hosted runner (#54): a CI step opens a WebView2 DevTools port with the
 `AdditionalBrowserArguments` policy for `gikli.exe` and names it in
 `GIKLI_E2E_WEBVIEW2_DEBUG_PORT`, and with that variable set the smoke test launches the app itself
 and attaches the Edge WebDriver to that port. Without the variable it goes through tauri-driver.
