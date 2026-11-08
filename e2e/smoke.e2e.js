@@ -31,7 +31,7 @@ async function startClone(target) {
   await $('[data-testid="start-clone"]').click();
 }
 
-/** Runs `check` in the window that opened since `windowsBefore`, then returns to the current window. */
+/** Runs `check` in the window that opened since `windowsBefore`, then returns to the current window for the cases after it. */
 async function inNewWindow(windowsBefore, check) {
   const current = await browser.getWindowHandle();
   const opened = await browser.waitUntil(
@@ -171,7 +171,7 @@ describe("gikli", () => {
     await cancel.waitForDisplayed({ timeout: 30000 });
     await cancel.click();
 
-    // Counted afresh: the view is rebuilt on every event, and an element held from before is gone.
+    // Queried afresh: the view is rebuilt on every event, and any rebuild would make a held element look gone.
     await browser.waitUntil(async () => (await $$('[data-testid="operation"]')).length === 0, {
       timeout: 30000,
       timeoutMsg: "the operation stayed in the view",

@@ -32,7 +32,7 @@ function createRepository() {
   // The native realpath, as the app canonicalizes the folder it opens: on Windows it expands 8.3
   // short names, such as RUNNER~1 in the runner's temporary folder, which the JavaScript one keeps.
   const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gikli-e2e-")));
-  const gitconfig = path.join(sandbox, ".gitconfig");
+  const gitconfig = sandboxGitconfig(sandbox);
   fs.writeFileSync(gitconfig, "[init]\n\tdefaultBranch = main\n");
   const repository = path.join(sandbox, "smoke repo");
   fs.mkdirSync(repository);
@@ -41,6 +41,11 @@ function createRepository() {
   installPromptingFsmonitor(sandbox, repository, gitconfig);
   installBlockingPostCheckout(sandbox, gitconfig);
   return { sandbox, repository, remote: createRemote(sandbox, gitconfig) };
+}
+
+/** The global git configuration of `sandbox`. */
+function sandboxGitconfig(sandbox) {
+  return path.join(sandbox, ".gitconfig");
 }
 
 /** Runs git in `cwd`, isolated from the developer's git configuration. */
@@ -95,7 +100,8 @@ exit 1
 /**
  * Makes the next `post-checkout` after `block-post-checkout` appears in `sandbox` block until gikli
  * ends it. Every other run of the hook exits at once. The hook comes from the global configuration
- * because a clone has no repository of its own to hold one before it starts.
+ * because a clone has no repository of its own to hold one before it starts. The block outlasts any
+ * case and still ends by itself, so a case that fails before it cancels leaves no process for good.
  */
 function installBlockingPostCheckout(sandbox, gitconfig) {
   const hooks = path.join(sandbox, "hooks");
@@ -106,7 +112,7 @@ function installBlockingPostCheckout(sandbox, gitconfig) {
     `#!/bin/sh
 if [ -e '${folder}/block-post-checkout' ]; then
   rm '${folder}/block-post-checkout'
-  while :; do sleep 1; done
+  sleep 300
 fi
 `,
     { mode: 0o755 },
@@ -198,7 +204,7 @@ function appEnvironment() {
   return {
     ...process.env,
     GIKLI_PROJECT_FOLDER: process.env.GIKLI_E2E_REPOSITORY,
-    GIT_CONFIG_GLOBAL: path.join(process.env.GIKLI_E2E_SANDBOX, ".gitconfig"),
+    GIT_CONFIG_GLOBAL: sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX),
   };
 }
 
