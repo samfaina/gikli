@@ -15,14 +15,16 @@ async function idleRefresh() {
   return refresh;
 }
 
+/** Waits for the current window to show a Repository, and checks that its root is `folder`. */
+async function expectRepositoryRoot(folder) {
+  const root = await $('[data-testid="repository-root"]');
+  await root.waitForDisplayed({ timeout: 30000 });
+  assert.ok((await root.getText()).includes(folder), `expected ${folder} on screen`);
+}
+
 describe("gikli", () => {
   it("opens the startup Project and shows its Repository root and the git version", async () => {
-    const repository = process.env.GIKLI_E2E_REPOSITORY;
-
-    const root = await $('[data-testid="repository-root"]');
-    await root.waitForDisplayed({ timeout: 30000 });
-
-    assert.ok((await root.getText()).includes(repository), `expected ${repository} on screen`);
+    await expectRepositoryRoot(process.env.GIKLI_E2E_REPOSITORY);
     assert.match(await $('[data-testid="git-status"]').getText(), /^git \d+\.\d+\.\d+$/);
   });
 
@@ -118,7 +120,7 @@ describe("gikli", () => {
     assert.equal(await url.getValue(), "git@example.com:owner/repo.git");
   });
 
-  it("clones a repository from a URL and opens it in a window of its own", async () => {
+  it("clones a repository from a URL and opens the clone as a Project in a window of its own", async () => {
     const remote = process.env.GIKLI_E2E_REMOTE;
     const target = path.join(process.env.GIKLI_E2E_SANDBOX, "clone");
     const mainWindow = await browser.getWindowHandle();
@@ -135,9 +137,7 @@ describe("gikli", () => {
     );
     try {
       await browser.switchToWindow(cloneWindow);
-      const root = await $('[data-testid="repository-root"]');
-      await root.waitForDisplayed({ timeout: 30000 });
-      assert.ok((await root.getText()).includes(target), `expected ${target} on screen`);
+      await expectRepositoryRoot(target);
     } finally {
       // The cases after this one run in the main window.
       await browser.switchToWindow(mainWindow);
@@ -145,8 +145,6 @@ describe("gikli", () => {
   });
 
   it("keeps showing the startup Project in the main window after a clone", async () => {
-    const root = await $('[data-testid="repository-root"]');
-    await root.waitForDisplayed({ timeout: 30000 });
-    assert.ok((await root.getText()).includes(process.env.GIKLI_E2E_REPOSITORY));
+    await expectRepositoryRoot(process.env.GIKLI_E2E_REPOSITORY);
   });
 });
