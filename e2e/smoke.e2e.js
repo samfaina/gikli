@@ -15,14 +15,16 @@ async function idleRefresh() {
   return refresh;
 }
 
+/** Waits for the current window to show a Repository, and checks that its root is `folder`. */
+async function expectRepositoryRoot(folder) {
+  const root = await $('[data-testid="repository-root"]');
+  await root.waitForDisplayed({ timeout: 30000 });
+  assert.ok((await root.getText()).includes(folder), `expected ${folder} on screen`);
+}
+
 describe("gikli", () => {
   it("opens the startup Project and shows its Repository root and the git version", async () => {
-    const repository = process.env.GIKLI_E2E_REPOSITORY;
-
-    const root = await $('[data-testid="repository-root"]');
-    await root.waitForDisplayed({ timeout: 30000 });
-
-    assert.ok((await root.getText()).includes(repository), `expected ${repository} on screen`);
+    await expectRepositoryRoot(process.env.GIKLI_E2E_REPOSITORY);
     assert.match(await $('[data-testid="git-status"]').getText(), /^git \d+\.\d+\.\d+$/);
   });
 
@@ -118,16 +120,31 @@ describe("gikli", () => {
     assert.equal(await url.getValue(), "git@example.com:owner/repo.git");
   });
 
-  // The clone opens in a window of its own, which not every WebDriver can reach, so this stops at
-  // the form closing, which it does once the core has opened the clone as a Project.
-  it("clones a repository from a URL", async () => {
+  it("clones a repository from a URL and opens the clone as a Project in a window of its own", async () => {
     const remote = process.env.GIKLI_E2E_REMOTE;
     const target = path.join(process.env.GIKLI_E2E_SANDBOX, "clone");
+    const mainWindow = await browser.getWindowHandle();
+    const windowsBefore = await browser.getWindowHandles();
 
     await $('[data-testid="clone-url"]').setValue(pathToFileURL(remote).href);
     await $('[data-testid="clone-folder"]').setValue(target);
     await $('[data-testid="start-clone"]').click();
 
     await $('[data-testid="clone"]').waitForDisplayed({ timeout: 30000, reverse: true });
+    const cloneWindow = await browser.waitUntil(
+      async () => (await browser.getWindowHandles()).find((handle) => !windowsBefore.includes(handle)),
+      { timeout: 30000, timeoutMsg: "no window opened for the clone" },
+    );
+    try {
+      await browser.switchToWindow(cloneWindow);
+      await expectRepositoryRoot(target);
+    } finally {
+      // The cases after this one run in the main window.
+      await browser.switchToWindow(mainWindow);
+    }
+  });
+
+  it("keeps showing the startup Project in the main window after a clone", async () => {
+    await expectRepositoryRoot(process.env.GIKLI_E2E_REPOSITORY);
   });
 });
