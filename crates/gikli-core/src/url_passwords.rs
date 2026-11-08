@@ -11,10 +11,11 @@ pub(crate) fn hide_url_passwords(text: &str) -> String {
     let mut shown = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(scheme_end) = rest.find("://") {
+        let is_file_url = ends_with_file_scheme(&rest[..scheme_end]);
         let (before, after) = rest.split_at(scheme_end + "://".len());
         shown.push_str(before);
         rest = after;
-        if ends_with_file_scheme(before) {
+        if is_file_url {
             continue;
         }
         if let Some((colon, at)) = password_bounds(after) {
@@ -27,11 +28,11 @@ pub(crate) fn hide_url_passwords(text: &str) -> String {
     shown
 }
 
-/// Whether `text`, which ends at the `://` of a URL, gives that URL the scheme `file`. Only the
-/// lowercase word is, as git reads no other as a `file` URL, and a longer scheme that ends in it,
-/// such as `myfile` or `git+file`, is not.
+/// Whether `text`, all that comes before the `://` of a URL, ends in the scheme `file`. Only the
+/// lowercase word counts, as git reads no other spelling as a `file` URL. A longer name that ends in
+/// it, such as `myfile`, `git+file` or `my_file`, does not count either, so it stays masked.
 fn ends_with_file_scheme(text: &str) -> bool {
-    text.strip_suffix("file://").is_some_and(|start| {
+    text.strip_suffix("file").is_some_and(|start| {
         !start.ends_with(|c: char| c.is_alphanumeric() || matches!(c, '+' | '-' | '.' | '_'))
     })
 }
