@@ -378,10 +378,10 @@ fn rollback_plan(
 fn rollback_files(
     gikli: State<'_, Gikli>,
     repository: Repository,
-    paths: Vec<String>,
+    plan: RollbackPlan,
     delete_added_files: bool,
 ) -> Result<ChangeSet, Failure> {
-    gikli.rollback_files(&repository, &paths, delete_added_files)
+    gikli.rollback_files(&repository, &plan, delete_added_files)
 }
 
 #[tauri::command(async)]

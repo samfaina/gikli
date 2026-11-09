@@ -1689,6 +1689,8 @@ function describeFailure(failure: Failure): string {
       return t("failureFilesNotAdded", { folder: failure.folder });
     case "filesNotRolledBack":
       return t("failureFilesNotRolledBack", { folder: failure.folder });
+    case "rollbackListOutdated":
+      return t("failureRollbackListOutdated");
     case "indexLockNotRemoved":
       return t("failureIndexLockNotRemoved", { lock: failure.lock, message: failure.message });
     case "folderNotTrusted":

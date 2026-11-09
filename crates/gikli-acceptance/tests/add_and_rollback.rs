@@ -5,7 +5,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{Change, ChangeStatus, Event, Failure, Gikli, LongOperation, Repository};
+use gikli_core::{
+    Change, ChangeSet, ChangeStatus, Event, Failure, Gikli, LongOperation, Repository,
+};
 
 /// Opens the repository's folder as a Project and returns its Repository.
 fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
@@ -40,7 +42,7 @@ fn change(path: &str, status: ChangeStatus) -> Change {
 }
 
 #[test]
-fn an_untracked_file_can_be_added() {
+fn an_unversioned_file_can_be_added() {
     let sandbox = Sandbox::new();
     let repository = committed_repository(&sandbox);
     repository.write("new.txt", "new\n");
@@ -192,6 +194,19 @@ fn the_list_to_confirm_leaves_out_what_is_not_in_a_changelist() {
     assert!(!plan.has_added_files);
 }
 
+/// Lists what rolling back `selected` would discard and confirms that list straight away.
+fn roll_back(
+    gikli: &Gikli,
+    root: &Repository,
+    selected: &[&str],
+    delete_added_files: bool,
+) -> Result<ChangeSet, Failure> {
+    let plan = gikli
+        .rollback_plan(root, &paths(selected))
+        .expect("rollback plan");
+    gikli.rollback_files(root, &plan, delete_added_files)
+}
+
 /// What the file at `path` of `repository` holds on disk.
 fn contents(repository: &TestRepository, path: &str) -> String {
     fs::read_to_string(repository.root().join(path)).expect("read file")
@@ -211,9 +226,7 @@ fn rolling_back_a_modified_file_brings_back_the_last_commit() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    let changes = gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    let changes = roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert_eq!(changes.changes, vec![]);
     assert_eq!(contents(&repository, "README.md"), "hello\n");
@@ -228,9 +241,7 @@ fn rolling_back_a_deleted_file_brings_it_back() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "README.md"), "hello\n");
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
@@ -247,9 +258,7 @@ fn rolling_back_leaves_the_files_that_were_not_selected() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "other.txt"), "changed too\n");
     assert_eq!(repository.status_by_git(), vec![" M other.txt"]);
@@ -267,9 +276,7 @@ fn rolling_back_takes_a_path_literally() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["[ab].txt"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["[ab].txt"], false).expect("roll back");
 
     assert_eq!(repository.status_by_git(), vec![" M a.txt"]);
 }
@@ -283,9 +290,7 @@ fn a_rolled_back_file_leaves_its_changelist() {
     let root = opened(&gikli, &repository);
     gikli.read_changes(&root).expect("read changes");
 
-    let changes = gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    let changes = roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert_eq!(changes.changelists[0].group.changes, vec![]);
 }
@@ -299,9 +304,7 @@ fn rolling_back_never_touches_an_unversioned_file() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["new.txt"]), true)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["new.txt"], true).expect("roll back");
 
     assert_eq!(contents(&repository, "new.txt"), "new\n");
     assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
@@ -319,7 +322,7 @@ fn a_rollback_git_cannot_do_says_so_and_discards_nothing() {
     let lock = repository.root().join(".git").join("index.lock");
     fs::write(&lock, "").expect("write lock");
 
-    let result = gikli.rollback_files(&root, &paths(&["README.md"]), false);
+    let result = roll_back(&gikli, &root, &["README.md"], false);
 
     assert!(
         matches!(result, Err(Failure::Explained { .. })),
@@ -337,9 +340,7 @@ fn rolling_back_an_added_file_keeps_its_local_copy_unless_told_otherwise() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    let changes = gikli
-        .rollback_files(&root, &paths(&["new.txt"]), false)
-        .expect("roll back");
+    let changes = roll_back(&gikli, &root, &["new.txt"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "new.txt"), "new\n");
     assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
@@ -358,9 +359,7 @@ fn rolling_back_an_added_file_can_delete_its_local_copy() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["src/nested/new.txt"]), true)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["src/nested/new.txt"], true).expect("roll back");
 
     assert!(!exists(&repository, "src"), "the empty folders go too");
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
@@ -377,9 +376,7 @@ fn an_added_file_edited_since_can_be_rolled_back() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["new.txt"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["new.txt"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "new.txt"), "edited\n");
     assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
@@ -395,9 +392,7 @@ fn the_option_to_delete_applies_only_to_added_files() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["README.md", "new.txt"]), true)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md", "new.txt"], true).expect("roll back");
 
     assert_eq!(contents(&repository, "README.md"), "hello\n");
     assert!(!exists(&repository, "new.txt"));
@@ -418,12 +413,8 @@ fn rollback_works_in_a_repository_with_no_commits() {
         .rollback_plan(&root, &paths(&["first.txt", "second.txt"]))
         .expect("rollback plan");
     assert!(plan.has_added_files);
-    gikli
-        .rollback_files(&root, &paths(&["first.txt"]), false)
-        .expect("roll back and keep");
-    gikli
-        .rollback_files(&root, &paths(&["second.txt"]), true)
-        .expect("roll back and delete");
+    roll_back(&gikli, &root, &["first.txt"], false).expect("roll back and keep");
+    roll_back(&gikli, &root, &["second.txt"], true).expect("roll back and delete");
 
     assert_eq!(contents(&repository, "first.txt"), "first\n");
     assert!(!exists(&repository, "second.txt"));
@@ -444,9 +435,7 @@ fn a_file_added_with_intent_to_add_rolls_back_as_an_added_file() {
         .rollback_plan(&root, &paths(&["new.txt"]))
         .expect("rollback plan");
     assert_eq!(plan.files, vec![change("new.txt", ChangeStatus::Added)]);
-    gikli
-        .rollback_files(&root, &paths(&["new.txt"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["new.txt"], false).expect("roll back");
 
     assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
 }
@@ -474,9 +463,7 @@ fn rolling_back_a_rename_puts_the_file_back_where_it_was() {
         .expect("rollback plan");
     assert_eq!(plan.files, vec![renamed("moved.md", "README.md")]);
     assert!(!plan.has_added_files);
-    gikli
-        .rollback_files(&root, &paths(&["moved.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["moved.md"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "README.md"), "hello\n");
     assert!(!exists(&repository, "moved.md"));
@@ -516,9 +503,7 @@ fn rolling_back_a_file_moved_and_then_removed_leaves_nothing_behind() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "README.md"), "hello\n");
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
@@ -543,9 +528,7 @@ fn rolling_back_a_copy_takes_it_out_of_git_and_leaves_the_file_it_came_from() {
         .rollback_plan(&root, &paths(&["copy.txt"]))
         .expect("rollback plan");
     assert!(plan.has_added_files);
-    gikli
-        .rollback_files(&root, &paths(&["copy.txt"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["copy.txt"], false).expect("roll back");
 
     assert_eq!(
         repository.status_by_git(),
@@ -585,9 +568,7 @@ fn rolling_back_a_conflicted_file_brings_back_our_side() {
         .rollback_plan(&root, &paths(&["README.md"]))
         .expect("rollback plan");
     assert!(!plan.has_added_files);
-    gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "README.md"), "ours\n");
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
@@ -604,18 +585,14 @@ fn a_conflicted_file_the_last_commit_does_not_hold_is_taken_out_of_git() {
         .rollback_plan(&root, &paths(&["README.md"]))
         .expect("rollback plan");
     assert!(plan.has_added_files);
-    gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert_eq!(contents(&repository, "README.md"), "theirs\n");
     assert_eq!(repository.status_by_git(), vec!["?? README.md"]);
 }
 
-/// git only moves what the Repository records, so the submodule would stay as it is, changed.
-#[test]
-fn a_changed_submodule_is_not_something_to_roll_back() {
-    let sandbox = Sandbox::new();
+/// A repository with `library` as a submodule at `lib`, committed.
+fn repository_with_a_submodule(sandbox: &Sandbox) -> TestRepository {
     sandbox.allow_local_submodules();
     let library = sandbox.repository("library");
     library.write("lib.rs", "pub fn a() {}\n");
@@ -626,6 +603,14 @@ fn a_changed_submodule_is_not_something_to_roll_back() {
     let url = library.root().to_string_lossy().into_owned();
     repository.git(&["submodule", "--quiet", "add", &url, "lib"]);
     repository.commit_all("Add the library");
+    repository
+}
+
+/// git only moves what the Repository records, so the submodule would stay as it is, changed.
+#[test]
+fn a_changed_submodule_is_not_something_to_roll_back() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_submodule(&sandbox);
     repository.write("lib/lib.rs", "pub fn b() {}\n");
     repository.git(&["-C", "lib", "commit", "--quiet", "--all", "--message", "B"]);
     let gikli = sandbox.gikli();
@@ -633,6 +618,22 @@ fn a_changed_submodule_is_not_something_to_roll_back() {
 
     let plan = gikli
         .rollback_plan(&root, &paths(&["lib"]))
+        .expect("rollback plan");
+
+    assert_eq!(plan.files, vec![]);
+}
+
+/// Taking the new path out of git would delete the submodule's files.
+#[test]
+fn a_moved_submodule_is_not_something_to_roll_back() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_submodule(&sandbox);
+    repository.git(&["mv", "lib", "moved"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let plan = gikli
+        .rollback_plan(&root, &paths(&["moved"]))
         .expect("rollback plan");
 
     assert_eq!(plan.files, vec![]);
@@ -647,9 +648,7 @@ fn a_rollback_shows_as_a_long_operation() {
     let root = opened(&gikli, &repository);
     let events = gikli.subscribe();
 
-    gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert!(events.try_iter().any(|event| matches!(
         event,
@@ -668,13 +667,118 @@ fn a_rollback_with_nothing_to_discard_runs_nothing() {
     let root = opened(&gikli, &repository);
     let events = gikli.subscribe();
 
-    gikli
-        .rollback_files(&root, &paths(&["README.md"]), false)
-        .expect("roll back");
+    roll_back(&gikli, &root, &["README.md"], false).expect("roll back");
 
     assert!(
         !events
             .try_iter()
             .any(|event| matches!(event, Event::OperationStarted { .. }))
     );
+}
+
+/// Taken out of git but still on disk, the file is a new one that the restore writes over.
+#[test]
+fn the_list_to_confirm_shows_the_new_file_at_the_path_of_a_deleted_file() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.git(&["rm", "--quiet", "--cached", "README.md"]);
+    repository.write("README.md", "edited\n");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let plan = gikli
+        .rollback_plan(&root, &paths(&["README.md"]))
+        .expect("rollback plan");
+
+    assert_eq!(
+        plan.files,
+        vec![
+            change("README.md", ChangeStatus::Deleted),
+            change("README.md", ChangeStatus::Untracked),
+        ]
+    );
+}
+
+#[test]
+fn the_list_to_confirm_shows_the_new_files_of_a_folder_in_the_way() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.delete("README.md");
+    repository.write("README.md/inner.txt", "inner\n");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let plan = gikli
+        .rollback_plan(&root, &paths(&["README.md"]))
+        .expect("rollback plan");
+
+    assert_eq!(
+        plan.files,
+        vec![
+            change("README.md", ChangeStatus::Deleted),
+            change("README.md/inner.txt", ChangeStatus::Untracked),
+        ]
+    );
+}
+
+#[test]
+fn the_list_to_confirm_shows_the_ignored_file_a_rename_would_write_over() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.write("old.log", "kept\n");
+    repository.git(&["add", "--force", "old.log"]);
+    repository.commit_all("A log worth keeping");
+    repository.git(&["mv", "old.log", "new.txt"]);
+    repository.write("old.log", "ignored\n");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let plan = gikli
+        .rollback_plan(&root, &paths(&["new.txt"]))
+        .expect("rollback plan");
+
+    assert_eq!(
+        plan.files,
+        vec![
+            renamed("new.txt", "old.log"),
+            change("old.log", ChangeStatus::Ignored),
+        ]
+    );
+}
+
+/// On a disk that ignores case both names are one file, which must survive the rollback.
+#[test]
+fn rolling_back_a_rename_that_only_changes_case_keeps_the_file() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.git(&["mv", "README.md", "readme.md"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    roll_back(&gikli, &root, &["readme.md"], false).expect("roll back");
+
+    assert_eq!(contents(&repository, "README.md"), "hello\n");
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
+}
+
+#[test]
+fn a_list_that_no_longer_holds_discards_nothing() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.git(&["mv", "README.md", "moved.md"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let plan = gikli
+        .rollback_plan(&root, &paths(&["moved.md"]))
+        .expect("rollback plan");
+    repository.write("README.md", "written after the list was shown\n");
+
+    let result = gikli.rollback_files(&root, &plan, false);
+
+    assert_eq!(result, Err(Failure::RollbackListOutdated));
+    assert_eq!(
+        contents(&repository, "README.md"),
+        "written after the list was shown\n"
+    );
+    assert!(exists(&repository, "moved.md"));
 }

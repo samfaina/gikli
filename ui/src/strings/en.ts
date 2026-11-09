@@ -151,6 +151,7 @@ export const en = {
   failureCloneFailed: "git could not clone {url} into {folder}. The operation log shows git's output.",
   failureFilesNotAdded: "git could not add the files in {folder}. The operation log shows git's output.",
   failureFilesNotRolledBack: "git could not roll back the files in {folder}. The operation log shows git's output.",
+  failureRollbackListOutdated: "The files changed after gikli listed them, so nothing was rolled back. Check the list as it is now.",
   failureIndexLockNotRemoved: "gikli could not remove {lock}: {message}",
   failureFolderNotTrusted: "git could not add {folder} to your trusted folders. The operation log shows git's output.",
   failureServerUnreachable: "git could not reach the server.",

@@ -35,7 +35,7 @@ The alternative to Changelist mode, where the git index is shown as Staged and U
 _Avoid_: Index mode
 
 **Rollback**:
-Discarding the uncommitted changes of the selected files once the user has confirmed the list of what goes.
+Discarding the uncommitted changes of the selected files once the user has confirmed the rollback plan, the list of what goes.
 _Avoid_: Revert (that is git's operation on commits), reset
 
 **Shelf**:

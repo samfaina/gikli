@@ -256,7 +256,7 @@ impl ChangeNode {
 }
 
 /// One changed file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
     /// The file's path relative to the Repository root, with `/` between folders, as git
@@ -272,6 +272,13 @@ pub struct Change {
 }
 
 impl Change {
+    /// The path the file was at, when it is a rename.
+    pub(crate) fn renamed_from(&self) -> Option<&Path> {
+        self.original_path
+            .as_deref()
+            .filter(|_| self.status == ChangeStatus::Renamed)
+    }
+
     fn new(path: &[u8], status: ChangeStatus) -> Self {
         Self {
             path: path_from_bytes(path),
@@ -292,7 +299,7 @@ impl Change {
 }
 
 /// What changed inside a submodule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmoduleState {
     /// The submodule has another commit checked out than the one the Repository records.
@@ -319,7 +326,7 @@ impl SubmoduleState {
 }
 
 /// How a file differs from the last commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ChangeStatus {
     Modified,
@@ -351,7 +358,7 @@ impl ChangeStatus {
 
 /// What each side of a conflict did to the file. "Us" is the branch the operation runs on and
 /// "them" the changes it brings in, as git names them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConflictKind {
     /// Both sides changed the file.

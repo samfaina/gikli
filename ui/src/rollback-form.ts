@@ -1,6 +1,6 @@
 // The form that lists what a rollback would discard, and discards it once the user confirms.
 
-import { rollbackFiles, rollbackPlan, type Change, type RollbackPlan, type Repository } from "./core";
+import { isFailure, rollbackFiles, rollbackPlan, type Change, type RollbackPlan, type Repository } from "./core";
 import { t } from "./strings";
 
 /** What the form needs from the view of the Repository around it. */
@@ -55,8 +55,10 @@ export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement;
 
   /** What the user is confirming, once the core has said. */
   let plan: RollbackPlan | null = null;
-  /** Counts the times the form opened, so a late answer about an earlier selection is dropped. */
-  let opened = 0;
+  /** The paths the user selected, which the list is about. */
+  let selection: string[] = [];
+  /** Counts the times the list was asked for, so a late answer about an earlier selection is dropped. */
+  let requests = 0;
 
   const show = (shown: RollbackPlan | null, text: string): void => {
     plan = shown;
@@ -75,8 +77,24 @@ export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement;
     confirm.hidden = shown === null || shown.files.length === 0;
   };
 
+  /** Shows what a rollback of the selection would discard now, with `note` when there is something to say. */
+  const load = async (note: string): Promise<void> => {
+    requests += 1;
+    const thisRequest = requests;
+    try {
+      const found = await rollbackPlan(repository, selection);
+      if (thisRequest === requests) {
+        show(found, found.files.length === 0 ? t("rollbackNothing") : note);
+      }
+    } catch (error) {
+      if (thisRequest === requests) {
+        show(null, host.describeError(error));
+      }
+    }
+  };
+
   const close = (): void => {
-    opened += 1;
+    requests += 1;
     plan = null;
     view.hidden = true;
   };
@@ -88,12 +106,15 @@ export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement;
     confirm.disabled = true;
     message.textContent = "";
     try {
-      const confirmed = plan.files.map((change) => change.path);
-      await rollbackFiles(repository, confirmed, deleteAdded.checked);
+      await rollbackFiles(repository, plan, deleteAdded.checked);
       close();
       host.rolledBack();
     } catch (error) {
-      message.textContent = host.describeError(error);
+      if (isFailure(error) && error.kind === "rollbackListOutdated") {
+        await load(host.describeError(error));
+      } else {
+        message.textContent = host.describeError(error);
+      }
     } finally {
       confirm.disabled = false;
     }
@@ -101,22 +122,12 @@ export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement;
 
   return {
     view,
-    open: async (paths) => {
-      opened += 1;
-      const thisOpening = opened;
+    open: (paths) => {
+      selection = paths;
       show(null, "");
       view.hidden = false;
       cancel.focus();
-      try {
-        const found = await rollbackPlan(repository, paths);
-        if (thisOpening === opened) {
-          show(found, found.files.length === 0 ? t("rollbackNothing") : "");
-        }
-      } catch (error) {
-        if (thisOpening === opened) {
-          show(null, host.describeError(error));
-        }
-      }
+      void load("");
     },
   };
 }

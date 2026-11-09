@@ -3,46 +3,61 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::status::{Change, ChangeStatus, Status};
 
-/// What rolling back a selection of changes would discard, for the user to confirm first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// What rolling back a selection of changes would discard, for the user to confirm first. A rollback
+/// takes the plan they confirmed, and runs only while it still holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RollbackPlan {
-    /// The files whose changes would be discarded, ordered by path.
+    /// The files whose changes would be discarded, and the new or ignored files the rollback would
+    /// write over, ordered by path.
     pub files: Vec<Change>,
     /// Whether any of them is a file the rollback takes out of git, whose local copy the user can
     /// choose to delete as well.
     pub has_added_files: bool,
 }
 
+impl RollbackPlan {
+    /// The paths of the files on the plan.
+    pub(crate) fn paths(&self) -> Vec<String> {
+        self.files.iter().map(|file| text_of(&file.path)).collect()
+    }
+}
+
 /// The changes in `status` at `paths` that a rollback can discard. Only a change in a Changelist has
-/// something to go back to. A changed submodule is left out: git moves only what the Repository
-/// records, and the submodule would stay as it is.
+/// something to go back to. A submodule is left out unless it is new: git moves only what the
+/// Repository records, so a changed one would stay as it is, and a moved one would lose its files.
 fn selected<'s>(status: &'s Status, paths: &[String]) -> Vec<&'s Change> {
     status
         .changes
         .iter()
         .filter(|change| change.status.is_in_changelists())
-        .filter(|change| change.status != ChangeStatus::Modified || change.submodule.is_none())
+        .filter(|change| change.status == ChangeStatus::Added || change.submodule.is_none())
         .filter(|change| paths.iter().any(|path| Path::new(path) == change.path))
         .collect()
 }
 
-/// What rolling back the changes in `status` at `paths` would discard.
+/// What rolling back the changes in `status` at `paths` would discard. `status` must list the ignored
+/// files, as a rollback can write over them too.
 pub(crate) fn plan(status: &Status, paths: &[String]) -> RollbackPlan {
-    let selected = selected(status, paths);
-    let has_added_files = selected.iter().any(|change| takes_out_of_git(change));
-    let written_over = status.changes.iter().filter(|new_file| {
-        new_file.status == ChangeStatus::Untracked
-            && selected.iter().any(|change| {
-                change.status == ChangeStatus::Renamed
-                    && change.original_path.as_ref() == Some(&new_file.path)
-            })
+    let chosen = selected(status, paths);
+    let has_added_files = chosen.iter().any(|change| takes_out_of_git(change));
+    let restored: Vec<&Path> = chosen
+        .iter()
+        .filter(|change| !takes_out_of_git(change))
+        .map(|change| restored_path(change))
+        .collect();
+    // A file at a path that comes back, or a folder or a file in the way of one.
+    let written_over = status.changes.iter().filter(|file| {
+        !file.status.is_in_changelists()
+            && restored
+                .iter()
+                .any(|path| file.path.starts_with(path) || path.starts_with(&file.path))
     });
-    let mut files: Vec<Change> = selected
+    let mut files: Vec<Change> = chosen
         .iter()
         .copied()
         .chain(written_over)
@@ -71,20 +86,15 @@ pub(crate) fn commands(
             } else {
                 steps.unindex.push(path);
             }
-        } else if let Some(original) = change
-            .original_path
-            .as_ref()
-            .filter(|_| change.status == ChangeStatus::Renamed)
-        {
-            // Going back from a move leaves nothing at the new path, as a modified file keeps nothing
-            // of what it held.
-            steps.restore.push(text_of(original));
+            continue;
+        }
+        steps.restore.push(text_of(restored_path(change)));
+        if change.renamed_from().is_some() {
+            // Going back from a move leaves nothing at the new path, as a modified file keeps
+            // nothing of what it held.
             steps.delete.push(path);
-        } else {
-            steps.restore.push(path);
-            if let Some(moved_to) = status.moved_and_removed.get(&change.path) {
-                steps.delete.push(text_of(moved_to));
-            }
+        } else if let Some(moved_to) = status.moved_and_removed.get(&change.path) {
+            steps.delete.push(text_of(moved_to));
         }
     }
     steps.into_commands()
@@ -92,6 +102,11 @@ pub(crate) fn commands(
 
 fn text_of(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+/// Where the file of `change`, which the last commit holds, comes back.
+fn restored_path(change: &Change) -> &Path {
+    change.renamed_from().unwrap_or(&change.path)
 }
 
 /// Whether rolling back `change` takes the file out of git, as the last commit does not hold it.
@@ -106,28 +121,30 @@ fn takes_out_of_git(change: &Change) -> bool {
     }
 }
 
-/// The paths each git command works on. Those in the last commit come first, as that is the command
-/// most likely to fail.
+/// The paths each git command works on.
 #[derive(Default)]
 struct Steps {
-    /// Brought back as the last commit has them.
-    restore: Vec<String>,
     /// Taken out of git, with their local copies left.
     unindex: Vec<String>,
     /// Taken out of git with their local copies.
     delete: Vec<String>,
+    /// Brought back as the last commit has them.
+    restore: Vec<String>,
 }
 
 impl Steps {
+    /// The commands in the order to run them. What leaves git goes first: on a disk that ignores
+    /// case, a file renamed only in case is one file, and removing the new name after restoring the
+    /// old one would delete it.
     fn into_commands(self) -> Vec<Vec<String>> {
         [
+            // `--force` as well: git refuses otherwise when the file changed after it was added.
+            (vec!["rm", "--quiet", "--force", "--cached"], self.unindex),
+            (vec!["rm", "--quiet", "--force"], self.delete),
             (
                 vec!["restore", "--source=HEAD", "--staged", "--worktree"],
                 self.restore,
             ),
-            // `--force` as well: git refuses otherwise when the file changed after it was added.
-            (vec!["rm", "--quiet", "--force", "--cached"], self.unindex),
-            (vec!["rm", "--quiet", "--force"], self.delete),
         ]
         .into_iter()
         .filter(|(_, paths)| !paths.is_empty())

@@ -278,6 +278,7 @@ export type Failure =
   | { kind: "projectNotOpened"; folder: string }
   | { kind: "filesNotAdded"; folder: string }
   | { kind: "filesNotRolledBack"; folder: string }
+  | { kind: "rollbackListOutdated" }
   | { kind: "indexLockNotRemoved"; lock: string; message: string }
   | { kind: "folderNotTrusted"; folder: string }
   | { kind: "changesUnreadable"; folder: string }
@@ -632,7 +633,7 @@ export function forceAddFiles(repository: Repository, paths: string[]): Promise<
 
 /** What rolling back some changes would discard, for the user to confirm first. */
 export interface RollbackPlan {
-  /** The files whose changes would be discarded, ordered by path. */
+  /** The files whose changes would be discarded, and the new or ignored files it would write over, ordered by path. */
   files: Change[];
   /** Whether any is a file the rollback takes out of git, whose local copy the user can delete as well. */
   hasAddedFiles: boolean;
@@ -644,12 +645,12 @@ export function rollbackPlan(repository: Repository, paths: string[]): Promise<R
 }
 
 /**
- * Discards the changes at `paths`, relative to the Repository root, which the user confirmed in a
- * {@link RollbackPlan}. Added files leave git, and their local copies go too if `deleteAddedFiles`.
- * Rejects with a {@link Failure}.
+ * Discards the changes on `plan`, which the user confirmed. Added files leave git, and their local
+ * copies go too if `deleteAddedFiles`. Rejects with a {@link Failure}, without discarding anything
+ * when the plan no longer holds.
  */
-export function rollbackFiles(repository: Repository, paths: string[], deleteAddedFiles: boolean): Promise<ChangeSet> {
-  return invoke("rollback_files", { repository, paths, deleteAddedFiles });
+export function rollbackFiles(repository: Repository, plan: RollbackPlan, deleteAddedFiles: boolean): Promise<ChangeSet> {
+  return invoke("rollback_files", { repository, plan, deleteAddedFiles });
 }
 
 /**

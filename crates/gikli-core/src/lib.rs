@@ -290,6 +290,9 @@ pub enum Failure {
     FilesNotRolledBack {
         folder: PathBuf,
     },
+    /// The files changed after gikli listed what a rollback would discard, so nothing was rolled
+    /// back. The user has to confirm the list as it is now.
+    RollbackListOutdated,
     /// The lock of the index could not be removed.
     #[serde(rename_all = "camelCase")]
     IndexLockNotRemoved {
@@ -1084,23 +1087,27 @@ impl Gikli {
         paths: &[String],
     ) -> Result<RollbackPlan, Failure> {
         let runner = self.runner(&repository.root)?;
-        let status = read_status(&runner, repository, false)?;
+        let status = read_status(&runner, repository, true)?;
         Ok(rollback::plan(&status, paths))
     }
 
-    /// Discards the changes at `paths`, relative to the root of `repository`, which the user
-    /// confirmed in a [`RollbackPlan`], and returns the changes after that. An added file leaves
-    /// git, and its local copy goes too if `delete_added_files`. What is not a change in a
-    /// Changelist stays as it is.
+    /// Discards the changes on `plan`, which the user confirmed, and returns the changes after that.
+    /// An added file leaves git, and its local copy goes too if `delete_added_files`. When the plan
+    /// no longer says what a rollback would discard, nothing goes and this returns
+    /// [`Failure::RollbackListOutdated`].
     pub fn rollback_files(
         &self,
         repository: &Repository,
-        paths: &[String],
+        plan: &RollbackPlan,
         delete_added_files: bool,
     ) -> Result<ChangeSet, Failure> {
         let runner = self.runner(&repository.root)?;
-        let status = read_status(&runner, repository, false)?;
-        let commands = rollback::commands(&status, paths, delete_added_files);
+        let status = read_status(&runner, repository, true)?;
+        let paths = plan.paths();
+        if rollback::plan(&status, &paths) != *plan {
+            return Err(Failure::RollbackListOutdated);
+        }
+        let commands = rollback::commands(&status, &paths, delete_added_files);
         if commands.is_empty() {
             return self.read_changes(repository);
         }
@@ -1537,9 +1544,8 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The failure of `invocation`, which failed in `folder`: the user's cancelling it, when they did,
-/// or else what the failure explainer says about it, or `otherwise` when it does not know this
-/// failure.
+/// What git reports about the working tree of `repository` now, with the ignored files when
+/// `show_ignored` is set.
 fn read_status(
     runner: &GitRunner,
     repository: &Repository,
@@ -1561,6 +1567,9 @@ fn read_status(
     Ok(status::Status::parse(&invocation.stdout))
 }
 
+/// The failure of `invocation`, which failed in `folder`: the user's cancelling it, when they did,
+/// or else what the failure explainer says about it, or `otherwise` when it does not know this
+/// failure.
 fn failure_of(
     runner: &GitRunner,
     folder: &Path,
