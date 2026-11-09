@@ -699,6 +699,10 @@ button:disabled {
   border-top: 1px solid var(--border);
 }
 
+.operations[hidden] {
+  display: none;
+}
+
 .operation {
   display: flex;
   align-items: center;

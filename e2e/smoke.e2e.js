@@ -448,6 +448,27 @@ describe("gikli", () => {
       await $(`${changelist(name)} [data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000 });
     }
 
+    /**
+     * Opens the context menu of what `selector` finds with a right-click. On Linux it fires the event
+     * the click would: after a right-click from WebKitWebDriver, whatever the element, every key it
+     * types for the rest of the session loses Shift, so "Moved" reaches the field as "moved" and a
+     * path to clone as "7tmp7...".
+     */
+    async function openContextMenu(selector) {
+      const target = await $(selector);
+      await target.waitForDisplayed({ timeout: 30000 });
+      if (process.platform !== "linux") {
+        await target.click({ button: "right" });
+        return;
+      }
+      await browser.execute((targetSelector) => {
+        const element = document.querySelector(targetSelector);
+        const { left, top, width, height } = element.getBoundingClientRect();
+        const center = { clientX: left + width / 2, clientY: top + height / 2 };
+        element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...center }));
+      }, selector);
+    }
+
     it("creates a Changelist, sets it active, and a new change goes to it", async () => {
       await $('[data-testid="new-changelist"]').click();
       await $('[data-testid="changelist-form-name"]').setValue("Feature");
@@ -483,7 +504,7 @@ describe("gikli", () => {
 
     it("moves a selected change to a new Changelist from the menu, which becomes active", async () => {
       await idleRefresh();
-      await $(`${changelist("Changes")} [data-testid="change"][data-path="${STAGED_FILE}"]`).click({ button: "right" });
+      await openContextMenu(`${changelist("Changes")} [data-testid="change"][data-path="${STAGED_FILE}"]`);
       await $('[data-testid="move-to-another-changelist"]').click();
       // With one Changelist, the only place to go is a new one.
       await $('[data-testid="move-form-name"]').setValue("Moved");
