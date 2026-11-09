@@ -34,6 +34,10 @@ _Avoid_: Normal mode
 The alternative to Changelist mode, where the git index is shown as Staged and Unstaged changes. Changelists are kept and come back when the user switches back.
 _Avoid_: Index mode
 
+**Rollback**:
+Discarding the uncommitted changes of the selected files once the user has confirmed the list of what goes.
+_Avoid_: Revert (that is git's operation on commits), reset
+
 **Shelf**:
 gikli's own store of named sets of changes, kept outside git, that the user can put back later. Each set is a shelved change.
 _Avoid_: Stash (that is git's own mechanism), drafts

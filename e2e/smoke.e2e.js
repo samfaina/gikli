@@ -547,6 +547,28 @@ describe("gikli", () => {
       await comment.waitForDisplayed({ timeout: 30000 });
       assert.equal(await comment.getText(), "Add the feature");
     });
+
+    it("adds an Unversioned File from the menu, and rolls it back only after the list is confirmed", async () => {
+      const file = "added and rolled back.txt";
+      fs.writeFileSync(inRepository(file), "new\n");
+      await (await idleRefresh()).click();
+
+      await openContextMenu(`[data-testid="unversioned-files"] [data-testid="change"][data-path="${file}"]`);
+      await $('[data-testid="add-to-git"]').click();
+      await expectChangeIn("Moved", file);
+
+      await idleRefresh();
+      await openContextMenu(`${changelist("Moved")} [data-testid="change"][data-path="${file}"]`);
+      await $('[data-testid="rollback-changes"]').click();
+      await $(`[data-testid="rollback-file"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000 });
+      assert.ok(fs.existsSync(inRepository(file)), "nothing goes before the user confirms");
+
+      await $('[data-testid="rollback-delete-added"]').click();
+      await $('[data-testid="rollback-confirm"]').click();
+
+      await $(`[data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.ok(!fs.existsSync(inRepository(file)), "its local copy goes with it");
+    });
   });
 
   // In a window of a clone: closing the main window would end the WebDriver session.

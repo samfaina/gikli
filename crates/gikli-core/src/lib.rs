@@ -18,6 +18,7 @@ mod process_tree;
 mod processes;
 mod project;
 mod prompts;
+mod rollback;
 mod settings;
 mod status;
 mod trace;
@@ -47,6 +48,7 @@ pub use notifications::{Notification, NotificationAction, NotificationKind, Noti
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
+pub use rollback::RollbackPlan;
 pub use settings::Settings;
 pub use status::{
     Change, ChangeGroup, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, Changelist,
@@ -280,6 +282,12 @@ pub enum Failure {
     /// output.
     #[serde(rename_all = "camelCase")]
     FilesNotAdded {
+        folder: PathBuf,
+    },
+    /// git could not roll back the files in the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    FilesNotRolledBack {
         folder: PathBuf,
     },
     /// The lock of the index could not be removed.
@@ -947,11 +955,33 @@ impl Gikli {
 
     /// Adds `paths`, relative to the root of `repository` and taken literally, to the git index.
     pub fn add_files(&self, repository: &Repository, paths: &[String]) -> Result<(), Failure> {
+        self.add(repository, &["add"], paths)
+    }
+
+    /// Adds `paths`, relative to the root of `repository` and taken literally, to the git index,
+    /// even when git ignores them. A folder git ignores as a whole is added with what it holds.
+    pub fn force_add_files(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+    ) -> Result<(), Failure> {
+        self.add(repository, &["add", "--force"], paths)
+    }
+
+    /// Runs `command`, a form of `git add`, on `paths`.
+    fn add(
+        &self,
+        repository: &Repository,
+        command: &[&str],
+        paths: &[String],
+    ) -> Result<(), Failure> {
         if paths.is_empty() {
             return Ok(());
         }
         let runner = self.runner(&repository.root)?;
-        let mut args = vec!["--literal-pathspecs", "add", "--"];
+        let mut args = vec!["--literal-pathspecs"];
+        args.extend(command);
+        args.push("--");
         args.extend(paths.iter().map(String::as_str));
         let operation = LongOperation::AddFiles {
             repository: repository.clone(),
@@ -1046,6 +1076,63 @@ impl Gikli {
         })
     }
 
+    /// What rolling back the changes at `paths`, relative to the root of `repository`, would
+    /// discard, for the user to confirm before anything goes. It changes nothing.
+    pub fn rollback_plan(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+    ) -> Result<RollbackPlan, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let status = read_status(&runner, repository, false)?;
+        Ok(rollback::plan(&status, paths))
+    }
+
+    /// Discards the changes at `paths`, relative to the root of `repository`, which the user
+    /// confirmed in a [`RollbackPlan`], and returns the changes after that. An added file leaves
+    /// git, and its local copy goes too if `delete_added_files`. What is not a change in a
+    /// Changelist stays as it is.
+    pub fn rollback_files(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+        delete_added_files: bool,
+    ) -> Result<ChangeSet, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let status = read_status(&runner, repository, false)?;
+        let commands = rollback::commands(&status, paths, delete_added_files);
+        if commands.is_empty() {
+            return self.read_changes(repository);
+        }
+        let operation = LongOperation::RollbackFiles {
+            repository: repository.clone(),
+        };
+        let failed = self
+            .operations
+            .run(operation, runner.runs_natively(), |run| {
+                for command in &commands {
+                    let args: Vec<&str> = command.iter().map(String::as_str).collect();
+                    let invocation = runner.run_operation(&repository.root, &args, run)?;
+                    if !invocation.success {
+                        return Ok(Some(invocation));
+                    }
+                }
+                Ok(None)
+            })
+            .map_err(git_failed_to_start)?;
+        if let Some(invocation) = failed {
+            return Err(failure_of(
+                &runner,
+                &repository.root,
+                &invocation,
+                Failure::FilesNotRolledBack {
+                    folder: repository.root.clone(),
+                },
+            ));
+        }
+        self.read_changes(repository)
+    }
+
     /// Reads the changes of `repository`, makes its Changelists follow them, and applies `choice`,
     /// something the user chose. When a choice cannot be saved, this fails and nothing changes.
     /// What the read found alone is worked out again on the next read, so it does not stop the user
@@ -1057,23 +1144,7 @@ impl Gikli {
     ) -> Result<ChangeSet, Failure> {
         let runner = self.runner(&repository.root)?;
         let settings = self.settings();
-        let invocation = runner
-            .run(
-                &repository.root,
-                &status::status_args(settings.show_ignored_files),
-            )
-            .map_err(git_failed_to_start)?;
-        if !invocation.success {
-            return Err(failure_of(
-                &runner,
-                &repository.root,
-                &invocation,
-                Failure::ChangesUnreadable {
-                    folder: repository.root.clone(),
-                },
-            ));
-        }
-        let status = status::Status::parse(&invocation.stdout);
+        let status = read_status(&runner, repository, settings.show_ignored_files)?;
         let git_dir = runner
             .git_dir(&repository.root)
             .map_err(git_failed_to_start)?
@@ -1469,6 +1540,27 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The failure of `invocation`, which failed in `folder`: the user's cancelling it, when they did,
 /// or else what the failure explainer says about it, or `otherwise` when it does not know this
 /// failure.
+fn read_status(
+    runner: &GitRunner,
+    repository: &Repository,
+    show_ignored: bool,
+) -> Result<status::Status, Failure> {
+    let invocation = runner
+        .run(&repository.root, &status::status_args(show_ignored))
+        .map_err(git_failed_to_start)?;
+    if !invocation.success {
+        return Err(failure_of(
+            runner,
+            &repository.root,
+            &invocation,
+            Failure::ChangesUnreadable {
+                folder: repository.root.clone(),
+            },
+        ));
+    }
+    Ok(status::Status::parse(&invocation.stdout))
+}
+
 fn failure_of(
     runner: &GitRunner,
     folder: &Path,
