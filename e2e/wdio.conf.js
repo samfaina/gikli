@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { SevereServiceError } from "webdriverio";
 
 import { attachPort, respondsBefore, waitForDevTools } from "./attach.js";
+import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const exe = process.platform === "win32" ? ".exe" : "";
@@ -38,25 +39,9 @@ function createRepository() {
   fs.mkdirSync(repository);
   runGit(repository, gitconfig, "init", "--quiet");
   fs.writeFileSync(path.join(repository, UNTRACKED_FILE), "smoke\n");
-  installPromptingFsmonitor(sandbox, repository, gitconfig);
+  installFsmonitor(sandbox, repository, gitconfig);
   installBlockingPostCheckout(sandbox, gitconfig);
   return { sandbox, repository, remote: createRemote(sandbox, gitconfig) };
-}
-
-/** The global git configuration of `sandbox`. */
-function sandboxGitconfig(sandbox) {
-  return path.join(sandbox, ".gitconfig");
-}
-
-/** Runs git in `cwd`, isolated from the developer's git configuration. */
-function runGit(cwd, gitconfig, ...args) {
-  const git = spawnSync("git", args, {
-    cwd,
-    env: { ...process.env, GIT_CONFIG_GLOBAL: gitconfig, GIT_CONFIG_NOSYSTEM: "1" },
-  });
-  if (git.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${git.stderr}`);
-  }
 }
 
 /** A bare remote in `sandbox` holding one file in one commit. */
@@ -70,22 +55,37 @@ function createRemote(sandbox, gitconfig) {
   git(work, "init", "--quiet");
   fs.writeFileSync(path.join(work, "remote file.txt"), "smoke\n");
   git(work, "add", "--all");
-  git(work, "-c", "user.name=gikli", "-c", "user.email=gikli@example.com", "commit", "--quiet", "--message", "First commit");
+  commitStaged(work, gitconfig, "First commit");
   git(work, "push", "--quiet", remote, "main");
   return remote;
 }
 
 /**
- * Makes the next read of the changes after `ask-for-prompt` appears in `sandbox` raise a prompt,
- * and leave the answer in `prompt-answer`. The file system monitor git runs in `git status` asks,
- * through gikli's askpass, so the test needs no server that wants credentials.
+ * The file system monitor git runs in `git status`, which lets the smoke test step into a read of
+ * the changes, the first thing a read of a diff does.
+ *
+ * Every read holds while `hold-reads` exists in `sandbox`, and adds a line to `held-reads` when it
+ * starts to. The hold ends by itself, so a case that fails before it removes the marker leaves no
+ * process behind.
+ *
+ * The next read after `ask-for-prompt` appears in `sandbox` raises a prompt, and leaves the answer
+ * in `prompt-answer`. It asks through gikli's askpass, so the test needs no server that wants
+ * credentials.
  */
-function installPromptingFsmonitor(sandbox, repository, gitconfig) {
+function installFsmonitor(sandbox, repository, gitconfig) {
   const monitor = path.join(sandbox, "fsmonitor");
   const folder = sandbox.replaceAll("\\", "/");
   fs.writeFileSync(
     monitor,
     `#!/bin/sh
+if [ -e '${folder}/hold-reads' ]; then
+  echo held >> '${folder}/held-reads'
+  waited=0
+  while [ -e '${folder}/hold-reads' ] && [ "$waited" -lt 600 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+fi
 if [ -e '${folder}/ask-for-prompt' ]; then
   rm '${folder}/ask-for-prompt'
   "$GIT_ASKPASS" 'Username for smoke: ' > '${folder}/prompt-answer'

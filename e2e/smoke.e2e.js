@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { Key } from "webdriverio";
 
 import { doubleClickUntilDisplayed } from "./double-click.js";
+import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
 
 /**
  * The Refresh button, once no read of the changes is under way. It is disabled during one, as when
@@ -44,6 +46,118 @@ async function inNewWindow(windowsBefore, check) {
   } finally {
     await browser.switchToWindow(current);
   }
+}
+
+/** Opens the diff of the changed file at `file` with a double-click, and waits for its local side, which takes the focus. */
+async function openDiff(file) {
+  const row = `[data-testid="change"][data-path="${file}"]`;
+  await $(row).waitForDisplayed({ timeout: 30000 });
+  await doubleClickUntilDisplayed(browser, row, '[data-testid="diff"]');
+  await expectDiffOf(file);
+  await $(".cm-merge-b .cm-content").waitForDisplayed({ timeout: 30000 });
+}
+
+/** Waits for the diff view to show the file at `file`. */
+async function expectDiffOf(file) {
+  const title = await $('[data-testid="diff-title"]');
+  await browser.waitUntil(async () => (await title.getText()) === file, {
+    timeout: 30000,
+    timeoutMsg: `the diff of ${file} did not show`,
+  });
+}
+
+/** Closes the diff, which saves what is edited, and waits for the changes view. */
+async function closeDiff() {
+  await $('[data-testid="diff-close"]').click();
+  await $('[data-testid="diff"]').waitForDisplayed({ timeout: 30000, reverse: true });
+  await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+}
+
+/** Types "x" at the cursor of the local side, and waits for the view to count it as an unsaved edit. */
+async function typeEdit() {
+  await browser.keys(["x"]);
+  const diff = await $('[data-testid="diff"]');
+  await browser.waitUntil(async () => (await diff.getAttribute("data-edited")) === "true", {
+    timeout: 30000,
+    timeoutMsg: "the edit did not reach the local side",
+  });
+}
+
+/** Waits for the cursor to be on the line of the local side that reads `text`. */
+async function expectCursorOn(text) {
+  const cursorLine = () =>
+    browser.execute(() => {
+      const node = document.getSelection()?.focusNode;
+      return (node instanceof Element ? node : node?.parentElement)?.closest(".cm-line")?.textContent ?? null;
+    });
+  await browser.waitUntil(async () => (await cursorLine()) === text, {
+    timeout: 30000,
+    timeoutMsg: `the cursor did not reach "${text}"`,
+  });
+}
+
+/** Waits for the diff view to say that a save failed because the file changed on disk, and to offer to discard the edits. */
+async function expectSaveRefused() {
+  const message = await $('[data-testid="diff-message"]');
+  await browser.waitUntil(async () => /changed on disk/.test(await message.getText()), {
+    timeout: 30000,
+    timeoutMsg: "the reason the save failed did not show",
+  });
+  await $('[data-testid="diff-discard-edits"]').waitForDisplayed({ timeout: 30000 });
+}
+
+/**
+ * Asks the current window to close with the command `getCurrentWindow().close()` sends, so the close
+ * goes through the Rust side to `onCloseRequested`. It does not wait for the answer, which may never
+ * come from a window that is going away.
+ */
+async function requestWindowClose() {
+  await browser.execute(() => {
+    const { invoke, metadata } = window.__TAURI_INTERNALS__;
+    void invoke("plugin:window|close", { label: metadata.currentWindow.label });
+  });
+}
+
+/** Clones the smoke test's remote into `name` in the sandbox, and returns the clone with the windows open before it. */
+async function cloneForNewWindow(name) {
+  const clone = path.join(process.env.GIKLI_E2E_SANDBOX, name);
+  const windowsBefore = await browser.getWindowHandles();
+  await $('[data-testid="toggle-clone"]').click();
+  await startClone(clone);
+  await $('[data-testid="clone"]').waitForDisplayed({ timeout: 30000, reverse: true });
+  return { clone, windowsBefore };
+}
+
+/** The file every clone of the smoke test's remote holds. */
+const REMOTE_FILE = "remote file.txt";
+
+/** Changes {@link REMOTE_FILE} in the window of `clone`, opens its diff and types an edit in it. */
+async function editRemoteFile(clone) {
+  await expectRepositoryRoot(clone);
+  const file = path.join(clone, REMOTE_FILE);
+  fs.writeFileSync(file, "changed\n");
+  await (await idleRefresh()).click();
+  await openDiff(REMOTE_FILE);
+  await typeEdit();
+  return file;
+}
+
+const FIRST_FILE = "review first.txt";
+const SECOND_FILE = "review second.txt";
+
+/** Twenty numbered lines, with the lines in `changed` marked as changed. */
+function numberedLines(...changed) {
+  return Array.from({ length: 20 }, (_, index) => `line ${index + 1}${changed.includes(index + 1) ? " changed" : ""}\n`).join("");
+}
+
+function inRepository(file) {
+  return path.join(process.env.GIKLI_E2E_REPOSITORY, file);
+}
+
+/** Gives {@link FIRST_FILE} two differences and {@link SECOND_FILE} one, as they come next to each other in the changes view. */
+function changeReviewFiles() {
+  fs.writeFileSync(inRepository(FIRST_FILE), numberedLines(2, 15));
+  fs.writeFileSync(inRepository(SECOND_FILE), numberedLines(3));
 }
 
 describe("gikli", () => {
@@ -181,6 +295,151 @@ describe("gikli", () => {
       const notification = await $('[data-testid="notification"][data-kind="hookNotFinished"]');
       await notification.waitForDisplayed({ timeout: 30000 });
       assert.match(await notification.getText(), /post-checkout/);
+    });
+  });
+
+  // These come after the cases that assert the exact list of changes, because they add to it.
+  describe("in the diff of tracked files", () => {
+    before(async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      fs.writeFileSync(inRepository(FIRST_FILE), numberedLines());
+      fs.writeFileSync(inRepository(SECOND_FILE), numberedLines());
+      runGit(repository, gitconfig, "add", "--", FIRST_FILE, SECOND_FILE);
+      commitStaged(repository, gitconfig, "Files to review");
+      changeReviewFiles();
+      await (await idleRefresh()).click();
+    });
+
+    beforeEach(changeReviewFiles);
+
+    it("goes to the next difference with F7 and to the previous one with Shift+F7", async () => {
+      await openDiff(FIRST_FILE);
+      await expectCursorOn("line 2 changed");
+
+      await browser.keys([Key.F7]);
+      await expectCursorOn("line 15 changed");
+
+      await browser.keys([Key.Shift, Key.F7]);
+      await expectCursorOn("line 2 changed");
+
+      await closeDiff();
+    });
+
+    it("goes to the next file with F7 after the last difference", async () => {
+      await openDiff(FIRST_FILE);
+      await browser.keys([Key.F7]);
+      await expectCursorOn("line 15 changed");
+
+      await browser.keys([Key.F7]);
+
+      await expectDiffOf(SECOND_FILE);
+      await closeDiff();
+    });
+
+    it("goes to the next file with Ctrl+Alt+Right and to the previous one with Ctrl+Alt+Left", async () => {
+      await openDiff(FIRST_FILE);
+
+      await browser.keys([Key.Ctrl, Key.Alt, Key.ArrowRight]);
+      await expectDiffOf(SECOND_FILE);
+
+      await browser.keys([Key.Ctrl, Key.Alt, Key.ArrowLeft]);
+      await expectDiffOf(FIRST_FILE);
+
+      await closeDiff();
+    });
+
+    it("saves what the user edited on moving to the next file", async () => {
+      await openDiff(FIRST_FILE);
+      await typeEdit();
+
+      await browser.keys([Key.Ctrl, Key.Alt, Key.ArrowRight]);
+
+      await expectDiffOf(SECOND_FILE);
+      assert.ok(fs.readFileSync(inRepository(FIRST_FILE), "utf8").includes("xline 2 changed"), "the edit is not on disk");
+      await closeDiff();
+    });
+
+    it("stays in the file with the reason and the way to discard the edits when the save on moving fails", async () => {
+      const file = inRepository(FIRST_FILE);
+      const read = fs.readFileSync(file);
+      await openDiff(FIRST_FILE);
+      await typeEdit();
+      // After the edit: before it, the view would just read the file again.
+      fs.writeFileSync(file, "changed elsewhere\n");
+
+      await browser.keys([Key.Ctrl, Key.Alt, Key.ArrowRight]);
+
+      await expectSaveRefused();
+      assert.equal(await $('[data-testid="diff-title"]').getText(), FIRST_FILE);
+
+      // The button to discard asks through a native dialog WebDriver cannot answer. With the file
+      // back as the user saw it, the save goes through, and the view closes for the next case.
+      fs.writeFileSync(file, read);
+      await closeDiff();
+    });
+
+    it("shows the next file when a file changes on disk during its read", async () => {
+      const sandbox = process.env.GIKLI_E2E_SANDBOX;
+      const hold = path.join(sandbox, "hold-reads");
+      const heldLog = path.join(sandbox, "held-reads");
+      const heldReads = () => (fs.existsSync(heldLog) ? fs.readFileSync(heldLog, "utf8").trim().split("\n").length : 0);
+      await openDiff(FIRST_FILE);
+      // A read already under way would count as one of the reads held below.
+      await idleRefresh();
+      fs.writeFileSync(hold, "");
+      try {
+        await browser.keys([Key.Ctrl, Key.Alt, Key.ArrowRight]);
+        await browser.waitUntil(() => heldReads() >= 1, { timeout: 30000, timeoutMsg: "the read of the next file did not start" });
+
+        fs.writeFileSync(inRepository("during the read.txt"), "new\n");
+        // The read of the next file, and the two the change starts: the changes view and the diff.
+        await browser.waitUntil(() => heldReads() >= 3, { timeout: 30000, timeoutMsg: "the change on disk started no read" });
+      } finally {
+        fs.rmSync(hold, { force: true });
+      }
+
+      await expectDiffOf(SECOND_FILE);
+      // Whichever read ends last, the view stays on the file the user moved to.
+      await idleRefresh();
+      await browser.pause(1000);
+      assert.equal(await $('[data-testid="diff-title"]').getText(), SECOND_FILE);
+      await closeDiff();
+    });
+  });
+
+  // In a window of a clone: closing the main window would end the WebDriver session.
+  describe("on closing a window with unsaved edits", () => {
+    it("saves them, and the window goes away", async () => {
+      const { clone, windowsBefore } = await cloneForNewWindow("closed clone");
+      let file;
+
+      await inNewWindow(windowsBefore, async () => {
+        file = await editRemoteFile(clone);
+        await requestWindowClose();
+      });
+
+      await browser.waitUntil(async () => (await browser.getWindowHandles()).length === windowsBefore.length, {
+        timeout: 30000,
+        timeoutMsg: "the window stayed open",
+      });
+      assert.match(fs.readFileSync(file, "utf8"), /^xchanged/);
+    });
+
+    it("keeps the window open with the reason when the save fails", async () => {
+      const { clone, windowsBefore } = await cloneForNewWindow("kept clone");
+
+      await inNewWindow(windowsBefore, async () => {
+        const file = await editRemoteFile(clone);
+        fs.writeFileSync(file, "changed elsewhere\n");
+
+        await requestWindowClose();
+
+        await expectSaveRefused();
+        // The window would go as soon as the close handler returned.
+        await browser.pause(1000);
+        assert.equal(await $('[data-testid="diff-title"]').getText(), REMOTE_FILE);
+      });
     });
   });
 });
