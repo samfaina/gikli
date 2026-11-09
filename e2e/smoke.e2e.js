@@ -66,6 +66,15 @@ async function expectDiffOf(file) {
   });
 }
 
+/**
+ * Checks that the diff view still shows the file at `file` a moment later. Nothing on screen says
+ * that what could still take it away, a late read or a closing window, will not happen.
+ */
+async function expectDiffStaysOn(file) {
+  await browser.pause(1000);
+  assert.equal(await $('[data-testid="diff-title"]').getText(), file);
+}
+
 /** Closes the diff, which saves what is edited, and waits for the changes view. */
 async function closeDiff() {
   await $('[data-testid="diff-close"]').click();
@@ -129,7 +138,7 @@ async function cloneForNewWindow(name) {
 }
 
 /** The file every clone of the smoke test's remote holds. */
-const REMOTE_FILE = "remote file.txt";
+const REMOTE_FILE = process.env.GIKLI_E2E_REMOTE_FILE;
 
 /** Changes {@link REMOTE_FILE} in the window of `clone`, opens its diff and types an edit in it. */
 async function editRemoteFile(clone) {
@@ -142,7 +151,9 @@ async function editRemoteFile(clone) {
   return file;
 }
 
+/** A tracked file with two differences, followed by {@link SECOND_FILE} in the changes view. */
 const FIRST_FILE = "review first.txt";
+/** A tracked file with one difference, which follows {@link FIRST_FILE} in the changes view. */
 const SECOND_FILE = "review second.txt";
 
 /** Twenty numbered lines, with the lines in `changed` marked as changed. */
@@ -150,6 +161,7 @@ function numberedLines(...changed) {
   return Array.from({ length: 20 }, (_, index) => `line ${index + 1}${changed.includes(index + 1) ? " changed" : ""}\n`).join("");
 }
 
+/** The full path of `file` in the smoke test's repository. */
 function inRepository(file) {
   return path.join(process.env.GIKLI_E2E_REPOSITORY, file);
 }
@@ -362,7 +374,7 @@ describe("gikli", () => {
 
     it("stays in the file with the reason and the way to discard the edits when the save on moving fails", async () => {
       const file = inRepository(FIRST_FILE);
-      const read = fs.readFileSync(file);
+      const contentBefore = fs.readFileSync(file);
       await openDiff(FIRST_FILE);
       await typeEdit();
       // After the edit: before it, the view would just read the file again.
@@ -375,7 +387,7 @@ describe("gikli", () => {
 
       // The button to discard asks through a native dialog WebDriver cannot answer. With the file
       // back as the user saw it, the save goes through, and the view closes for the next case.
-      fs.writeFileSync(file, read);
+      fs.writeFileSync(file, contentBefore);
       await closeDiff();
     });
 
@@ -385,7 +397,9 @@ describe("gikli", () => {
       const heldLog = path.join(sandbox, "held-reads");
       const heldReads = () => (fs.existsSync(heldLog) ? fs.readFileSync(heldLog, "utf8").trim().split("\n").length : 0);
       await openDiff(FIRST_FILE);
-      // A read already under way would count as one of the reads held below.
+      // A read under way would count as one of the reads held below, and so would one started by
+      // what the watcher has yet to announce of the files written before this case.
+      await browser.pause(1000);
       await idleRefresh();
       fs.writeFileSync(hold, "");
       try {
@@ -402,8 +416,7 @@ describe("gikli", () => {
       await expectDiffOf(SECOND_FILE);
       // Whichever read ends last, the view stays on the file the user moved to.
       await idleRefresh();
-      await browser.pause(1000);
-      assert.equal(await $('[data-testid="diff-title"]').getText(), SECOND_FILE);
+      await expectDiffStaysOn(SECOND_FILE);
       await closeDiff();
     });
   });
@@ -436,9 +449,7 @@ describe("gikli", () => {
         await requestWindowClose();
 
         await expectSaveRefused();
-        // The window would go as soon as the close handler returned.
-        await browser.pause(1000);
-        assert.equal(await $('[data-testid="diff-title"]').getText(), REMOTE_FILE);
+        await expectDiffStaysOn(REMOTE_FILE);
       });
     });
   });

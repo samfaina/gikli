@@ -44,7 +44,10 @@ function createRepository() {
   return { sandbox, repository, remote: createRemote(sandbox, gitconfig) };
 }
 
-/** A bare remote in `sandbox` holding one file in one commit. */
+/** The one file in the smoke test's remote. */
+const REMOTE_FILE = "remote file.txt";
+
+/** A bare remote in `sandbox` holding {@link REMOTE_FILE} in one commit. */
 function createRemote(sandbox, gitconfig) {
   const remote = path.join(sandbox, "remote.git");
   const work = path.join(sandbox, "remote work");
@@ -53,7 +56,7 @@ function createRemote(sandbox, gitconfig) {
   fs.mkdirSync(work);
   git(remote, "init", "--quiet", "--bare");
   git(work, "init", "--quiet");
-  fs.writeFileSync(path.join(work, "remote file.txt"), "smoke\n");
+  fs.writeFileSync(path.join(work, REMOTE_FILE), "smoke\n");
   git(work, "add", "--all");
   commitStaged(work, gitconfig, "First commit");
   git(work, "push", "--quiet", remote, "main");
@@ -139,6 +142,7 @@ if (!process.env.GIKLI_E2E_REPOSITORY) {
   process.env.GIKLI_E2E_REPOSITORY = created.repository;
   process.env.GIKLI_E2E_UNTRACKED_FILE = UNTRACKED_FILE;
   process.env.GIKLI_E2E_REMOTE = created.remote;
+  process.env.GIKLI_E2E_REMOTE_FILE = REMOTE_FILE;
 }
 
 /**
