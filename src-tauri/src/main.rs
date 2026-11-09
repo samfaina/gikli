@@ -276,6 +276,35 @@ fn set_active_changelist(
 }
 
 #[tauri::command(async)]
+fn create_changelist(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    name: String,
+    description: Option<String>,
+) -> Result<ChangeSet, Failure> {
+    gikli.create_changelist(&repository, &name, description.as_deref())
+}
+
+#[tauri::command(async)]
+fn rename_changelist(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    id: String,
+    name: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.rename_changelist(&repository, &id, &name)
+}
+
+#[tauri::command(async)]
+fn delete_changelist(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    id: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.delete_changelist(&repository, &id)
+}
+
+#[tauri::command(async)]
 fn read_diff(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -395,6 +424,9 @@ fn main() {
             window_for_project,
             read_changes,
             set_active_changelist,
+            create_changelist,
+            rename_changelist,
+            delete_changelist,
             read_diff,
             save_local_file,
             add_files,

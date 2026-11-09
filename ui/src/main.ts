@@ -12,6 +12,8 @@ import {
   clearOperationLog,
   cloneRepository,
   cloneUrlForms,
+  createChangelist,
+  deleteChangelist,
   dismissNotification,
   createRepository,
   formatVersion,
@@ -24,6 +26,7 @@ import {
   pendingPrompts,
   readChanges,
   removeRepository,
+  renameChangelist,
   runningOperations as runningOperationsOfCore,
   setActiveChangelist,
   setChangeGrouping,
@@ -673,7 +676,13 @@ function repositoryView(repository: Repository): HTMLElement {
   refresh.type = "button";
   refresh.dataset.testid = "refresh-changes";
   refresh.textContent = t("refreshChanges");
-  header.append(title, refresh);
+  const newChangelist = document.createElement("button");
+  newChangelist.type = "button";
+  newChangelist.dataset.testid = "new-changelist";
+  newChangelist.textContent = t("newChangelist");
+  header.append(title, refresh, newChangelist);
+  // Outside the rows, which are drawn again on every read: what the user is typing stays.
+  const form = changelistForm();
   const changes = document.createElement("div");
   changes.dataset.testid = "changes";
   const watching = document.createElement("div");
@@ -681,20 +690,48 @@ function repositoryView(repository: Repository): HTMLElement {
   section.append(
     line("repository-root", t("repositoryRoot", { root: repository.root })),
     header,
+    form.view,
     watching,
     changes,
     features,
   );
   void showUnavailableFeatures(repository, features);
 
-  const setActive = async (list: Changelist): Promise<void> => {
+  const changeChangelists = async (change: () => Promise<unknown>): Promise<void> => {
     try {
-      await setActiveChangelist(repository, list.id);
+      await change();
       void refreshChanges();
     } catch (error) {
       changes.prepend(errorView(error));
     }
   };
+  const actions: ChangelistActions = {
+    setActive: (list) => void changeChangelists(() => setActiveChangelist(repository, list.id)),
+    delete: (list) => void changeChangelists(() => deleteChangelist(repository, list.id)),
+    rename: (list) =>
+      form.open({
+        title: t("changelistFormRenameTitle", { name: list.name }),
+        submit: t("changelistFormRename"),
+        name: list.name,
+        asksDescription: false,
+        save: async (name) => {
+          await renameChangelist(repository, list.id, name);
+          void refreshChanges();
+        },
+      }),
+  };
+  newChangelist.addEventListener("click", () =>
+    form.open({
+      title: t("changelistFormNewTitle"),
+      submit: t("changelistFormCreate"),
+      name: "",
+      asksDescription: true,
+      save: async (name, description) => {
+        await createChangelist(repository, name, description);
+        void refreshChanges();
+      },
+    }),
+  );
   // One read at a time: a request while one runs reads once more when it ends, so requests from
   // the watcher and the button never pile up.
   let reading = false;
@@ -713,7 +750,7 @@ function repositoryView(repository: Repository): HTMLElement {
           const changeSet = await readChanges(repository);
           // The row the user was on stays theirs when the rows are drawn again.
           const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
-          changes.replaceChildren(changeList(changeSet, (list) => void setActive(list)));
+          changes.replaceChildren(changeList(changeSet, actions));
           if (focused !== undefined) {
             focusChangeRow(changes, focused);
           }
@@ -782,11 +819,11 @@ function focusChangeRow(container: HTMLElement, path: string): void {
 }
 
 /** The Changelists of a Repository, each with its changes, then Unversioned Files and the ignored files when there are any. */
-function changeList(changeSet: ChangeSet, setActive: (list: Changelist) => void): HTMLElement {
+function changeList(changeSet: ChangeSet, actions: ChangelistActions): HTMLElement {
   const view = document.createElement("div");
   const { repository, unversionedFiles, ignoredFiles } = changeSet;
   for (const list of changeSet.changelists) {
-    view.append(changelistView(repository, list, setActive));
+    view.append(changelistView(repository, list, actions));
   }
   if (changeSet.changes.length === 0) {
     view.append(line("message", t("noChanges")));
@@ -800,27 +837,131 @@ function changeList(changeSet: ChangeSet, setActive: (list: Changelist) => void)
   return view;
 }
 
-/** A Changelist and its changes. Any other than the Active changelist offers to become it. */
-function changelistView(repository: Repository, list: Changelist, setActive: (list: Changelist) => void): HTMLElement {
+/** What the user can do to a Changelist in the changes view. */
+interface ChangelistActions {
+  setActive: (list: Changelist) => void;
+  rename: (list: Changelist) => void;
+  delete: (list: Changelist) => void;
+}
+
+/** A button in the header of a Changelist. */
+function changelistButton(testId: string, text: string, act: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.testid = testId;
+  button.textContent = text;
+  button.addEventListener("click", act);
+  return button;
+}
+
+/** A Changelist and its changes. Any other than the Active changelist offers to become it, and to be deleted. */
+function changelistView(repository: Repository, list: Changelist, actions: ChangelistActions): HTMLElement {
   const name = groupName(list.name);
   name.dataset.testid = "changelist-name";
   const header: HTMLElement[] = [name];
+  if (list.description !== null) {
+    const description = document.createElement("span");
+    description.className = "changelist-description";
+    description.dataset.testid = "changelist-description";
+    description.textContent = list.description;
+    header.push(description);
+  }
   if (list.active) {
     const active = document.createElement("span");
     active.className = "changelist-active";
     active.textContent = t("activeChangelist");
     header.push(active);
   } else {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.testid = "set-active-changelist";
-    button.textContent = t("setActiveChangelist");
-    button.addEventListener("click", () => setActive(list));
-    header.push(button);
+    header.push(changelistButton("set-active-changelist", t("setActiveChangelist"), () => actions.setActive(list)));
+  }
+  header.push(changelistButton("rename-changelist", t("renameChangelist"), () => actions.rename(list)));
+  if (!list.active) {
+    header.push(changelistButton("delete-changelist", t("deleteChangelist"), () => actions.delete(list)));
   }
   const view = changeGroupView(repository, "changelist", header, list.group.nodes);
   view.dataset.active = String(list.active);
+  view.dataset.name = list.name;
   return view;
+}
+
+/** What the Changelist form asks, and what saves the answer. */
+interface ChangelistFormRequest {
+  title: string;
+  submit: string;
+  name: string;
+  asksDescription: boolean;
+  save: (name: string, description: string | null) => Promise<void>;
+}
+
+/** A form to name a Changelist, hidden until something opens it. It closes once saved, and shows why when it cannot save. */
+function changelistForm(): { view: HTMLFormElement; open: (request: ChangelistFormRequest) => void } {
+  const view = document.createElement("form");
+  view.className = "changelist-form";
+  view.dataset.testid = "changelist-form";
+  view.hidden = true;
+  const title = document.createElement("h3");
+  const field = (testId: string, text: string): { label: HTMLLabelElement; input: HTMLInputElement } => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.dataset.testid = testId;
+    input.autocomplete = "off";
+    label.append(document.createTextNode(text), input);
+    return { label, input };
+  };
+  const name = field("changelist-form-name", t("changelistFormName"));
+  const description = field("changelist-form-description", t("changelistFormDescription"));
+  const message = document.createElement("p");
+  message.dataset.testid = "changelist-form-message";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.dataset.testid = "changelist-form-submit";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.dataset.testid = "changelist-form-cancel";
+  cancel.textContent = t("changelistFormCancel");
+  const buttons = document.createElement("div");
+  buttons.className = "notification-actions";
+  buttons.append(submit, cancel);
+  view.append(title, name.label, description.label, message, buttons);
+
+  let request: ChangelistFormRequest | null = null;
+  const close = (): void => {
+    request = null;
+    view.hidden = true;
+  };
+  cancel.addEventListener("click", close);
+  view.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (request === null) {
+      return;
+    }
+    submit.disabled = true;
+    message.textContent = "";
+    try {
+      await request.save(name.input.value, request.asksDescription ? description.input.value : null);
+      close();
+    } catch (error) {
+      message.textContent = describeError(error);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  return {
+    view,
+    open: (opened) => {
+      request = opened;
+      title.textContent = opened.title;
+      submit.textContent = opened.submit;
+      name.input.value = opened.name;
+      description.input.value = "";
+      description.label.hidden = !opened.asksDescription;
+      message.textContent = "";
+      view.hidden = false;
+      name.input.select();
+      name.input.focus();
+    },
+  };
 }
 
 function groupName(text: string): HTMLSpanElement {
@@ -1474,6 +1615,12 @@ function describeFailure(failure: Failure): string {
       return t("failureLocalFileNotSaved", { path: failure.path, message: failure.message });
     case "changelistGone":
       return t("failureChangelistGone");
+    case "changelistNameEmpty":
+      return t("failureChangelistNameEmpty");
+    case "changelistNameTaken":
+      return t("failureChangelistNameTaken", { name: failure.name });
+    case "activeChangelistNotDeletable":
+      return t("failureActiveChangelistNotDeletable");
     case "changelistsUnreadable":
       return t("failureChangelistsUnreadable", { file: failure.file, message: failure.message });
     case "activeChangelistMissing":

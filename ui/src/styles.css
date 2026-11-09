@@ -364,6 +364,55 @@ button:disabled {
   font-size: 0.85em;
 }
 
+.changelist-description {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.changelist-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.changelist-form[hidden],
+.changelist-form label[hidden] {
+  display: none;
+}
+
+.changelist-form h3,
+.changelist-form p {
+  margin: 0;
+  font-size: inherit;
+}
+
+.changelist-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.changelist-form input {
+  font: inherit;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.changelist-form input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .changes {
   list-style: none;
   margin: 0;

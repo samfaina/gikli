@@ -421,6 +421,67 @@ describe("gikli", () => {
     });
   });
 
+  // After the cases that count on which Changelist is active.
+  describe("with a Changelist the user created", () => {
+    /** A file git tracks, as a new file git does not track goes to Unversioned Files. */
+    const STAGED_FILE = "for the new changelist.txt";
+
+    /** The selector of the Changelist called `name`. */
+    const changelist = (name) => `[data-testid="changelist"][data-name="${name}"]`;
+
+    /** Waits for the Changelist called `name` to be the Active changelist. */
+    async function expectActive(name) {
+      await browser.waitUntil(async () => (await $(changelist(name)).getAttribute("data-active")) === "true", {
+        timeout: 30000,
+        timeoutMsg: `${name} did not become active`,
+      });
+    }
+
+    /** Clicks the button `testId` of the Changelist called `name`, once no read can draw it again. */
+    async function clickInChangelist(name, testId) {
+      await idleRefresh();
+      await $(`${changelist(name)} [data-testid="${testId}"]`).click();
+    }
+
+    /** Waits for the Changelist called `name` to show the change at `file`. */
+    async function expectChangeIn(name, file) {
+      await $(`${changelist(name)} [data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000 });
+    }
+
+    it("creates a Changelist, sets it active, and a new change goes to it", async () => {
+      await $('[data-testid="new-changelist"]').click();
+      await $('[data-testid="changelist-form-name"]').setValue("Feature");
+      await $('[data-testid="changelist-form-description"]').setValue("Work for the smoke test");
+      await $('[data-testid="changelist-form-submit"]').click();
+      await $(changelist("Feature")).waitForDisplayed({ timeout: 30000 });
+      assert.equal(await $(`${changelist("Feature")} [data-testid="changelist-description"]`).getText(), "Work for the smoke test");
+
+      await clickInChangelist("Feature", "set-active-changelist");
+      await expectActive("Feature");
+
+      fs.writeFileSync(inRepository(STAGED_FILE), "new\n");
+      runGit(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), "add", "--", STAGED_FILE);
+      await (await idleRefresh()).click();
+      await expectChangeIn("Feature", STAGED_FILE);
+    });
+
+    it("renames a Changelist, and deleting it moves its changes to the Active changelist", async () => {
+      assert.equal(await $(`${changelist("Feature")} [data-testid="delete-changelist"]`).isExisting(), false);
+
+      await clickInChangelist("Feature", "rename-changelist");
+      await $('[data-testid="changelist-form-name"]').setValue("Renamed");
+      await $('[data-testid="changelist-form-submit"]').click();
+      await $(changelist("Renamed")).waitForDisplayed({ timeout: 30000 });
+
+      await clickInChangelist("Changes", "set-active-changelist");
+      await expectActive("Changes");
+      await clickInChangelist("Renamed", "delete-changelist");
+
+      await $(changelist("Renamed")).waitForDisplayed({ timeout: 30000, reverse: true });
+      await expectChangeIn("Changes", STAGED_FILE);
+    });
+  });
+
   // In a window of a clone: closing the main window would end the WebDriver session.
   describe("on closing a window with unsaved edits", () => {
     it("saves them, and the window goes away", async () => {

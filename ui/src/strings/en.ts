@@ -35,6 +35,16 @@ export const en = {
   ignoredFiles: "Ignored Files",
   activeChangelist: "active",
   setActiveChangelist: "Set active",
+  newChangelist: "New Changelist…",
+  renameChangelist: "Rename…",
+  deleteChangelist: "Delete",
+  changelistFormNewTitle: "New Changelist",
+  changelistFormRenameTitle: "Rename {name}",
+  changelistFormName: "Name",
+  changelistFormDescription: "Description (optional)",
+  changelistFormCreate: "Create",
+  changelistFormRename: "Rename",
+  changelistFormCancel: "Cancel",
   statusModified: "Modified",
   statusAdded: "Added",
   statusDeleted: "Deleted",
@@ -101,6 +111,9 @@ export const en = {
   failureChangesUnreadable:
     "git could not read the changes in {folder}. Check that it is still a git repository, then refresh.",
   failureChangelistGone: "That Changelist no longer exists. Refresh to see the ones that do.",
+  failureChangelistNameEmpty: "A Changelist needs a name. Type one, then try again.",
+  failureChangelistNameTaken: "There is already a Changelist named {name}. Choose another name.",
+  failureActiveChangelistNotDeletable: "The Active changelist cannot be deleted. Set another Changelist active first.",
   failureChangelistsUnreadable:
     "gikli cannot read the Changelists in {file} ({message}) and left the file as it is. Fix it, or move it away to start again with one Changelist.",
   failureActiveChangelistMissing:
