@@ -68,6 +68,7 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - Changelist mode is the default; Staging mode is a setting. Changelists survive a switch to Staging mode and back.
 - The Active changelist cannot be deleted; another one must be made active first. Deleting any other Changelist moves its changes to the Active changelist. At least one Changelist always exists.
 - "Changes" is only the initial Changelist. It can be renamed and deleted like any other.
+- A Changelist needs a name, and no two Changelists of a Repository share one, so the user can tell them apart. The description is optional.
 - A file belongs to a Changelist only while it has changes. A file committed outside gikli leaves its Changelist, and a later change to it goes to the Active changelist. gikli does not remember earlier assignments.
 - In Scope 1 a changed file belongs to exactly one Changelist, and later edits stay in that Changelist. So do moves git reports as renames: the moved file takes the place of the file it was.
 - gikli notices a commit made while it was closed: a file in a commit HEAD reached since the last read leaves its Changelist, even when it has changed again. Going back in history or rewording a commit commits nothing, so a file still changed stays where it is.

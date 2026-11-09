@@ -211,7 +211,8 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.prompt input {
+.prompt input,
+.changelist-form input {
   font: inherit;
   color: var(--text);
   background: var(--background);
@@ -220,7 +221,8 @@ button:disabled {
   padding: 4px 8px;
 }
 
-.prompt input:focus-visible {
+.prompt input:focus-visible,
+.changelist-form input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -362,6 +364,41 @@ button:disabled {
 .changelist-active {
   color: var(--muted);
   font-size: 0.85em;
+}
+
+.changelist-description {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.changelist-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.changelist-form[hidden],
+.changelist-form label[hidden] {
+  display: none;
+}
+
+.changelist-form h3,
+.changelist-form p {
+  margin: 0;
+  font-size: inherit;
+}
+
+.changelist-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .changes {

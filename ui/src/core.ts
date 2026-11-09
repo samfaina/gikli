@@ -131,6 +131,8 @@ export interface ChangeGroup {
 export interface Changelist {
   id: string;
   name: string;
+  /** What the user wrote about it, if anything. */
+  description: string | null;
   /** Whether this is the Active changelist, the one new changes go into. */
   active: boolean;
   group: ChangeGroup;
@@ -277,6 +279,10 @@ export type Failure =
   | { kind: "localFileChanged"; path: string }
   | { kind: "localFileNotSaved"; path: string; message: string }
   | { kind: "changelistGone"; id: string }
+  | { kind: "changelistNameEmpty" }
+  | { kind: "changelistNameTaken"; name: string }
+  /** Another Changelist has to become active first. */
+  | { kind: "activeChangelistNotDeletable" }
   | { kind: "changelistsUnreadable"; file: string; message: string }
   | { kind: "activeChangelistMissing"; file: string }
   | { kind: "changelistsFromNewerGikli"; file: string; version: number }
@@ -560,6 +566,21 @@ export function readChanges(repository: Repository): Promise<ChangeSet> {
 /** Makes the Changelist `id` the Active changelist of `repository`. Rejects with a {@link Failure}. */
 export function setActiveChangelist(repository: Repository, id: string): Promise<ChangeSet> {
   return invoke("set_active_changelist", { repository, id });
+}
+
+/** Adds a Changelist called `name`, with an optional `description`, to `repository`. Rejects with a {@link Failure}. */
+export function createChangelist(repository: Repository, name: string, description: string | null): Promise<ChangeSet> {
+  return invoke("create_changelist", { repository, name, description });
+}
+
+/** Calls the Changelist `id` of `repository` `name` from here on. Rejects with a {@link Failure}. */
+export function renameChangelist(repository: Repository, id: string, name: string): Promise<ChangeSet> {
+  return invoke("rename_changelist", { repository, id, name });
+}
+
+/** Deletes the Changelist `id` of `repository`, whose changes go to the Active changelist. Rejects with a {@link Failure}. */
+export function deleteChangelist(repository: Repository, id: string): Promise<ChangeSet> {
+  return invoke("delete_changelist", { repository, id });
 }
 
 /** The diff of the file at `path`, relative to the Repository root, against HEAD. Rejects with a {@link Failure}. */

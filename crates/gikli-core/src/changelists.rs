@@ -2,7 +2,9 @@
 //! directory (ADR-0005), and how they follow what happens in git.
 
 use std::collections::BTreeSet;
+use std::collections::hash_map::RandomState;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -15,7 +17,7 @@ use crate::status::{Change, ChangeStatus, Status};
 
 /// The version of the format this gikli writes. Whatever changes the format raises it, and gikli
 /// goes on reading every earlier version.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 /// The identifier of the Changelist every Repository starts with. It is the same in each
 /// Repository, so the initial Changelists of several Repositories are parts of one (ADR-0005).
@@ -40,6 +42,8 @@ pub(crate) struct Changelists {
 pub(crate) struct StoredChangelist {
     pub id: String,
     pub name: String,
+    /// What the user wrote about it, if anything. Version 1 of the format did not have it.
+    pub description: Option<String>,
     /// Relative to the Repository root, as git writes them. A path that is not UTF-8 is kept in
     /// its lossy form: it still names the same file from one read to the next.
     files: BTreeSet<String>,
@@ -61,6 +65,7 @@ impl Changelists {
             changelists: vec![StoredChangelist {
                 id: INITIAL_ID.to_owned(),
                 name: "Changes".to_owned(),
+                description: None,
                 files: BTreeSet::new(),
             }],
         }
@@ -77,11 +82,81 @@ impl Changelists {
 
     /// Makes the Changelist `id` the Active changelist.
     pub fn set_active(&mut self, id: &str) -> Result<(), Failure> {
-        if !self.changelists.iter().any(|list| list.id == id) {
-            return Err(Failure::ChangelistGone { id: id.to_owned() });
-        }
+        self.place_with_id(id)?;
         id.clone_into(&mut self.active);
         Ok(())
+    }
+
+    /// Calls the Changelist `id` `name` from here on.
+    pub fn rename(&mut self, id: &str, name: &str) -> Result<(), Failure> {
+        let place = self.place_with_id(id)?;
+        let name = self.usable_name(name, Some(id))?.to_owned();
+        self.changelists[place].name = name;
+        Ok(())
+    }
+
+    /// `name` as a Changelist goes by it: without the spaces around it, and not already the name of
+    /// a Changelist other than the one with the identifier `except_id`.
+    fn usable_name<'n>(&self, name: &'n str, except_id: Option<&str>) -> Result<&'n str, Failure> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Failure::ChangelistNameEmpty);
+        }
+        if self
+            .changelists
+            .iter()
+            .any(|list| list.name == name && Some(list.id.as_str()) != except_id)
+        {
+            return Err(Failure::ChangelistNameTaken {
+                name: name.to_owned(),
+            });
+        }
+        Ok(name)
+    }
+
+    fn place_with_id(&self, id: &str) -> Result<usize, Failure> {
+        self.changelists
+            .iter()
+            .position(|list| list.id == id)
+            .ok_or_else(|| Failure::ChangelistGone { id: id.to_owned() })
+    }
+
+    /// Removes the Changelist `id`. Its changes go to the Active changelist.
+    pub fn delete(&mut self, id: &str) -> Result<(), Failure> {
+        let place = self.place_with_id(id)?;
+        if id == self.active {
+            return Err(Failure::ActiveChangelistNotDeletable);
+        }
+        let deleted = self.changelists.remove(place);
+        let active = self.active_place();
+        self.changelists[active].files.extend(deleted.files);
+        Ok(())
+    }
+
+    /// Adds a Changelist called `name`, after the others.
+    pub fn create(&mut self, name: &str, description: Option<&str>) -> Result<(), Failure> {
+        let name = self.usable_name(name, None)?.to_owned();
+        self.changelists.push(StoredChangelist {
+            id: self.new_id(),
+            name,
+            description: description
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .map(str::to_owned),
+            files: BTreeSet::new(),
+        });
+        Ok(())
+    }
+
+    /// An identifier no Changelist has. It is random so that it is not used again later: a window
+    /// still showing a deleted Changelist must not end up acting on a new one.
+    fn new_id(&self) -> String {
+        loop {
+            let id = format!("{:016x}", RandomState::new().build_hasher().finish());
+            if !self.changelists.iter().any(|list| list.id == id) {
+                return id;
+            }
+        }
     }
 
     /// The place in [`Self::lists`] of the Changelist the changed file at `path` belongs to.
@@ -234,8 +309,9 @@ impl ChangelistStore {
                 version,
             });
         }
-        let lists: Changelists =
+        let mut lists: Changelists =
             serde_json::from_slice(&json).map_err(|error| self.unreadable(error))?;
+        lists.version = FORMAT_VERSION;
         if !lists.changelists.iter().any(|list| list.id == lists.active) {
             return Err(Failure::ActiveChangelistMissing {
                 file: self.file.clone(),

@@ -24,9 +24,8 @@ use http_remote::Refusal;
 /// Makes git take every repository for someone else's.
 const OWNED_BY_SOMEONE_ELSE: &str = "GIT_TEST_ASSUME_DIFFERENT_OWNER";
 
-/// Two Changelists in the format gikli stores them in, version 1: Changes, which is active, and
-/// Feature, with no files. Creating a Changelist from the app comes with #15; this also pins the
-/// format, which every later gikli must still read.
+/// Two Changelists as gikli stored them in version 1 of the format: Changes, which is active, and
+/// Feature, with no files. This pins that format, which every later gikli must still read.
 pub const TWO_CHANGELISTS: &str = r#"{
   "version": 1,
   "active": "changes",

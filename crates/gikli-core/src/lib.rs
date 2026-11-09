@@ -330,6 +330,14 @@ pub enum Failure {
     ChangelistGone {
         id: String,
     },
+    /// A Changelist needs a name, so nothing changed.
+    ChangelistNameEmpty,
+    /// Another Changelist of the Repository is already called `name`, so nothing changed.
+    ChangelistNameTaken {
+        name: String,
+    },
+    /// The Active changelist cannot be deleted: another one has to become active first.
+    ActiveChangelistNotDeletable,
     /// gikli could not read the Changelists in `file`, and left it as it is.
     #[serde(rename_all = "camelCase")]
     ChangelistsUnreadable {
@@ -976,6 +984,39 @@ impl Gikli {
         id: &str,
     ) -> Result<ChangeSet, Failure> {
         self.read_changes_with_choice(repository, |lists| lists.set_active(id))
+    }
+
+    /// Adds a Changelist called `name`, with an optional `description`, to `repository`, and returns
+    /// the changes after that.
+    pub fn create_changelist(
+        &self,
+        repository: &Repository,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<ChangeSet, Failure> {
+        self.read_changes_with_choice(repository, |lists| lists.create(name, description))
+    }
+
+    /// Calls the Changelist `id` of `repository` `name` from here on, and returns the changes after
+    /// that.
+    pub fn rename_changelist(
+        &self,
+        repository: &Repository,
+        id: &str,
+        name: &str,
+    ) -> Result<ChangeSet, Failure> {
+        self.read_changes_with_choice(repository, |lists| lists.rename(id, name))
+    }
+
+    /// Deletes the Changelist `id` of `repository`, whose changes go to the Active changelist, and
+    /// returns the changes after that. The Active changelist cannot be deleted, so at least one
+    /// Changelist always exists.
+    pub fn delete_changelist(
+        &self,
+        repository: &Repository,
+        id: &str,
+    ) -> Result<ChangeSet, Failure> {
+        self.read_changes_with_choice(repository, |lists| lists.delete(id))
     }
 
     /// Reads the changes of `repository`, makes its Changelists follow them, and applies `choice`,

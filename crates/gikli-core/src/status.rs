@@ -32,6 +32,7 @@ pub struct Changelist {
     /// What identifies the Changelist, whatever its name.
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     /// Whether this is the Active changelist, the one new changes go into.
     pub active: bool,
     pub group: ChangeGroup,
@@ -122,6 +123,7 @@ impl ChangeSet {
             .map(|(list, changes)| Changelist {
                 id: list.id.clone(),
                 name: list.name.clone(),
+                description: list.description.clone(),
                 active: list.id == lists.active(),
                 group: ChangeGroup::new(changes, grouping),
             })
