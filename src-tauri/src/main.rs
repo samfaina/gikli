@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, Failure, FailureAction, FileDiff,
-    Gikli, GitCheck, HostEnvironment, Notification, NotificationAction, NotificationOutcome,
-    OperationLogEntry, Project, ProjectWindow, Prompt, Repository, RunningOperation, Settings,
-    answer_askpass_request,
+    Gikli, GitCheck, HostEnvironment, MoveTarget, Notification, NotificationAction,
+    NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt, Repository,
+    RunningOperation, Settings, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -251,6 +251,8 @@ fn window_for_project(
                 .title("gikli")
                 .inner_size(960.0, 640.0)
                 .min_inner_size(480.0, 320.0)
+                // Dragging changes between Changelists is HTML drag and drop, which this would stop.
+                .disable_drag_drop_handler()
                 .build();
             if let Err(error) = created {
                 gikli.window_closed(window);
@@ -302,6 +304,27 @@ fn delete_changelist(
     id: String,
 ) -> Result<ChangeSet, Failure> {
     gikli.delete_changelist(&repository, &id)
+}
+
+#[tauri::command(async)]
+fn set_changelist_comment(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    id: String,
+    comment: Option<String>,
+) -> Result<ChangeSet, Failure> {
+    gikli.set_changelist_comment(&repository, &id, comment.as_deref())
+}
+
+#[tauri::command(async)]
+fn move_changes(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+    target: MoveTarget,
+    make_active: bool,
+) -> Result<ChangeSet, Failure> {
+    gikli.move_changes(&repository, &paths, &target, make_active)
 }
 
 #[tauri::command(async)]
@@ -427,6 +450,8 @@ fn main() {
             create_changelist,
             rename_changelist,
             delete_changelist,
+            set_changelist_comment,
+            move_changes,
             read_diff,
             save_local_file,
             add_files,

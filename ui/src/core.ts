@@ -133,10 +133,18 @@ export interface Changelist {
   name: string;
   /** What the user wrote about it, if anything. */
   description: string | null;
+  /** What will become the commit message when it is committed, if anything. */
+  comment: string | null;
   /** Whether this is the Active changelist, the one new changes go into. */
   active: boolean;
   group: ChangeGroup;
 }
+
+/** Where the user moves changes to. */
+export type MoveTarget =
+  | { kind: "changelist"; id: string }
+  /** Created after the others, in the same step as the move. */
+  | { kind: "newChangelist"; name: string };
 
 export interface ChangeSet {
   repository: Repository;
@@ -581,6 +589,19 @@ export function renameChangelist(repository: Repository, id: string, name: strin
 /** Deletes the Changelist `id` of `repository`, whose changes go to the Active changelist. Rejects with a {@link Failure}. */
 export function deleteChangelist(repository: Repository, id: string): Promise<ChangeSet> {
   return invoke("delete_changelist", { repository, id });
+}
+
+/** Gives the Changelist `id` of `repository` a comment, or takes it away when there is no text. Rejects with a {@link Failure}. */
+export function setChangelistComment(repository: Repository, id: string, comment: string | null): Promise<ChangeSet> {
+  return invoke("set_changelist_comment", { repository, id, comment });
+}
+
+/**
+ * Moves the changes at `paths`, relative to the Repository root, to `target`, which becomes the Active
+ * changelist if `makeActive`, all in one step. Rejects with a {@link Failure}.
+ */
+export function moveChanges(repository: Repository, paths: string[], target: MoveTarget, makeActive: boolean): Promise<ChangeSet> {
+  return invoke("move_changes", { repository, paths, target, makeActive });
 }
 
 /** The diff of the file at `path`, relative to the Repository root, against HEAD. Rejects with a {@link Failure}. */

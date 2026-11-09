@@ -212,7 +212,9 @@ button:disabled {
 }
 
 .prompt input,
-.changelist-form input {
+.changelist-form input,
+.changelist-form textarea,
+.changelist-form select {
   font: inherit;
   color: var(--text);
   background: var(--background);
@@ -222,7 +224,9 @@ button:disabled {
 }
 
 .prompt input:focus-visible,
-.changelist-form input:focus-visible {
+.changelist-form input:focus-visible,
+.changelist-form textarea:focus-visible,
+.changelist-form select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -401,6 +405,37 @@ button:disabled {
   gap: 2px;
 }
 
+.changelist-form label.changelist-form-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.changelist-comment {
+  white-space: pre-wrap;
+}
+
+.change-group.drop-target {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.context-menu[hidden] {
+  display: none;
+}
+
 .changes {
   list-style: none;
   margin: 0;
@@ -464,6 +499,14 @@ button:disabled {
 
 .changes li.change[tabindex] {
   cursor: default;
+}
+
+.changes li.change[draggable="true"] {
+  user-select: none;
+}
+
+.changes li.change.selected {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .changes li.change:focus-visible {

@@ -6,7 +6,7 @@ export function isMac(): boolean {
 }
 
 /** Whether `event` has the key shortcuts take on this platform: Cmd on a Mac, and Ctrl elsewhere. */
-export function hasShortcutKey(event: KeyboardEvent): boolean {
+export function hasShortcutKey(event: KeyboardEvent | MouseEvent): boolean {
   return onMac ? event.metaKey : event.ctrlKey;
 }
 

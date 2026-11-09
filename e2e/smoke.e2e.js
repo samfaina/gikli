@@ -480,6 +480,50 @@ describe("gikli", () => {
       await $(changelist("Renamed")).waitForDisplayed({ timeout: 30000, reverse: true });
       await expectChangeIn("Changes", STAGED_FILE);
     });
+
+    it("moves a selected change to a new Changelist from the menu, which becomes active", async () => {
+      await idleRefresh();
+      await $(`${changelist("Changes")} [data-testid="change"][data-path="${STAGED_FILE}"]`).click({ button: "right" });
+      await $('[data-testid="move-to-another-changelist"]').click();
+      // With one Changelist, the only place to go is a new one.
+      await $('[data-testid="move-form-name"]').setValue("Moved");
+      await $('[data-testid="move-form-make-active"]').click();
+      await $('[data-testid="move-form-submit"]').click();
+
+      await expectChangeIn("Moved", STAGED_FILE);
+      await expectActive("Moved");
+    });
+
+    it("moves a change to another Changelist by dragging it", async () => {
+      await idleRefresh();
+      // tauri-driver speaks classic WebDriver, whose mouse does not start an HTML drag.
+      await browser.execute(
+        (rowSelector, listSelector) => {
+          const dataTransfer = new DataTransfer();
+          const fire = (target, type) => target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer }));
+          const row = document.querySelector(rowSelector);
+          const list = document.querySelector(listSelector);
+          fire(row, "dragstart");
+          fire(list, "dragover");
+          fire(list, "drop");
+          fire(row, "dragend");
+        },
+        `${changelist("Moved")} [data-testid="change"][data-path="${STAGED_FILE}"]`,
+        changelist("Changes"),
+      );
+
+      await expectChangeIn("Changes", STAGED_FILE);
+    });
+
+    it("keeps a comment on a Changelist", async () => {
+      await clickInChangelist("Moved", "comment-changelist");
+      await $('[data-testid="changelist-form-comment"]').setValue("Add the feature");
+      await $('[data-testid="changelist-form-submit"]').click();
+
+      const comment = $(`${changelist("Moved")} [data-testid="changelist-comment"]`);
+      await comment.waitForDisplayed({ timeout: 30000 });
+      assert.equal(await comment.getText(), "Add the feature");
+    });
   });
 
   // In a window of a clone: closing the main window would end the WebDriver session.

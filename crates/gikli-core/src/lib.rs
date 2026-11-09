@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 pub use capability::{Capability, CapabilityState};
+pub use changelists::MoveTarget;
 pub use clone_url::CloneUrlForms;
 pub use diff::{
     DiffContent, Difference, FileDiff, LineRange, LocalReadOnly, TextDiff, UnchangedRegion,
@@ -1017,6 +1018,32 @@ impl Gikli {
         id: &str,
     ) -> Result<ChangeSet, Failure> {
         self.read_changes_with_choice(repository, |lists| lists.delete(id))
+    }
+
+    /// Gives the Changelist `id` of `repository` the comment `comment`, stored with it, or takes it
+    /// away when there is no text, and returns the changes after that.
+    pub fn set_changelist_comment(
+        &self,
+        repository: &Repository,
+        id: &str,
+        comment: Option<&str>,
+    ) -> Result<ChangeSet, Failure> {
+        self.read_changes_with_choice(repository, |lists| lists.set_comment(id, comment))
+    }
+
+    /// Moves the changes at `paths`, relative to the root of `repository`, to `target`, which becomes
+    /// the Active changelist if `make_active`, and returns the changes after that. It is one step:
+    /// when any of it cannot be done, nothing changes.
+    pub fn move_changes(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+        target: &MoveTarget,
+        make_active: bool,
+    ) -> Result<ChangeSet, Failure> {
+        self.read_changes_with_choice(repository, |lists| {
+            lists.move_changes(paths, target, make_active)
+        })
     }
 
     /// Reads the changes of `repository`, makes its Changelists follow them, and applies `choice`,

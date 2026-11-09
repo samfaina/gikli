@@ -33,6 +33,8 @@ pub struct Changelist {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// What will become the commit message when it is committed, if anything.
+    pub comment: Option<String>,
     /// Whether this is the Active changelist, the one new changes go into.
     pub active: bool,
     pub group: ChangeGroup,
@@ -124,6 +126,7 @@ impl ChangeSet {
                 id: list.id.clone(),
                 name: list.name.clone(),
                 description: list.description.clone(),
+                comment: list.comment.clone(),
                 active: list.id == lists.active(),
                 group: ChangeGroup::new(changes, grouping),
             })

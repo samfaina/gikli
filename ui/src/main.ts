@@ -29,6 +29,7 @@ import {
   renameChangelist,
   runningOperations as runningOperationsOfCore,
   setActiveChangelist,
+  setChangelistComment,
   setChangeGrouping,
   setCloneSubmodulesRecursively,
   setDiffLocalSideEditable,
@@ -71,6 +72,7 @@ import {
 } from "./core";
 import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
+import { createChangeMoves } from "./change-moves";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -678,30 +680,8 @@ function repositoryView(repository: Repository): HTMLElement {
   refresh.textContent = t("refreshChanges");
   // Outside the rows, which are drawn again on every read: what the user is typing stays.
   const form = changelistForm(() => void refreshChanges());
-  const newChangelist = changelistButton("new-changelist", t("newChangelist"), () =>
-    form.open({
-      title: t("changelistFormNewTitle"),
-      submit: t("changelistFormCreate"),
-      name: "",
-      asksDescription: true,
-      save: (name, description) => createChangelist(repository, name, description),
-    }),
-  );
-  header.append(title, refresh, newChangelist);
   const changes = document.createElement("div");
   changes.dataset.testid = "changes";
-  const watching = document.createElement("div");
-  const features = document.createElement("div");
-  section.append(
-    line("repository-root", t("repositoryRoot", { root: repository.root })),
-    header,
-    form.view,
-    watching,
-    changes,
-    features,
-  );
-  void showUnavailableFeatures(repository, features);
-
   const runChangelistAction = async (action: () => Promise<unknown>): Promise<void> => {
     try {
       await action();
@@ -710,6 +690,38 @@ function repositoryView(repository: Repository): HTMLElement {
       changes.prepend(errorView(error));
     }
   };
+  const moves = createChangeMoves({
+    repository,
+    changes,
+    run: (action) => void runChangelistAction(action),
+    moved: () => void refreshChanges(),
+    describeError,
+  });
+  const newChangelist = changelistButton("new-changelist", t("newChangelist"), () =>
+    form.open({
+      title: t("changelistFormNewTitle"),
+      submit: t("changelistFormCreate"),
+      name: "",
+      description: "",
+      comment: null,
+      save: ({ name, description }) => createChangelist(repository, name, description),
+    }),
+  );
+  header.append(title, refresh, newChangelist);
+  const watching = document.createElement("div");
+  const features = document.createElement("div");
+  section.append(
+    line("repository-root", t("repositoryRoot", { root: repository.root })),
+    header,
+    form.view,
+    moves.form,
+    moves.menu,
+    watching,
+    changes,
+    features,
+  );
+  void showUnavailableFeatures(repository, features);
+
   const actions: ChangelistActions = {
     setActive: (list) => void runChangelistAction(() => setActiveChangelist(repository, list.id)),
     delete: (list) => void runChangelistAction(() => deleteChangelist(repository, list.id)),
@@ -718,8 +730,18 @@ function repositoryView(repository: Repository): HTMLElement {
         title: t("changelistFormRenameTitle", { name: list.name }),
         submit: t("changelistFormRename"),
         name: list.name,
-        asksDescription: false,
-        save: (name) => renameChangelist(repository, list.id, name),
+        description: null,
+        comment: null,
+        save: ({ name }) => renameChangelist(repository, list.id, name),
+      }),
+    comment: (list) =>
+      form.open({
+        title: t("changelistFormCommentTitle", { name: list.name }),
+        submit: t("changelistFormSaveComment"),
+        name: null,
+        description: null,
+        comment: list.comment ?? "",
+        save: ({ comment }) => setChangelistComment(repository, list.id, comment),
       }),
   };
   // One read at a time: a request while one runs reads once more when it ends, so requests from
@@ -741,6 +763,7 @@ function repositoryView(repository: Repository): HTMLElement {
           // The row the user was on stays theirs when the rows are drawn again.
           const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
           changes.replaceChildren(changeList(changeSet, actions));
+          moves.drawn(changeSet);
           if (focused !== undefined) {
             focusChangeRow(changes, focused);
           }
@@ -831,6 +854,7 @@ function changeList(changeSet: ChangeSet, actions: ChangelistActions): HTMLEleme
 interface ChangelistActions {
   setActive: (list: Changelist) => void;
   rename: (list: Changelist) => void;
+  comment: (list: Changelist) => void;
   delete: (list: Changelist) => void;
 }
 
@@ -856,6 +880,13 @@ function changelistView(repository: Repository, list: Changelist, actions: Chang
     description.textContent = list.description;
     header.push(description);
   }
+  if (list.comment !== null) {
+    const comment = document.createElement("span");
+    comment.className = "changelist-description changelist-comment";
+    comment.dataset.testid = "changelist-comment";
+    comment.textContent = list.comment;
+    header.push(comment);
+  }
   if (list.active) {
     const active = document.createElement("span");
     active.className = "changelist-active";
@@ -865,42 +896,51 @@ function changelistView(repository: Repository, list: Changelist, actions: Chang
     header.push(changelistButton("set-active-changelist", t("setActiveChangelist"), () => actions.setActive(list)));
   }
   header.push(changelistButton("rename-changelist", t("renameChangelist"), () => actions.rename(list)));
+  header.push(changelistButton("comment-changelist", t("commentChangelist"), () => actions.comment(list)));
   if (!list.active) {
     header.push(changelistButton("delete-changelist", t("deleteChangelist"), () => actions.delete(list)));
   }
   const view = changeGroupView(repository, "changelist", header, list.group.nodes);
   view.dataset.active = String(list.active);
   view.dataset.name = list.name;
+  view.dataset.id = list.id;
   return view;
 }
 
-/** What the Changelist form asks, and what saves the answer. */
+/** What the user wrote in the Changelist form. */
+interface ChangelistFormAnswers {
+  name: string;
+  description: string;
+  comment: string;
+}
+
+/** What the Changelist form asks, and what saves the answer. A field that is null is not asked. */
 interface ChangelistFormRequest {
   title: string;
   submit: string;
-  name: string;
-  asksDescription: boolean;
-  save: (name: string, description: string | null) => Promise<unknown>;
+  name: string | null;
+  description: string | null;
+  comment: string | null;
+  save: (answers: ChangelistFormAnswers) => Promise<unknown>;
 }
 
-/** A form to name a Changelist, hidden until something opens it. Once saved it closes and calls `saved`; when it cannot save, it shows why. */
+/** A form about a Changelist, hidden until something opens it. Once saved it closes and calls `saved`; when it cannot save, it shows why. */
 function changelistForm(saved: () => void): { view: HTMLFormElement; open: (request: ChangelistFormRequest) => void } {
   const view = document.createElement("form");
   view.className = "changelist-form";
   view.dataset.testid = "changelist-form";
   view.hidden = true;
   const title = document.createElement("h3");
-  const field = (testId: string, text: string): { label: HTMLLabelElement; input: HTMLInputElement } => {
+  const field = <T extends HTMLInputElement | HTMLTextAreaElement>(input: T, testId: string, text: string): { label: HTMLLabelElement; input: T } => {
     const label = document.createElement("label");
-    const input = document.createElement("input");
-    input.type = "text";
     input.dataset.testid = testId;
     input.autocomplete = "off";
     label.append(document.createTextNode(text), input);
     return { label, input };
   };
-  const name = field("changelist-form-name", t("changelistFormName"));
-  const description = field("changelist-form-description", t("changelistFormDescription"));
+  const name = field(document.createElement("input"), "changelist-form-name", t("changelistFormName"));
+  const description = field(document.createElement("input"), "changelist-form-description", t("changelistFormDescription"));
+  const comment = field(document.createElement("textarea"), "changelist-form-comment", t("changelistFormComment"));
   const message = document.createElement("p");
   message.dataset.testid = "changelist-form-message";
   const submit = document.createElement("button");
@@ -913,7 +953,7 @@ function changelistForm(saved: () => void): { view: HTMLFormElement; open: (requ
   const buttons = document.createElement("div");
   buttons.className = "notification-actions";
   buttons.append(submit, cancel);
-  view.append(title, name.label, description.label, message, buttons);
+  view.append(title, name.label, description.label, comment.label, message, buttons);
 
   let request: ChangelistFormRequest | null = null;
   const close = (): void => {
@@ -929,7 +969,7 @@ function changelistForm(saved: () => void): { view: HTMLFormElement; open: (requ
     submit.disabled = true;
     message.textContent = "";
     try {
-      await request.save(name.input.value, request.asksDescription ? description.input.value : null);
+      await request.save({ name: name.input.value, description: description.input.value, comment: comment.input.value });
       close();
       saved();
     } catch (error) {
@@ -944,13 +984,20 @@ function changelistForm(saved: () => void): { view: HTMLFormElement; open: (requ
       request = opened;
       title.textContent = opened.title;
       submit.textContent = opened.submit;
-      name.input.value = opened.name;
-      description.input.value = "";
-      description.label.hidden = !opened.asksDescription;
+      const asked = [
+        { field: name, value: opened.name },
+        { field: description, value: opened.description },
+        { field: comment, value: opened.comment },
+      ];
+      for (const { field: { label, input }, value } of asked) {
+        label.hidden = value === null;
+        input.value = value ?? "";
+      }
       message.textContent = "";
       view.hidden = false;
-      name.input.select();
-      name.input.focus();
+      const first = asked.find(({ value }) => value !== null)?.field.input;
+      first?.select();
+      first?.focus();
     },
   };
 }
