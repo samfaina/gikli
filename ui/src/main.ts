@@ -682,12 +682,16 @@ function repositoryView(repository: Repository): HTMLElement {
   const form = changelistForm(() => void refreshChanges());
   const changes = document.createElement("div");
   changes.dataset.testid = "changes";
+  // What the rows show. Rows drawn again under the mouse lose the click or the drag that started on
+  // them, so a read that finds the same leaves them alone. null when something else is on show.
+  let drawnChanges: string | null = null;
   const runChangelistAction = async (action: () => Promise<unknown>): Promise<void> => {
     try {
       await action();
       void refreshChanges();
     } catch (error) {
       changes.prepend(errorView(error));
+      drawnChanges = null;
     }
   };
   const moves = createChangeMoves({
@@ -760,15 +764,20 @@ function repositoryView(repository: Repository): HTMLElement {
         readAgain = false;
         try {
           const changeSet = await readChanges(repository);
-          // The row the user was on stays theirs when the rows are drawn again.
-          const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
-          changes.replaceChildren(changeList(changeSet, actions));
-          moves.drawn(changeSet);
-          if (focused !== undefined) {
-            focusChangeRow(changes, focused);
+          const found = JSON.stringify(changeSet);
+          if (found !== drawnChanges) {
+            // The row the user was on stays theirs when the rows are drawn again.
+            const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
+            changes.replaceChildren(changeList(changeSet, actions));
+            moves.drawn(changeSet);
+            drawnChanges = found;
+            if (focused !== undefined) {
+              focusChangeRow(changes, focused);
+            }
           }
         } catch (error) {
           changes.replaceChildren(errorView(error, () => void refreshChanges()));
+          drawnChanges = null;
         }
       } while (readAgain);
     } finally {
@@ -874,18 +883,10 @@ function changelistView(repository: Repository, list: Changelist, actions: Chang
   name.dataset.testid = "changelist-name";
   const header: HTMLElement[] = [name];
   if (list.description !== null) {
-    const description = document.createElement("span");
-    description.className = "changelist-description";
-    description.dataset.testid = "changelist-description";
-    description.textContent = list.description;
-    header.push(description);
+    header.push(changelistNote("changelist-description", list.description));
   }
   if (list.comment !== null) {
-    const comment = document.createElement("span");
-    comment.className = "changelist-description changelist-comment";
-    comment.dataset.testid = "changelist-comment";
-    comment.textContent = list.comment;
-    header.push(comment);
+    header.push(changelistNote("changelist-comment", list.comment));
   }
   if (list.active) {
     const active = document.createElement("span");
@@ -905,6 +906,15 @@ function changelistView(repository: Repository, list: Changelist, actions: Chang
   view.dataset.name = list.name;
   view.dataset.id = list.id;
   return view;
+}
+
+/** Something the user wrote about a Changelist, shown beside its name. `kind` is its test identifier and its class. */
+function changelistNote(kind: string, text: string): HTMLSpanElement {
+  const note = document.createElement("span");
+  note.className = `changelist-note ${kind}`;
+  note.dataset.testid = kind;
+  note.textContent = text;
+  return note;
 }
 
 /** What the user wrote in the Changelist form. */

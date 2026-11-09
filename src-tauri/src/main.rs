@@ -251,7 +251,7 @@ fn window_for_project(
                 .title("gikli")
                 .inner_size(960.0, 640.0)
                 .min_inner_size(480.0, 320.0)
-                // Dragging changes between Changelists is HTML drag and drop, which this would stop.
+                // Tauri's own handler would stop the HTML drag and drop that moves changes.
                 .disable_drag_drop_handler()
                 .build();
             if let Err(error) = created {

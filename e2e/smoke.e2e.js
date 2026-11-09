@@ -496,6 +496,8 @@ describe("gikli", () => {
 
     it("moves a change to another Changelist by dragging it", async () => {
       await idleRefresh();
+      const row = `${changelist("Moved")} [data-testid="change"][data-path="${STAGED_FILE}"]`;
+      assert.equal(await $(row).getAttribute("draggable"), "true");
       // tauri-driver speaks classic WebDriver, whose mouse does not start an HTML drag.
       await browser.execute(
         (rowSelector, listSelector) => {
@@ -508,7 +510,7 @@ describe("gikli", () => {
           fire(list, "drop");
           fire(row, "dragend");
         },
-        `${changelist("Moved")} [data-testid="change"][data-path="${STAGED_FILE}"]`,
+        row,
         changelist("Changes"),
       );
 

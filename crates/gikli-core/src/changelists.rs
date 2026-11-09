@@ -191,7 +191,7 @@ impl Changelists {
         target: &MoveTarget,
         make_active: bool,
     ) -> Result<(), Failure> {
-        let target = match target {
+        let to = match target {
             MoveTarget::Changelist { id } => self.place_with_id(id)?,
             MoveTarget::NewChangelist { name } => {
                 self.create(name, None)?;
@@ -199,13 +199,13 @@ impl Changelists {
             }
         };
         for path in paths {
-            if let Some(place) = self.place_holding(Path::new(path)) {
-                let file = self.changelists[place].files.take(path.as_str());
-                self.changelists[target].files.extend(file);
+            if let Some(from) = self.place_holding(Path::new(path)) {
+                let file = self.changelists[from].files.take(path.as_str());
+                self.changelists[to].files.extend(file);
             }
         }
         if make_active {
-            self.active.clone_from(&self.changelists[target].id);
+            self.active.clone_from(&self.changelists[to].id);
         }
         Ok(())
     }
