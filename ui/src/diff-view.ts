@@ -482,10 +482,12 @@ export function createDiffView(host: DiffViewHost): DiffView {
     if (shown === null || saving !== null || hasEdits()) {
       return;
     }
-    const { diff } = shown;
+    const file = shown;
+    const { diff } = file;
     const opened = lastOpen;
     const asked = ++lastRefresh;
-    const stillCounts = (): boolean => opened === lastOpen && asked === lastRefresh;
+    // `shown` also changes when a file asked for before this read arrives first.
+    const stillCounts = (): boolean => opened === lastOpen && asked === lastRefresh && shown === file;
     try {
       const fresh = await readDiff(diff.repository, diff.path);
       if (!stillCounts() || shown === null || saving !== null || hasEdits()) {
