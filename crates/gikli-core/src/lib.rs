@@ -1317,6 +1317,13 @@ impl ProjectFolder {
         {
             return Failure::NotInRepository { folder };
         }
+        if self
+            .toplevel
+            .as_ref()
+            .is_err_and(explainer::refused_bare_repository)
+        {
+            return Failure::NotAWorkingTree { folder };
+        }
         match self.is_outside_work_tree() {
             Ok(true) => Failure::NotAWorkingTree { folder },
             Ok(false) => Failure::ProjectNotOpened { folder },

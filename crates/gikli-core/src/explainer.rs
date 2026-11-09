@@ -369,6 +369,19 @@ const NO_REPOSITORY_FOUND: [&str; 2] = [
     "fatal: not a git repository (or any parent up to mount point ",
 ];
 
+/// Whether `invocation`, a run git was told to write in its own language, was refused the bare
+/// repository it found because of the user's `safe.bareRepository`.
+pub(crate) fn refused_bare_repository(invocation: &Invocation) -> bool {
+    invocation
+        .stderr
+        .lines()
+        .any(|line| line.starts_with(BARE_REPOSITORY_REFUSED))
+}
+
+/// How git starts to say that it will not use a bare repository, before the path of the repository
+/// and the value of the setting. In the words git uses untranslated.
+const BARE_REPOSITORY_REFUSED: &str = "fatal: cannot use bare repository '";
+
 /// How git for Windows reports a path that is too long. It is the text of the system's error,
 /// which comes from Windows' C library in English, not from git's translations.
 const PATH_TOO_LONG: &str = "Filename too long";
