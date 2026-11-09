@@ -211,7 +211,8 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.prompt input {
+.prompt input,
+.changelist-form input {
   font: inherit;
   color: var(--text);
   background: var(--background);
@@ -220,7 +221,8 @@ button:disabled {
   padding: 4px 8px;
 }
 
-.prompt input:focus-visible {
+.prompt input:focus-visible,
+.changelist-form input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -397,20 +399,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.changelist-form input {
-  font: inherit;
-  color: var(--text);
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 8px;
-}
-
-.changelist-form input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 
 .changes {

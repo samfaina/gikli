@@ -46,6 +46,11 @@ fn delete(gikli: &Gikli, repository: &TestRepository, id: &str) -> ChangeSet {
         .expect("delete the Changelist")
 }
 
+/// Creates a Changelist called Feature, and returns its identifier.
+fn create_feature(gikli: &Gikli, repository: &TestRepository) -> String {
+    id_of(&create(gikli, repository, "Feature", None), "Feature")
+}
+
 /// The identifier of the Changelist called `name`.
 fn id_of(change_set: &ChangeSet, name: &str) -> String {
     list(change_set, name).id.clone()
@@ -90,10 +95,7 @@ fn committed_repository(sandbox: &Sandbox) -> TestRepository {
 /// A repository with Changes, which is active, and Feature, with the identifier of Feature.
 fn repository_with_two_changelists(sandbox: &Sandbox) -> (TestRepository, String) {
     let repository = committed_repository(sandbox);
-    let feature = id_of(
-        &create(&sandbox.gikli(), &repository, "Feature", None),
-        "Feature",
-    );
+    let feature = create_feature(&sandbox.gikli(), &repository);
     (repository, feature)
 }
 
@@ -169,6 +171,7 @@ fn a_description_is_optional_and_a_blank_one_is_none() {
 
     assert_eq!(list(&change_set, "No description").description, None);
     assert_eq!(list(&change_set, "Blank description").description, None);
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -195,6 +198,7 @@ fn the_name_of_a_changelist_is_kept_without_the_spaces_around_it() {
     let change_set = create(&sandbox.gikli(), &repository, "  Feature  ", None);
 
     assert_eq!(change_set.changelists[1].name, "Feature");
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 /// The user tells Changelists apart by their names.
@@ -217,6 +221,7 @@ fn two_changelists_cannot_have_the_same_name() {
         }
     );
     assert_eq!(read_changes(&gikli, &repository).changelists.len(), 2);
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -248,7 +253,7 @@ fn a_changelist_cannot_be_renamed_to_nothing_or_to_a_name_that_is_taken() {
     let repository = committed_repository(&sandbox);
     let gikli = sandbox.gikli();
     let project = gikli.open_project(repository.root()).expect("open project");
-    let feature = id_of(&create(&gikli, &repository, "Feature", None), "Feature");
+    let feature = create_feature(&gikli, &repository);
     let rename_to = |name| gikli.rename_changelist(&project.repositories[0], &feature, name);
 
     assert_eq!(rename_to(" "), Err(Failure::ChangelistNameEmpty));
@@ -269,11 +274,12 @@ fn renaming_a_changelist_to_the_name_it_has_changes_nothing() {
     let sandbox = Sandbox::new();
     let repository = committed_repository(&sandbox);
     let gikli = sandbox.gikli();
-    let feature = id_of(&create(&gikli, &repository, "Feature", None), "Feature");
+    let feature = create_feature(&gikli, &repository);
 
     let change_set = rename(&gikli, &repository, &feature, "Feature");
 
     assert_eq!(id_of(&change_set, "Feature"), feature);
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -294,6 +300,7 @@ fn renaming_a_changelist_that_does_not_exist_changes_nothing() {
         }
     );
     assert_eq!(read_changes(&gikli, &repository).changelists.len(), 1);
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 /// `README.md` is in Feature, and Changes is active.
@@ -302,7 +309,7 @@ fn deleting_a_changelist_moves_its_changes_to_the_active_changelist() {
     let sandbox = Sandbox::new();
     let repository = committed_repository(&sandbox);
     let gikli = sandbox.gikli();
-    let feature = id_of(&create(&gikli, &repository, "Feature", None), "Feature");
+    let feature = create_feature(&gikli, &repository);
     set_active(&gikli, &repository, &feature);
     repository.write("README.md", "hello, world\n");
     set_active(&gikli, &repository, "changes");
@@ -323,7 +330,7 @@ fn the_active_changelist_cannot_be_deleted() {
     let repository = committed_repository(&sandbox);
     let gikli = sandbox.gikli();
     let project = gikli.open_project(repository.root()).expect("open project");
-    let feature = id_of(&create(&gikli, &repository, "Feature", None), "Feature");
+    let feature = create_feature(&gikli, &repository);
     set_active(&gikli, &repository, &feature);
     repository.write("README.md", "hello, world\n");
 
@@ -351,6 +358,7 @@ fn the_last_changelist_cannot_be_deleted() {
 
     assert_eq!(failure, Failure::ActiveChangelistNotDeletable);
     assert_eq!(read_changes(&gikli, &repository).changelists.len(), 1);
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 /// "Changes" is only the initial Changelist.
@@ -360,7 +368,7 @@ fn the_changelist_named_changes_can_be_renamed_and_deleted_like_any_other() {
     let repository = committed_repository(&sandbox);
     let gikli = sandbox.gikli();
     repository.write("README.md", "hello, world\n");
-    let feature = id_of(&create(&gikli, &repository, "Feature", None), "Feature");
+    let feature = create_feature(&gikli, &repository);
     set_active(&gikli, &repository, &feature);
 
     let renamed = rename(&gikli, &repository, "changes", "Chores");
@@ -392,6 +400,7 @@ fn deleting_a_changelist_that_does_not_exist_changes_nothing() {
         }
     );
     assert_eq!(read_changes(&gikli, &repository).changelists.len(), 1);
+    assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
 /// A folder where gikli writes the new version of the file stops it being saved, on every system.
@@ -401,7 +410,7 @@ fn managing_changelists_when_they_cannot_be_saved_fails_and_changes_nothing() {
     let repository = committed_repository(&sandbox);
     let gikli = sandbox.gikli();
     let project = gikli.open_project(repository.root()).expect("open project");
-    let feature = id_of(&create(&gikli, &repository, "Feature", None), "Feature");
+    let feature = create_feature(&gikli, &repository);
     let file = repository.changelists_file();
     fs::create_dir(file.with_extension("json.partial")).expect("create folder");
     let repo = &project.repositories[0];
@@ -566,10 +575,7 @@ fn each_linked_worktree_keeps_its_own_changelists() {
     let main = committed_repository(&sandbox);
     let worktree = main.linked_worktree("feature");
     create(&sandbox.gikli(), &main, "Feature", None);
-    let feature = id_of(
-        &create(&sandbox.gikli(), &worktree, "Feature", None),
-        "Feature",
-    );
+    let feature = create_feature(&sandbox.gikli(), &worktree);
     main.write("README.md", "in main\n");
     worktree.write("notes.md", "in the worktree\n");
     let gikli = sandbox.gikli();
@@ -856,10 +862,7 @@ fn a_file_in_the_first_commit_and_changed_again_while_gikli_was_closed_goes_to_t
  {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("app");
-    let feature = id_of(
-        &create(&sandbox.gikli(), &repository, "Feature", None),
-        "Feature",
-    );
+    let feature = create_feature(&sandbox.gikli(), &repository);
     repository.write("README.md", "hello\n");
     repository.write("notes.md", "notes\n");
     repository.git(&["add", "README.md", "notes.md"]);

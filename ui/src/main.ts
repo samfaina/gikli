@@ -676,13 +676,18 @@ function repositoryView(repository: Repository): HTMLElement {
   refresh.type = "button";
   refresh.dataset.testid = "refresh-changes";
   refresh.textContent = t("refreshChanges");
-  const newChangelist = document.createElement("button");
-  newChangelist.type = "button";
-  newChangelist.dataset.testid = "new-changelist";
-  newChangelist.textContent = t("newChangelist");
-  header.append(title, refresh, newChangelist);
   // Outside the rows, which are drawn again on every read: what the user is typing stays.
-  const form = changelistForm();
+  const form = changelistForm(() => void refreshChanges());
+  const newChangelist = changelistButton("new-changelist", t("newChangelist"), () =>
+    form.open({
+      title: t("changelistFormNewTitle"),
+      submit: t("changelistFormCreate"),
+      name: "",
+      asksDescription: true,
+      save: (name, description) => createChangelist(repository, name, description),
+    }),
+  );
+  header.append(title, refresh, newChangelist);
   const changes = document.createElement("div");
   changes.dataset.testid = "changes";
   const watching = document.createElement("div");
@@ -697,41 +702,26 @@ function repositoryView(repository: Repository): HTMLElement {
   );
   void showUnavailableFeatures(repository, features);
 
-  const changeChangelists = async (change: () => Promise<unknown>): Promise<void> => {
+  const runChangelistAction = async (action: () => Promise<unknown>): Promise<void> => {
     try {
-      await change();
+      await action();
       void refreshChanges();
     } catch (error) {
       changes.prepend(errorView(error));
     }
   };
   const actions: ChangelistActions = {
-    setActive: (list) => void changeChangelists(() => setActiveChangelist(repository, list.id)),
-    delete: (list) => void changeChangelists(() => deleteChangelist(repository, list.id)),
+    setActive: (list) => void runChangelistAction(() => setActiveChangelist(repository, list.id)),
+    delete: (list) => void runChangelistAction(() => deleteChangelist(repository, list.id)),
     rename: (list) =>
       form.open({
         title: t("changelistFormRenameTitle", { name: list.name }),
         submit: t("changelistFormRename"),
         name: list.name,
         asksDescription: false,
-        save: async (name) => {
-          await renameChangelist(repository, list.id, name);
-          void refreshChanges();
-        },
+        save: (name) => renameChangelist(repository, list.id, name),
       }),
   };
-  newChangelist.addEventListener("click", () =>
-    form.open({
-      title: t("changelistFormNewTitle"),
-      submit: t("changelistFormCreate"),
-      name: "",
-      asksDescription: true,
-      save: async (name, description) => {
-        await createChangelist(repository, name, description);
-        void refreshChanges();
-      },
-    }),
-  );
   // One read at a time: a request while one runs reads once more when it ends, so requests from
   // the watcher and the button never pile up.
   let reading = false;
@@ -844,7 +834,7 @@ interface ChangelistActions {
   delete: (list: Changelist) => void;
 }
 
-/** A button in the header of a Changelist. */
+/** A button that manages Changelists. */
 function changelistButton(testId: string, text: string, act: () => void): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -890,11 +880,11 @@ interface ChangelistFormRequest {
   submit: string;
   name: string;
   asksDescription: boolean;
-  save: (name: string, description: string | null) => Promise<void>;
+  save: (name: string, description: string | null) => Promise<unknown>;
 }
 
-/** A form to name a Changelist, hidden until something opens it. It closes once saved, and shows why when it cannot save. */
-function changelistForm(): { view: HTMLFormElement; open: (request: ChangelistFormRequest) => void } {
+/** A form to name a Changelist, hidden until something opens it. Once saved it closes and calls `saved`; when it cannot save, it shows why. */
+function changelistForm(saved: () => void): { view: HTMLFormElement; open: (request: ChangelistFormRequest) => void } {
   const view = document.createElement("form");
   view.className = "changelist-form";
   view.dataset.testid = "changelist-form";
@@ -941,6 +931,7 @@ function changelistForm(): { view: HTMLFormElement; open: (request: ChangelistFo
     try {
       await request.save(name.input.value, request.asksDescription ? description.input.value : null);
       close();
+      saved();
     } catch (error) {
       message.textContent = describeError(error);
     } finally {

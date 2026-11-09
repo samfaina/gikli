@@ -96,8 +96,8 @@ impl Changelists {
     }
 
     /// `name` as a Changelist goes by it: without the spaces around it, and not already the name of
-    /// a Changelist other than `renamed`, the identifier of the one getting it.
-    fn usable_name<'n>(&self, name: &'n str, renamed: Option<&str>) -> Result<&'n str, Failure> {
+    /// a Changelist other than the one with the identifier `except_id`.
+    fn usable_name<'n>(&self, name: &'n str, except_id: Option<&str>) -> Result<&'n str, Failure> {
         let name = name.trim();
         if name.is_empty() {
             return Err(Failure::ChangelistNameEmpty);
@@ -105,7 +105,7 @@ impl Changelists {
         if self
             .changelists
             .iter()
-            .any(|list| list.name == name && Some(list.id.as_str()) != renamed)
+            .any(|list| list.name == name && Some(list.id.as_str()) != except_id)
         {
             return Err(Failure::ChangelistNameTaken {
                 name: name.to_owned(),
