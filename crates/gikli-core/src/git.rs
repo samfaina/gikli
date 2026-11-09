@@ -11,7 +11,8 @@
 //! turn the user's off.
 //!
 //! The run that looks for the root of a repository is told not to translate its messages
-//! (`LC_ALL=C`), as nothing but one of git's sentences says that there is no repository.
+//! (`LC_ALL=C`), as nothing but one of git's sentences says that there is no repository, or that
+//! the user's `safe.bareRepository` refuses the one it found.
 
 use std::ffi::OsString;
 use std::io::Read;

@@ -3,8 +3,13 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, file_url, speaking};
+use gikli_acceptance::{Sandbox, TestRepository, file_url, speaking};
 use gikli_core::{Failure, Project, Repository};
+
+/// The user's setting that stops git from finding a bare repository on its own: from git 2.38 on,
+/// it refuses every run in the folder unless it is told where the repository is. Earlier gits
+/// ignore it. Goes in after setting up whatever needs git to run inside a bare repository.
+const BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT: &str = "[safe]\n\tbareRepository = explicit\n";
 
 fn repository_roots(project: &Project) -> Vec<PathBuf> {
     project
@@ -12,6 +17,19 @@ fn repository_roots(project: &Project) -> Vec<PathBuf> {
         .iter()
         .map(|repository| repository.root.clone())
         .collect()
+}
+
+/// A bare repository, and the linked worktree it holds in its folder.
+fn bare_repository_holding_a_worktree(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
+    let bare = sandbox.bare_remote("store.git");
+    let author = sandbox.repository("author");
+    author.write("README.md", "hello\n");
+    author.commit_all("Initial commit");
+    author.add_remote("origin", &bare);
+    author.git(&["push", "--quiet", "origin", "main"]);
+    bare.git(&["worktree", "add", "--quiet", "inner", "main"]);
+    let inner = sandbox.existing_repository(&bare.root().join("inner"));
+    (bare, inner)
 }
 
 #[test]
@@ -125,14 +143,7 @@ fn the_git_directory_of_a_submodule_is_not_opened_as_it_has_no_working_tree() {
 #[test]
 fn a_bare_repository_that_holds_a_linked_worktree_offers_the_worktree() {
     let sandbox = Sandbox::new();
-    let bare = sandbox.bare_remote("store.git");
-    let author = sandbox.repository("author");
-    author.write("README.md", "hello\n");
-    author.commit_all("Initial commit");
-    author.add_remote("origin", &bare);
-    author.git(&["push", "--quiet", "origin", "main"]);
-    bare.git(&["worktree", "add", "--quiet", "inner", "main"]);
-    let inner = sandbox.existing_repository(&bare.root().join("inner"));
+    let (bare, inner) = bare_repository_holding_a_worktree(&sandbox);
 
     let project = sandbox
         .gikli()
@@ -146,6 +157,110 @@ fn a_bare_repository_that_holds_a_linked_worktree_offers_the_worktree() {
             root: inner.toplevel_by_git()
         }]
     );
+}
+
+#[test]
+fn a_bare_repository_git_refuses_to_find_is_not_opened_as_it_has_no_working_tree() {
+    let sandbox = Sandbox::new();
+    let bare = sandbox.bare_remote("store.git");
+    sandbox.configure(BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT);
+
+    let opened = sandbox.gikli().open_project(bare.root());
+
+    assert_eq!(
+        opened,
+        Err(Failure::NotAWorkingTree {
+            folder: bare.root().to_path_buf()
+        })
+    );
+    assert!(bare.is_bare_by_git());
+}
+
+#[test]
+fn a_subfolder_of_a_bare_repository_git_refuses_to_find_is_not_opened_as_it_has_no_working_tree() {
+    let sandbox = Sandbox::new();
+    let bare = sandbox.bare_remote("store.git");
+    let hooks = bare.folder("hooks");
+    sandbox.configure(BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT);
+
+    let opened = sandbox.gikli().open_project(&hooks);
+
+    assert_eq!(
+        opened,
+        Err(Failure::NotAWorkingTree {
+            folder: hooks.clone()
+        })
+    );
+    assert!(bare.is_bare_by_git());
+}
+
+#[test]
+fn a_bare_repository_git_refuses_to_find_still_offers_the_worktree_it_holds() {
+    let sandbox = Sandbox::new();
+    let (bare, inner) = bare_repository_holding_a_worktree(&sandbox);
+    sandbox.configure(BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT);
+
+    let project = sandbox
+        .gikli()
+        .open_project(bare.root())
+        .expect("open project");
+
+    assert_eq!(project.repositories, vec![]);
+    assert_eq!(
+        project.unregistered_repositories,
+        vec![Repository {
+            root: inner.toplevel_by_git()
+        }]
+    );
+}
+
+/// Which bare repositories git may use is the user's to say (ADR-0001).
+#[test]
+fn opening_passes_git_no_value_of_its_own_for_which_bare_repositories_it_may_use() {
+    let sandbox = Sandbox::new();
+    let bare = sandbox.bare_remote("store.git");
+    sandbox.configure(BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT);
+    let gikli = sandbox.gikli();
+
+    let opened = gikli.open_project(bare.root());
+
+    assert!(opened.is_err(), "{opened:?}");
+    let log = gikli.operation_log();
+    assert!(!log.is_empty());
+    assert!(
+        !log.iter()
+            .flat_map(|entry| &entry.args)
+            .any(|arg| arg.to_lowercase().contains("barerepository")),
+        "{log:?}"
+    );
+    assert_eq!(
+        bare.git(&[
+            "--git-dir",
+            ".",
+            "config",
+            "--global",
+            "safe.bareRepository"
+        ]),
+        "explicit\n"
+    );
+}
+
+#[test]
+fn a_bare_repository_git_refuses_to_find_is_classified_the_same_when_git_speaks_another_language() {
+    let sandbox = Sandbox::new();
+    let bare = sandbox.bare_remote("store.git");
+    sandbox.configure(BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT);
+    let gikli = sandbox.gikli_in(speaking(sandbox.host_environment(), "de"));
+
+    let opened = gikli.open_project(bare.root());
+
+    assert_eq!(
+        opened,
+        Err(Failure::NotAWorkingTree {
+            folder: bare.root().to_path_buf()
+        })
+    );
+    assert!(bare.is_bare_by_git());
 }
 
 /// What gikli says does not depend on the language git speaks. git translates its messages only
