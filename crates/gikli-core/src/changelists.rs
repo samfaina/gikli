@@ -17,7 +17,7 @@ use crate::status::{Change, ChangeStatus, Status};
 
 /// The version of the format this gikli writes. Whatever changes the format raises it, and gikli
 /// goes on reading every earlier version.
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 
 /// The identifier of the Changelist every Repository starts with. It is the same in each
 /// Repository, so the initial Changelists of several Repositories are parts of one (ADR-0005).
@@ -44,9 +44,27 @@ pub(crate) struct StoredChangelist {
     pub name: String,
     /// What the user wrote about it, if anything. Version 1 of the format did not have it.
     pub description: Option<String>,
+    /// What will become the commit message when it is committed, if anything. Versions 1 and 2 of
+    /// the format did not have it.
+    pub comment: Option<String>,
     /// Relative to the Repository root, as git writes them. A path that is not UTF-8 is kept in
     /// its lossy form: it still names the same file from one read to the next.
     files: BTreeSet<String>,
+}
+
+/// Where the user moves changes to.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MoveTarget {
+    /// The Changelist with the identifier `id`.
+    Changelist { id: String },
+    /// A new Changelist called `name`, after the others.
+    NewChangelist { name: String },
+}
+
+/// What the user wrote, without the blank space around it, if they wrote anything.
+fn written_text(text: &str) -> Option<String> {
+    Some(text.trim().to_owned()).filter(|text| !text.is_empty())
 }
 
 /// The part of the format every version has.
@@ -66,6 +84,7 @@ impl Changelists {
                 id: INITIAL_ID.to_owned(),
                 name: "Changes".to_owned(),
                 description: None,
+                comment: None,
                 files: BTreeSet::new(),
             }],
         }
@@ -92,6 +111,13 @@ impl Changelists {
         let place = self.place_with_id(id)?;
         let name = self.usable_name(name, Some(id))?.to_owned();
         self.changelists[place].name = name;
+        Ok(())
+    }
+
+    /// Gives the Changelist `id` the comment `comment`. Without any text, it carries none.
+    pub fn set_comment(&mut self, id: &str, comment: Option<&str>) -> Result<(), Failure> {
+        let place = self.place_with_id(id)?;
+        self.changelists[place].comment = comment.and_then(written_text);
         Ok(())
     }
 
@@ -139,10 +165,8 @@ impl Changelists {
         self.changelists.push(StoredChangelist {
             id: self.new_id(),
             name,
-            description: description
-                .map(str::trim)
-                .filter(|description| !description.is_empty())
-                .map(str::to_owned),
+            description: description.and_then(written_text),
+            comment: None,
             files: BTreeSet::new(),
         });
         Ok(())
@@ -157,6 +181,33 @@ impl Changelists {
                 return id;
             }
         }
+    }
+
+    /// Moves the changes at `paths` to `target`, which becomes the Active changelist if
+    /// `make_active`. A path in no Changelist has nothing to move and stays where it is.
+    pub fn move_changes(
+        &mut self,
+        paths: &[String],
+        target: &MoveTarget,
+        make_active: bool,
+    ) -> Result<(), Failure> {
+        let to = match target {
+            MoveTarget::Changelist { id } => self.place_with_id(id)?,
+            MoveTarget::NewChangelist { name } => {
+                self.create(name, None)?;
+                self.changelists.len() - 1
+            }
+        };
+        for path in paths {
+            if let Some(from) = self.place_holding(Path::new(path)) {
+                let file = self.changelists[from].files.take(path.as_str());
+                self.changelists[to].files.extend(file);
+            }
+        }
+        if make_active {
+            self.active.clone_from(&self.changelists[to].id);
+        }
+        Ok(())
     }
 
     /// The place in [`Self::lists`] of the Changelist the changed file at `path` belongs to.
