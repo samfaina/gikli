@@ -6,6 +6,11 @@ use std::path::PathBuf;
 use gikli_acceptance::{Sandbox, TestRepository, file_url, speaking};
 use gikli_core::{Failure, Project, Repository};
 
+/// The user's setting that stops git from finding a bare repository on its own: from git 2.38 on,
+/// it refuses every run in the folder unless it is told where the repository is. Earlier gits
+/// ignore it. Goes in after setting up whatever needs git to run inside a bare repository.
+const BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT: &str = "[safe]\n\tbareRepository = explicit\n";
+
 fn repository_roots(project: &Project) -> Vec<PathBuf> {
     project
         .repositories
@@ -154,11 +159,6 @@ fn a_bare_repository_that_holds_a_linked_worktree_offers_the_worktree() {
     );
 }
 
-/// The user's setting that stops git from finding a bare repository on its own: from git 2.38 on,
-/// it refuses every run in the folder unless it is told where the repository is. Earlier gits
-/// ignore it. Goes in after setting up whatever needs git to run inside a bare repository.
-const BARE_REPOSITORIES_ONLY_WHEN_EXPLICIT: &str = "[safe]\n\tbareRepository = explicit\n";
-
 #[test]
 fn a_bare_repository_git_refuses_to_find_is_not_opened_as_it_has_no_working_tree() {
     let sandbox = Sandbox::new();
@@ -173,10 +173,7 @@ fn a_bare_repository_git_refuses_to_find_is_not_opened_as_it_has_no_working_tree
             folder: bare.root().to_path_buf()
         })
     );
-    assert_eq!(
-        bare.git(&["--git-dir", ".", "rev-parse", "--is-bare-repository"]),
-        "true\n"
-    );
+    assert!(bare.is_bare_by_git());
 }
 
 #[test]
@@ -194,15 +191,7 @@ fn a_subfolder_of_a_bare_repository_git_refuses_to_find_is_not_opened_as_it_has_
             folder: hooks.clone()
         })
     );
-    assert_eq!(
-        sandbox.existing_repository(&hooks).git(&[
-            "--git-dir",
-            "..",
-            "rev-parse",
-            "--is-bare-repository"
-        ]),
-        "true\n"
-    );
+    assert!(bare.is_bare_by_git());
 }
 
 #[test]
@@ -271,10 +260,7 @@ fn a_bare_repository_git_refuses_to_find_is_classified_the_same_when_git_speaks_
             folder: bare.root().to_path_buf()
         })
     );
-    assert_eq!(
-        bare.git(&["--git-dir", ".", "rev-parse", "--is-bare-repository"]),
-        "true\n"
-    );
+    assert!(bare.is_bare_by_git());
 }
 
 /// What gikli says does not depend on the language git speaks. git translates its messages only

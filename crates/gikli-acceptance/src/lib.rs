@@ -521,6 +521,12 @@ impl TestRepository {
         git_output(&self.root, &self.env, args).status.success()
     }
 
+    /// Whether plain git, told where this repository is, reports it as bare. Told, as it refuses to
+    /// find a bare repository on its own under `safe.bareRepository=explicit`.
+    pub fn is_bare_by_git(&self) -> bool {
+        self.git(&["--git-dir", ".", "rev-parse", "--is-bare-repository"]) == "true\n"
+    }
+
     /// Whether plain git refuses this repository when it takes it for someone else's.
     pub fn refused_for_ownership_by_git(&self) -> bool {
         let mut env = self.env.clone();
