@@ -1,12 +1,7 @@
-//! A stand-in for git that tests install to play a git installation the real one cannot.
+//! A stand-in for git that tests put where gikli looks for git.
 //!
-//! This is the one exception to "tests run the real git": the real git cannot play another
-//! version (older than 2.34, unreadable, or just below or at what a capability needs), a git the
-//! user installed off the PATH, or `wsl.exe` on a machine without WSL. Use it only for those
-//! installation and version checks.
-//!
-//! It answers `--version` with the text in `fake-git-version` next to it, records every
-//! invocation in `fake-git-invocations`, and fails anything else.
+//! `docs/adr/0006-real-git-in-tests-except-installation-checks.md` says what it answers, which
+//! tests use it and what its limits are.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
