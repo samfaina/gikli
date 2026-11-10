@@ -33,6 +33,13 @@ fn paths(paths: &[&str]) -> Vec<String> {
     paths.iter().map(|path| (*path).to_owned()).collect()
 }
 
+/// The list of what rolling back `selected` on `side` would discard.
+fn plan_on(gikli: &Gikli, root: &Repository, selected: &[&str], side: StagingSide) -> RollbackPlan {
+    gikli
+        .staging_rollback_plan(root, &paths(selected), side)
+        .expect("rollback plan")
+}
+
 /// Lists what rolling back `selected` on `side` would discard and confirms that list straight away.
 fn roll_back(
     gikli: &Gikli,
@@ -41,9 +48,7 @@ fn roll_back(
     side: StagingSide,
     delete_added_files: bool,
 ) -> Result<ChangeSet, Failure> {
-    let plan = gikli
-        .staging_rollback_plan(root, &paths(selected), side)
-        .expect("rollback plan");
+    let plan = plan_on(gikli, root, selected, side);
     gikli.rollback_files(root, &plan, delete_added_files)
 }
 
@@ -165,9 +170,7 @@ fn an_added_file_only_staged_leaves_git_and_can_lose_its_local_copy() {
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    let plan = gikli
-        .staging_rollback_plan(&root, &paths(&["kept.txt"]), StagingSide::Staged)
-        .expect("rollback plan");
+    let plan = plan_on(&gikli, &root, &["kept.txt"], StagingSide::Staged);
     assert!(plan.has_added_files);
     roll_back(&gikli, &root, &["kept.txt"], StagingSide::Staged, false).expect("keep");
     roll_back(&gikli, &root, &["deleted.txt"], StagingSide::Staged, true).expect("delete");
@@ -226,9 +229,7 @@ fn the_staged_side_of_an_added_file_on_both_sides_never_deletes_its_local_copy()
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    let plan = gikli
-        .staging_rollback_plan(&root, &paths(&["new.txt"]), StagingSide::Staged)
-        .expect("rollback plan");
+    let plan = plan_on(&gikli, &root, &["new.txt"], StagingSide::Staged);
     assert!(!plan.has_added_files);
     gikli.rollback_files(&root, &plan, true).expect("roll back");
 
@@ -318,9 +319,7 @@ fn the_list_shows_the_new_files_in_the_way_of_an_unstaged_deletion_kept_staged()
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    let plan = gikli
-        .staging_rollback_plan(&root, &paths(&["file.txt"]), StagingSide::Unstaged)
-        .expect("rollback plan");
+    let plan = plan_on(&gikli, &root, &["file.txt"], StagingSide::Unstaged);
 
     assert_eq!(
         listed(&plan),
@@ -342,9 +341,7 @@ fn the_staged_side_of_a_file_on_both_sides_writes_over_nothing() {
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    let plan = gikli
-        .staging_rollback_plan(&root, &paths(&["moved.txt"]), StagingSide::Staged)
-        .expect("rollback plan");
+    let plan = plan_on(&gikli, &root, &["moved.txt"], StagingSide::Staged);
     assert_eq!(
         listed(&plan),
         vec![("moved.txt".to_owned(), ChangeStatus::Renamed)]
@@ -365,9 +362,7 @@ fn the_list_holds_only_the_changes_of_the_side_asked_for() {
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    let plan = gikli
-        .staging_rollback_plan(&root, &paths(&["file.txt", "new.txt"]), StagingSide::Staged)
-        .expect("rollback plan");
+    let plan = plan_on(&gikli, &root, &["file.txt", "new.txt"], StagingSide::Staged);
 
     assert_eq!(plan.files, vec![]);
     assert_eq!(
@@ -391,9 +386,7 @@ fn a_changed_submodule_is_not_something_to_roll_back_on_the_unstaged_side() {
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    let plan = gikli
-        .staging_rollback_plan(&root, &paths(&["lib"]), StagingSide::Unstaged)
-        .expect("rollback plan");
+    let plan = plan_on(&gikli, &root, &["lib"], StagingSide::Unstaged);
 
     assert_eq!(plan.files, vec![]);
 }
@@ -405,13 +398,75 @@ fn a_list_that_no_longer_holds_discards_nothing() {
     on_both_sides(&repository);
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
-    let plan = gikli
-        .staging_rollback_plan(&root, &paths(&["file.txt"]), StagingSide::Staged)
-        .expect("rollback plan");
+    let plan = plan_on(&gikli, &root, &["file.txt"], StagingSide::Staged);
     repository.git(&["restore", "--staged", "--", "file.txt"]);
 
     let result = gikli.rollback_files(&root, &plan, false);
 
     assert_eq!(result, Err(Failure::RollbackListOutdated));
     assert_eq!(contents(&repository, "file.txt"), "on disk\n");
+}
+
+/// The user confirmed a rollback that keeps the file on disk, and it would now go with the rest.
+#[test]
+fn a_file_no_longer_on_both_sides_makes_the_list_outdated() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    on_both_sides(&repository);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+    let plan = plan_on(&gikli, &root, &["file.txt"], StagingSide::Staged);
+    repository.git(&["add", "--", "file.txt"]);
+
+    let result = gikli.rollback_files(&root, &plan, false);
+
+    assert_eq!(result, Err(Failure::RollbackListOutdated));
+    assert_eq!(contents(&repository, "file.txt"), "on disk\n");
+    assert_eq!(repository.status_by_git(), vec!["M  file.txt"]);
+}
+
+#[test]
+fn a_file_now_on_both_sides_makes_the_list_outdated() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.write("file.txt", "staged\n");
+    repository.git(&["add", "--", "file.txt"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+    let plan = plan_on(&gikli, &root, &["file.txt"], StagingSide::Staged);
+    repository.write("file.txt", "on disk\n");
+
+    let result = gikli.rollback_files(&root, &plan, false);
+
+    assert_eq!(result, Err(Failure::RollbackListOutdated));
+    assert_eq!(contents(&repository, "file.txt"), "on disk\n");
+}
+
+#[test]
+fn a_repository_with_no_commits_can_roll_back_a_file_on_one_side() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("staged.txt", "staged\n");
+    repository.write("intended.txt", "intended\n");
+    repository.git(&["add", "--", "staged.txt"]);
+    repository.git(&["add", "--intent-to-add", "--", "intended.txt"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    roll_back(&gikli, &root, &["staged.txt"], StagingSide::Staged, false).expect("staged");
+    roll_back(
+        &gikli,
+        &root,
+        &["intended.txt"],
+        StagingSide::Unstaged,
+        false,
+    )
+    .expect("unstaged");
+
+    assert_eq!(contents(&repository, "staged.txt"), "staged\n");
+    assert_eq!(contents(&repository, "intended.txt"), "intended\n");
+    assert_eq!(
+        repository.status_by_git(),
+        vec!["?? intended.txt", "?? staged.txt"]
+    );
 }

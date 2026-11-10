@@ -721,6 +721,8 @@ export interface RollbackPlan {
   hasAddedFiles: boolean;
   /** The side of the index the plan is about in Staging mode, or null for changes in Changelists. */
   side: StagingSide | null;
+  /** The files on both sides of the index, whose other side the rollback keeps. */
+  onBothSides: string[];
 }
 
 /** What rolling back the changes at `paths`, relative to the Repository root, would discard. It changes nothing. Rejects with a {@link Failure}. */
