@@ -36,6 +36,10 @@ export interface Settings {
   diffLocalSideEditable: boolean;
   /** Whether moving on from the last difference of a file goes to the next file. */
   goToNextFileAfterLastChange: boolean;
+  /** Whether the user is warned before committing in detached HEAD or during a rebase. */
+  warnOnUnusualCommitState: boolean;
+  /** Whether the commit message is emptied once the commit went through. */
+  clearCommitMessageAfterCommit: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -284,6 +288,7 @@ export type Failure =
   | { kind: "nothingToCommit" }
   | { kind: "commitFailed"; folder: string }
   | { kind: "commitInputNotWritten"; folder: string; message: string }
+  | { kind: "commitMessagesUnreadable"; folder: string }
   /** The user has to say who they are: see {@link setCommitIdentity}. */
   | { kind: "commitIdentityMissing"; nameMissing: boolean; emailMissing: boolean }
   /** A name or email has to have some text. */
@@ -463,6 +468,16 @@ export function setCloneSubmodulesRecursively(recursively: boolean): Promise<Set
 /** Lets the user edit and save the local side of a diff, or turns that off. Rejects with a {@link Failure}. */
 export function setDiffLocalSideEditable(editable: boolean): Promise<Settings> {
   return invoke("set_diff_local_side_editable", { editable });
+}
+
+/** Makes a commit in detached HEAD or during a rebase warn the user, or stops that. Rejects with a {@link Failure}. */
+export function setWarnOnUnusualCommitState(warn: boolean): Promise<Settings> {
+  return invoke("set_warn_on_unusual_commit_state", { warn });
+}
+
+/** Makes the commit message empty once a commit went through, or keeps it. Rejects with a {@link Failure}. */
+export function setClearCommitMessageAfterCommit(clear: boolean): Promise<Settings> {
+  return invoke("set_clear_commit_message_after_commit", { clear });
 }
 
 /** Makes moving on from the last difference of a file go to the next file, or stay. Rejects with a {@link Failure}. */
@@ -671,6 +686,24 @@ export function rollbackFiles(repository: Repository, plan: RollbackPlan, delete
  */
 export function commitFiles(repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
   return invoke("commit_files", { repository, paths, message });
+}
+
+/** Where a commit may not be meant to go. */
+export type CommitWarning = "detachedHead" | "rebase";
+
+/** The messages the user can reuse for a commit, newest first. Rejects with a {@link Failure}. */
+export function previousCommitMessages(repository: Repository): Promise<string[]> {
+  return invoke("previous_commit_messages", { repository });
+}
+
+/** What the message of a commit of the changes at `paths` starts as, if anything. Rejects with a {@link Failure}. */
+export function prefilledCommitMessage(repository: Repository, paths: string[]): Promise<string | null> {
+  return invoke("prefilled_commit_message", { repository, paths });
+}
+
+/** What the user should hear before committing in `repository`, if anything. Rejects with a {@link Failure}. */
+export function commitWarning(repository: Repository): Promise<CommitWarning | null> {
+  return invoke("commit_warning", { repository });
 }
 
 /** Saves the name and email git writes in commits, for every Repository if `everywhere`. A null value stays as it is. Rejects with a {@link Failure}. */

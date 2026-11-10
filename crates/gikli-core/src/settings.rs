@@ -30,6 +30,10 @@ pub struct Settings {
     pub diff_local_side_editable: bool,
     /// Whether moving on from the last difference of a file goes to the next file.
     pub go_to_next_file_after_last_change: bool,
+    /// Whether the user is warned before committing in detached HEAD or during a rebase.
+    pub warn_on_unusual_commit_state: bool,
+    /// Whether the commit message is emptied once the commit went through.
+    pub clear_commit_message_after_commit: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +47,8 @@ impl Default for Settings {
             clone_submodules_recursively: true,
             diff_local_side_editable: true,
             go_to_next_file_after_last_change: true,
+            warn_on_unusual_commit_state: true,
+            clear_commit_message_after_commit: true,
         }
     }
 }

@@ -10,10 +10,10 @@
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, Failure, FailureAction, FileDiff,
-    Gikli, GitCheck, HostEnvironment, MoveTarget, Notification, NotificationAction,
-    NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt, Repository,
-    RollbackPlan, RunningOperation, Settings, answer_askpass_request,
+    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitWarning, Failure,
+    FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, MoveTarget, Notification,
+    NotificationAction, NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt,
+    Repository, RollbackPlan, RunningOperation, Settings, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -99,6 +99,22 @@ fn set_diff_local_side_editable(
     editable: bool,
 ) -> Result<Settings, Failure> {
     gikli.set_diff_local_side_editable(editable)
+}
+
+#[tauri::command]
+fn set_warn_on_unusual_commit_state(
+    gikli: State<'_, Gikli>,
+    warn: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_warn_on_unusual_commit_state(warn)
+}
+
+#[tauri::command]
+fn set_clear_commit_message_after_commit(
+    gikli: State<'_, Gikli>,
+    clear: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_clear_commit_message_after_commit(clear)
 }
 
 #[tauri::command]
@@ -385,6 +401,31 @@ fn rollback_files(
 }
 
 #[tauri::command(async)]
+fn previous_commit_messages(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<Vec<String>, Failure> {
+    gikli.previous_commit_messages(&repository)
+}
+
+#[tauri::command(async)]
+fn prefilled_commit_message(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+) -> Result<Option<String>, Failure> {
+    gikli.prefilled_commit_message(&repository, &paths)
+}
+
+#[tauri::command(async)]
+fn commit_warning(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<Option<CommitWarning>, Failure> {
+    gikli.commit_warning(&repository)
+}
+
+#[tauri::command(async)]
 fn commit_files(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -507,8 +548,13 @@ fn main() {
             force_add_files,
             rollback_plan,
             rollback_files,
+            previous_commit_messages,
+            prefilled_commit_message,
+            commit_warning,
             commit_files,
             set_commit_identity,
+            set_warn_on_unusual_commit_state,
+            set_clear_commit_message_after_commit,
             watch_changes,
             unwatch_changes,
             startup_folder

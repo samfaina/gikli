@@ -80,6 +80,9 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - Changelists that gikli cannot read, or that a newer gikli saved, stop the changes view with a message and stay as they are on disk: gikli does not write over what it does not understand. Assignments that cannot be saved do not stop the view, as the next read works them out again, but setting the Active changelist then fails, as that choice would be lost.
 - A commit in Changelist mode takes the working tree content of the selected files (`git commit --only`). Index entries for files that are not selected keep their state; gikli does not touch or clear them.
 - The commit message reaches git as written, with a line end added when its last line has none. `commit.cleanup`, `commit.verbose` and `core.commentChar` do not change it.
+- The previous commit messages on offer are read from git, so there is nothing else to keep: the last 20 commits on HEAD and the local branches with the user's current `user.email`, each message once. Merges are left out, as git wrote their messages.
+- The message starts from the comment of the Changelist when the selected changes are in exactly one Changelist and it has a comment, and otherwise from `commit.template`. Unversioned Files are in no Changelist, so they do not count. The template appears as its file has it, comment lines included, as what is in the box is what gets committed. What the user has written is never replaced.
+- Committing in detached HEAD or during a rebase asks first, and the user can commit anyway. The "Warn when committing in detached HEAD or during a rebase" setting turns this off.
 - Selected Unversioned Files are added just before the commit, and go back to being unversioned when it fails. A cancelled commit that left the lock of the index behind is the exception: nothing is committed and they stay added, as git cannot touch the index until the user removes the lock.
 - A rename whose old path holds a new file git does not track commits only the new path, unless that file is selected too. `git commit --only` would otherwise commit the unselected file, so the removal of the old path stays staged.
 - gikli asks for `user.name` and `user.email` when git's configuration has none, even where git could make them up from the name of the machine, as a commit would carry those for good. The answer goes to the global configuration, or to the Repository's own when the user unticks "Use for every Repository".
@@ -100,6 +103,7 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 | Combine stashes and shelves in one tab | off |
 | Diff context lines | 4 |
 | Go to next file after the last change | on |
+| Clear the commit message after committing | on |
 | Automatically apply non-conflicting changes | off |
 | Create changelists automatically | off |
 | Allow changes within one file in different changelists | on |

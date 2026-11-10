@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
 pub use clone_url::CloneUrlForms;
+pub use commit::CommitWarning;
 pub use diff::{
     DiffContent, Difference, FileDiff, LineRange, LocalReadOnly, TextDiff, UnchangedRegion,
 };
@@ -325,6 +326,12 @@ pub enum Failure {
     CommitIdentityNotSaved {
         folder: PathBuf,
     },
+    /// git could not read the previous commit messages of the Repository at `folder`. The operation
+    /// log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    CommitMessagesUnreadable {
+        folder: PathBuf,
+    },
     /// The lock of the index could not be removed.
     #[serde(rename_all = "camelCase")]
     IndexLockNotRemoved {
@@ -551,6 +558,16 @@ impl Gikli {
         self.change_settings(|settings| {
             settings.go_to_next_file_after_last_change = go_to_next_file;
         })
+    }
+
+    /// Makes a commit in detached HEAD or during a rebase warn the user, or stops that.
+    pub fn set_warn_on_unusual_commit_state(&self, warn: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.warn_on_unusual_commit_state = warn)
+    }
+
+    /// Makes the commit message empty once a commit went through, or keeps it.
+    pub fn set_clear_commit_message_after_commit(&self, clear: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.clear_commit_message_after_commit = clear)
     }
 
     /// The application settings.
@@ -1246,6 +1263,41 @@ impl Gikli {
             ));
         }
         self.read_changes(repository)
+    }
+
+    /// The messages the user can reuse for a commit in `repository`, newest first.
+    pub fn previous_commit_messages(
+        &self,
+        repository: &Repository,
+    ) -> Result<Vec<String>, Failure> {
+        commit::previous_messages(&self.runner(&repository.root)?, &repository.root)
+    }
+
+    /// What the message of a commit of the changes at `paths`, relative to the root of `repository`,
+    /// starts as: the comment of the Changelist they are in, when they are all in one that has a
+    /// comment, or else the text of `commit.template`, as it is in its file.
+    pub fn prefilled_commit_message(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+    ) -> Result<Option<String>, Failure> {
+        let changes = self.read_changes(repository)?;
+        if let Some(comment) = commit::comment_of_selection(&changes, paths) {
+            return Ok(Some(comment));
+        }
+        commit::template(&self.runner(&repository.root)?, &repository.root)
+    }
+
+    /// What the user should hear before committing in `repository`, when it is somewhere a commit
+    /// may not be meant to go and the setting for this warning is on.
+    pub fn commit_warning(
+        &self,
+        repository: &Repository,
+    ) -> Result<Option<CommitWarning>, Failure> {
+        if !self.settings().warn_on_unusual_commit_state {
+            return Ok(None);
+        }
+        commit::warning(&self.runner(&repository.root)?, &repository.root)
     }
 
     /// Saves the answer to [`Failure::CommitIdentityMissing`] in git's configuration: for every
