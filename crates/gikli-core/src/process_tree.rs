@@ -62,8 +62,9 @@ impl Cancellation {
     }
 
     /// Waits for `child`, the process of the run this reaches. When the run was cancelled, it also
-    /// waits for the rest of its processes, for a bounded time, so that nothing the run started is
-    /// left once this returns.
+    /// ends the rest of its processes and waits for them, for a bounded time, so that nothing the
+    /// run started is left once this returns. The request alone may not be enough: a signal to a
+    /// process group reaches the processes in it at that moment, so it can miss one being forked.
     pub fn wait_for(&self, child: &mut Child) -> io::Result<ExitStatus> {
         let (status, tree) = loop {
             // Locked, so the request never reaches a pid that was already given back.
@@ -78,6 +79,8 @@ impl Cancellation {
         if let Some(tree) = tree {
             let give_up = Instant::now() + GRACE;
             while !tree.is_gone() && Instant::now() < give_up {
+                // Again, for a process that was being started while the request went by.
+                tree.end();
                 std::thread::sleep(POLL);
             }
         }
@@ -273,5 +276,52 @@ pub(crate) fn spawn_contained(
             let _ = child.wait();
             Err(error)
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+    use super::*;
+
+    fn blocks() -> Command {
+        let mut command = Command::new("sleep");
+        command.arg("3600");
+        command
+    }
+
+    /// Joining the group after the kill plays a process being forked while the kill went by, which
+    /// no test can make happen on demand.
+    #[test]
+    fn a_process_the_cancel_missed_is_ended_too() {
+        let cancellation = Cancellation::default();
+        let mut run = spawn_contained(blocks().process_group(0), &cancellation).expect("start");
+        cancellation.request();
+        let mut missed = blocks()
+            .process_group(run.id() as i32)
+            .spawn()
+            .expect("join the group of the run");
+
+        let ended = std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| cancellation.wait_for(&mut run));
+            loop {
+                // In this order: once the wait is over, what is missed has ended if it ever will.
+                // The test is its parent, so the group is only gone once this has collected it.
+                let waited = waiting.is_finished();
+                let status = missed.try_wait().expect("look at the process");
+                if waited || status.is_some() {
+                    break status;
+                }
+                std::thread::sleep(POLL);
+            }
+        });
+
+        let _ = missed.kill();
+        let _ = missed.wait();
+        assert_eq!(
+            ended.and_then(|status| status.signal()),
+            Some(libc::SIGKILL)
+        );
     }
 }
