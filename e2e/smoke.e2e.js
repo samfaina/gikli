@@ -751,24 +751,25 @@ describe("gikli", () => {
         await $(`[data-testid="rollback-file"][data-path="${rolledBack}"]`).waitForDisplayed({ timeout: 30000 });
         await $('[data-testid="rollback-confirm"]').click();
       };
-      fs.writeFileSync(inRepository(rolledBack), "committed\n");
+      // Without a line end, which `core.autocrlf` would change when git writes the file back.
+      fs.writeFileSync(inRepository(rolledBack), "committed");
       runGit(repository, gitconfig, "add", "--", rolledBack);
       runGit(repository, gitconfig, "commit", "--quiet", "--message=To roll back", "--", rolledBack);
-      fs.writeFileSync(inRepository(rolledBack), "staged\n");
+      fs.writeFileSync(inRepository(rolledBack), "staged");
       runGit(repository, gitconfig, "add", "--", rolledBack);
-      fs.writeFileSync(inRepository(rolledBack), "on disk\n");
+      fs.writeFileSync(inRepository(rolledBack), "on disk");
       await (await idleRefresh()).click();
       await expectRow("unstaged-changes", rolledBack);
       await expectRow("staged-changes", rolledBack);
 
       await rollBack("unstaged-changes");
       await $(row("unstaged-changes", rolledBack)).waitForDisplayed({ timeout: 30000, reverse: true });
-      assert.equal(onDisk(), "staged\n", "the file on disk goes back to what is staged");
+      assert.equal(onDisk(), "staged", "the file on disk goes back to what is staged");
       await expectRow("staged-changes", rolledBack);
 
       await rollBack("staged-changes");
       await $(row("staged-changes", rolledBack)).waitForDisplayed({ timeout: 30000, reverse: true });
-      assert.equal(onDisk(), "committed\n", "a file on one side goes back to the last commit");
+      assert.equal(onDisk(), "committed", "a file on one side goes back to the last commit");
 
       const committed = "committed in staging mode.txt";
       fs.writeFileSync(inRepository(committed), "new\n");
