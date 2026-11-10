@@ -1708,8 +1708,10 @@ function describeFailure(failure: Failure): string {
       return t("failureCommitInputNotWritten", { folder: failure.folder, message: failure.message });
     case "commitIdentityMissing":
       return t("failureCommitIdentityMissing");
+    case "commitIdentityEmpty":
+      return t("failureCommitIdentityEmpty");
     case "commitIdentityNotSaved":
-      return t("failureCommitIdentityNotSaved");
+      return t("failureCommitIdentityNotSaved", { folder: failure.folder });
     case "indexLockNotRemoved":
       return t("failureIndexLockNotRemoved", { lock: failure.lock, message: failure.message });
     case "folderNotTrusted":

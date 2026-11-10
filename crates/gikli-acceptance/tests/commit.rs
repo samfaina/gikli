@@ -304,7 +304,7 @@ fn the_message_is_kept_as_written_whatever_the_configuration() {
     repository.write("a.txt", "a changed\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let message = "Subject\n\n# 123 is the ticket\n; not a comment either\n\n\n# ------------------------ >8 ------------------------\nThe end";
+    let message = "Subject\n\n# 123 is the ticket\n; not a comment either\n\n\n# ------------------------ >8 ------------------------\nThe end  ";
 
     gikli
         .commit_files(&root, &paths(&["a.txt"]), message)
@@ -590,4 +590,55 @@ fn a_commit_is_a_long_operation_the_user_can_cancel_and_commits_nothing() {
     ));
     assert_eq!(commit_count(&repository), "1\n");
     assert_eq!(repository.status_by_git(), vec!["A  new.txt"]);
+}
+
+/// `git commit --only` takes a path from the working tree, so committing the old path of the move
+/// would commit a file nobody selected.
+#[test]
+fn a_selected_rename_leaves_out_a_new_file_at_its_old_path() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.git(&["mv", "a.txt", "moved.txt"]);
+    repository.write("a.txt", "nobody selected this\n");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    gikli
+        .commit_files(&root, &paths(&["moved.txt"]), "Move a")
+        .expect("commit");
+
+    assert_eq!(last_commit_files(&repository), vec!["A moved.txt"]);
+    assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a\n");
+    assert_eq!(repository.status_by_git(), vec!["D  a.txt", "?? a.txt"]);
+}
+
+#[test]
+fn an_empty_answer_about_the_identity_saves_nothing() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    repository.git(&["config", "--global", "--unset", "user.name"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let result = gikli.set_commit_identity(&root, Some("Ada"), Some("  "), true);
+
+    assert_eq!(result, Err(Failure::CommitIdentityEmpty));
+    assert!(!repository.git_succeeds(&["config", "--global", "user.name"]));
+}
+
+#[test]
+fn the_answer_about_the_identity_is_saved_without_the_spaces_around_it() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    gikli
+        .set_commit_identity(&root, Some("  Ada Lovelace "), None, false)
+        .expect("save the identity");
+
+    assert_eq!(
+        repository.git(&["config", "--local", "user.name"]),
+        "Ada Lovelace\n"
+    );
 }

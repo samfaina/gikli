@@ -317,6 +317,8 @@ pub enum Failure {
         name_missing: bool,
         email_missing: bool,
     },
+    /// A name or email for commits has to have some text, so nothing was saved.
+    CommitIdentityEmpty,
     /// git could not save the name or email for commits in the Repository at `folder`. The
     /// operation log holds git's output.
     #[serde(rename_all = "camelCase")]
@@ -1148,8 +1150,8 @@ impl Gikli {
             .operations
             .run(operation, runner.runs_natively(), |run| {
                 for command in &commands {
-                    let args: Vec<&str> = command.iter().map(String::as_str).collect();
-                    let invocation = runner.run_operation(&repository.root, &args, run)?;
+                    let invocation =
+                        runner.run_operation(&repository.root, &as_args(command), run)?;
                     if !invocation.success {
                         return Ok(Some(invocation));
                     }
@@ -1188,7 +1190,7 @@ impl Gikli {
             return Err(Failure::CommitMessageEmpty);
         }
         let runner = self.runner(&repository.root)?;
-        let status = read_status(&runner, repository, false)?;
+        let status = read_status(&runner, repository, true)?;
         let selection = commit::Selection::of(&status, paths);
         if selection.committed.is_empty() {
             return Err(Failure::NothingToCommit);
@@ -1214,10 +1216,7 @@ impl Gikli {
         let failed = self
             .operations
             .run(operation, runner.runs_natively(), |run| {
-                let git = |command: &[String]| {
-                    let args: Vec<&str> = command.iter().map(String::as_str).collect();
-                    runner.run_operation(root, &args, run)
-                };
+                let git = |command: &[String]| runner.run_operation(root, &as_args(command), run);
                 if let Some(add) = input.add_command() {
                     let added = git(&add)?;
                     if !added.success {
@@ -1231,8 +1230,7 @@ impl Gikli {
                 if let Some(forget) = input.forget_added_command() {
                     // Not as part of the operation: a cancelled one would end this at once. When
                     // it fails, the files stay added, and the operation log says why.
-                    let args: Vec<&str> = forget.iter().map(String::as_str).collect();
-                    let _ = runner.run(root, &args);
+                    let _ = runner.run(root, &as_args(&forget));
                 }
                 Ok(Some(committed))
             })
@@ -1251,8 +1249,8 @@ impl Gikli {
     }
 
     /// Saves the answer to [`Failure::CommitIdentityMissing`] in git's configuration: for every
-    /// Repository of the user if `everywhere`, and for `repository` alone otherwise. A value that is
-    /// None stays as it is.
+    /// Repository of the user if `everywhere`, and for `repository` alone otherwise, without the
+    /// spaces around it. A value that is None stays as it is. A value without text saves nothing.
     pub fn set_commit_identity(
         &self,
         repository: &Repository,
@@ -1260,9 +1258,14 @@ impl Gikli {
         email: Option<&str>,
         everywhere: bool,
     ) -> Result<(), Failure> {
+        let answers = [("user.name", name), ("user.email", email)];
+        let answers = answers.map(|(key, value)| (key, value.map(str::trim)));
+        if answers.iter().any(|(_, value)| *value == Some("")) {
+            return Err(Failure::CommitIdentityEmpty);
+        }
         let runner = self.runner(&repository.root)?;
         let scope = if everywhere { "--global" } else { "--local" };
-        for (key, value) in [("user.name", name), ("user.email", email)] {
+        for (key, value) in answers {
             let Some(value) = value else { continue };
             let invocation = runner
                 .run(&repository.root, &["config", scope, "--", key, value])
@@ -1726,6 +1729,11 @@ fn failure_of(
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,
     }
+}
+
+/// `command`, a list of arguments gikli built, as the runner takes it.
+fn as_args(command: &[String]) -> Vec<&str> {
+    command.iter().map(String::as_str).collect()
 }
 
 fn git_failed_to_start(error: std::io::Error) -> Failure {

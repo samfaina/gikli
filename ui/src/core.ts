@@ -286,6 +286,8 @@ export type Failure =
   | { kind: "commitInputNotWritten"; folder: string; message: string }
   /** The user has to say who they are: see {@link setCommitIdentity}. */
   | { kind: "commitIdentityMissing"; nameMissing: boolean; emailMissing: boolean }
+  /** A name or email has to have some text. */
+  | { kind: "commitIdentityEmpty" }
   | { kind: "commitIdentityNotSaved"; folder: string }
   | { kind: "indexLockNotRemoved"; lock: string; message: string }
   | { kind: "folderNotTrusted"; folder: string }

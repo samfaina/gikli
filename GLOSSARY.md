@@ -38,6 +38,10 @@ _Avoid_: Index mode
 Discarding the uncommitted changes of the selected files once the user has confirmed the rollback plan, the list of what goes.
 _Avoid_: Revert (that is git's operation on commits), reset
 
+**Commit identity**:
+The name and email git writes in a commit, from `user.name` and `user.email`. gikli asks for them when they are missing.
+_Avoid_: Author, user info
+
 **Shelf**:
 gikli's own store of named sets of changes, kept outside git, that the user can put back later. Each set is a shelved change.
 _Avoid_: Stash (that is git's own mechanism), drafts

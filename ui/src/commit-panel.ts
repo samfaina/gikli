@@ -59,8 +59,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   view.append(title, files, messageLabel, identity.view, result, submit);
 
   let ticked = new Set<string>();
-  /** The files listed the last time, so that one the user unticked is told from a new one. */
-  let listed = new Set<string>();
+  /** The files of the Active changelist the last time, so that one the user unticked is told from one that just came in. */
+  let shownActivePaths = new Set<string>();
   /** The Active changelist the ticks started from. */
   let activeId: string | null = null;
   let shownChanges: ChangeSet | null = null;
@@ -80,6 +80,14 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     return box;
   };
 
+  const setTicked = (path: string, checked: boolean): void => {
+    if (checked) {
+      ticked.add(path);
+    } else {
+      ticked.delete(path);
+    }
+  };
+
   const groupView = (group: FileGroup): HTMLElement => {
     const section = document.createElement("div");
     section.dataset.testid = group.testId;
@@ -87,7 +95,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     const paths = group.changes.map((change) => change.path);
     const tickedPaths = paths.filter((path) => ticked.has(path));
     const box = tickBox(group.key, tickedPaths.length === paths.length, (checked) => {
-      paths.forEach((path) => (checked ? ticked.add(path) : ticked.delete(path)));
+      paths.forEach((path) => setTicked(path, checked));
       draw();
     });
     box.indeterminate = tickedPaths.length > 0 && tickedPaths.length < paths.length;
@@ -97,11 +105,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     section.append(heading);
     for (const change of group.changes) {
       const fileBox = tickBox(`file:${change.path}`, ticked.has(change.path), (checked) => {
-        if (checked) {
-          ticked.add(change.path);
-        } else {
-          ticked.delete(change.path);
-        }
+        setTicked(change.path, checked);
         draw();
       });
       const row = document.createElement("label");
@@ -175,22 +179,30 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     view,
     drawn: (changeSet) => {
       const active = changeSet.changelists.find((list) => list.active);
-      const activePaths = (active?.group.changes ?? []).map((change) => change.path);
-      const nowListed = new Set(
+      const activePaths = new Set((active?.group.changes ?? []).map((change) => change.path));
+      const listed = new Set(
         [...changeSet.changelists.flatMap((list) => list.group.changes), ...changeSet.unversionedFiles.changes].map((change) => change.path),
       );
       if (active !== undefined && active.id !== activeId) {
         activeId = active.id;
         ticked = new Set(activePaths);
       } else {
-        activePaths.filter((path) => !listed.has(path)).forEach((path) => ticked.add(path));
-        ticked = new Set([...ticked].filter((path) => nowListed.has(path)));
+        // What comes into the Active changelist is ticked, and what leaves it is not.
+        [...activePaths].filter((path) => !shownActivePaths.has(path)).forEach((path) => setTicked(path, true));
+        [...shownActivePaths].filter((path) => !activePaths.has(path)).forEach((path) => setTicked(path, false));
+        ticked = new Set([...ticked].filter((path) => listed.has(path)));
       }
-      listed = nowListed;
+      shownActivePaths = activePaths;
       shownChanges = changeSet;
       draw();
     },
   };
+}
+
+/** A question of the form that asks for the name or email git is missing. */
+interface IdentityField {
+  label: HTMLLabelElement;
+  input: HTMLInputElement;
 }
 
 /** A form that asks for the name or email git is missing, saves them and goes on with the commit. */
@@ -206,7 +218,7 @@ function identityForm(
   const explanation = document.createElement("p");
   explanation.textContent = t("commitIdentityExplanation");
 
-  const field = (testId: string, text: string): { label: HTMLLabelElement; input: HTMLInputElement } => {
+  const field = (testId: string, text: string): IdentityField => {
     const input = document.createElement("input");
     input.type = "text";
     input.autocomplete = "off";
@@ -238,22 +250,25 @@ function identityForm(
     view.hidden = true;
   };
   save.addEventListener("click", async () => {
-    const given = (field: { label: HTMLLabelElement; input: HTMLInputElement }): string | null => (field.label.hidden ? null : field.input.value.trim());
-    const answers = [given(name), given(email)];
-    if (answers.some((answer) => answer === "")) {
-      message.textContent = t("commitIdentityIncomplete");
-      return;
-    }
+    const answerTo = ({ label, input }: IdentityField): string | null => (label.hidden ? null : input.value);
     save.disabled = true;
     message.replaceChildren();
     try {
-      await setCommitIdentity(repository, answers[0] ?? null, answers[1] ?? null, everywhere.checked);
+      await setCommitIdentity(repository, answerTo(name), answerTo(email), everywhere.checked);
       close();
       saved();
     } catch (error) {
       message.replaceChildren(errorView(error));
     } finally {
       save.disabled = false;
+    }
+  });
+
+  // The fields are inside the form of the panel, where Enter would try the commit again.
+  view.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      save.click();
     }
   });
 

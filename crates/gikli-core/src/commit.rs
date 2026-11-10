@@ -18,7 +18,8 @@ pub(crate) struct Selection {
 
 impl Selection {
     /// The changes in `status` at `paths` that a commit can record: those in a Changelist and the
-    /// Unversioned Files. Ignored files are no changes.
+    /// Unversioned Files. Ignored files are no changes. `status` must list the ignored files, as one
+    /// can sit where a moved file was.
     pub fn of(status: &Status, paths: &[String]) -> Self {
         let chosen: Vec<&Change> = status
             .changes
@@ -29,8 +30,14 @@ impl Selection {
         let mut committed = Vec::new();
         for change in &chosen {
             committed.push(text_of(&change.path));
-            // A move is two changes to git: leaving out one would leave it staged.
-            committed.extend(change.renamed_from().map(text_of));
+            // A move is two changes to git: leaving out one would leave it staged. Unless something
+            // new sits at the old path, as git would commit that from the working tree instead.
+            committed.extend(
+                change
+                    .renamed_from()
+                    .filter(|from| !is_taken_by_a_new_file(status, from))
+                    .map(text_of),
+            );
             committed.extend(
                 status
                     .moved_and_removed
@@ -47,6 +54,14 @@ impl Selection {
             committed,
         }
     }
+}
+
+/// Whether a file git does not track is at `path`, or a folder of them, or a file in the way of it.
+fn is_taken_by_a_new_file(status: &Status, path: &Path) -> bool {
+    status.changes.iter().any(|file| {
+        !file.status.is_in_changelists()
+            && (file.path.starts_with(path) || path.starts_with(&file.path))
+    })
 }
 
 /// What git reads for one commit: the message and the paths, which do not fit on a command line
@@ -83,10 +98,8 @@ impl CommitInput {
             has_unversioned_files: !selection.unversioned.is_empty(),
         };
         // git would take a last line without an end as it is, and other tools do not expect that.
-        fs::write(
-            input.folder.join(MESSAGE),
-            format!("{}\n", message.trim_end()),
-        )?;
+        let line_end = if message.ends_with('\n') { "" } else { "\n" };
+        fs::write(input.folder.join(MESSAGE), format!("{message}{line_end}"))?;
         fs::write(
             input.folder.join(PATHS),
             nul_separated(&selection.committed),
