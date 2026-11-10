@@ -385,6 +385,27 @@ fn rollback_files(
 }
 
 #[tauri::command(async)]
+fn commit_files(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+    message: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.commit_files(&repository, &paths, &message)
+}
+
+#[tauri::command(async)]
+fn set_commit_identity(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    name: Option<String>,
+    email: Option<String>,
+    everywhere: bool,
+) -> Result<(), Failure> {
+    gikli.set_commit_identity(&repository, name.as_deref(), email.as_deref(), everywhere)
+}
+
+#[tauri::command(async)]
 fn watch_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
     gikli.watch_changes(&repository)
 }
@@ -486,6 +507,8 @@ fn main() {
             force_add_files,
             rollback_plan,
             rollback_files,
+            commit_files,
+            set_commit_identity,
             watch_changes,
             unwatch_changes,
             startup_folder

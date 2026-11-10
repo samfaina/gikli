@@ -569,6 +569,36 @@ describe("gikli", () => {
       await $(`[data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
       assert.ok(!fs.existsSync(inRepository(file)), "its local copy goes with it");
     });
+
+    it("commits the Active changelist from the panel beside the changes, once it knows who is committing", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      const file = "committed from the panel.txt";
+      fs.writeFileSync(inRepository(file), "new\n");
+      runGit(repository, gitconfig, "add", "--", file);
+      await (await idleRefresh()).click();
+      await expectChangeIn("Moved", file);
+
+      const tick = (path) => $(`[data-testid="commit-file"][data-path="${path}"] input`);
+      await browser.waitUntil(async () => (await tick(file).isExisting()) && tick(file).isSelected(), {
+        timeout: 30000,
+        timeoutMsg: "the file of the Active changelist was not ticked",
+      });
+      assert.equal(await tick(STAGED_FILE).isSelected(), false);
+
+      await $('[data-testid="commit-message"]').setValue("Commit from the panel");
+      await $('[data-testid="commit-submit"]').click();
+      await $('[data-testid="commit-identity-name"]').waitForDisplayed({ timeout: 30000 });
+      assert.equal(runGit(repository, gitconfig, "rev-list", "--count", "HEAD"), "1\n", "nothing is committed before the answer");
+
+      await $('[data-testid="commit-identity-name"]').setValue("Smoke");
+      await $('[data-testid="commit-identity-email"]').setValue("smoke@example.com");
+      await $('[data-testid="commit-identity-save"]').click();
+
+      await $(`[data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s|%an"), "Commit from the panel|Smoke\n");
+      assert.equal(await $('[data-testid="commit-message"]').getValue(), "");
+    });
   });
 
   // In a window of a clone: closing the main window would end the WebDriver session.

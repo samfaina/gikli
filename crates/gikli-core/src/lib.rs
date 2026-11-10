@@ -6,6 +6,7 @@
 mod capability;
 mod changelists;
 mod clone_url;
+mod commit;
 mod diff;
 mod events;
 mod explainer;
@@ -293,6 +294,37 @@ pub enum Failure {
     /// The files changed after gikli listed what a rollback would discard, so nothing was rolled
     /// back. The user has to confirm the list as it is now.
     RollbackListOutdated,
+    /// A commit needs a message, so nothing was committed.
+    CommitMessageEmpty,
+    /// Nothing the user selected is a change any more, so nothing was committed.
+    NothingToCommit,
+    /// git could not commit in the Repository at `folder`. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    CommitFailed {
+        folder: PathBuf,
+    },
+    /// gikli could not write what git reads for a commit in the Repository at `folder`, so nothing
+    /// was committed.
+    #[serde(rename_all = "camelCase")]
+    CommitInputNotWritten {
+        folder: PathBuf,
+        message: String,
+    },
+    /// git has no `user.name` or no `user.email` to write in a commit, so nothing was committed. The
+    /// user has to say what they are: see [`Gikli::set_commit_identity`].
+    #[serde(rename_all = "camelCase")]
+    CommitIdentityMissing {
+        name_missing: bool,
+        email_missing: bool,
+    },
+    /// A name or email for commits has to have some text, so nothing was saved.
+    CommitIdentityEmpty,
+    /// git could not save the name or email for commits in the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    CommitIdentityNotSaved {
+        folder: PathBuf,
+    },
     /// The lock of the index could not be removed.
     #[serde(rename_all = "camelCase")]
     IndexLockNotRemoved {
@@ -1118,8 +1150,8 @@ impl Gikli {
             .operations
             .run(operation, runner.runs_natively(), |run| {
                 for command in &commands {
-                    let args: Vec<&str> = command.iter().map(String::as_str).collect();
-                    let invocation = runner.run_operation(&repository.root, &args, run)?;
+                    let invocation =
+                        runner.run_operation(&repository.root, &as_args(command), run)?;
                     if !invocation.success {
                         return Ok(Some(invocation));
                     }
@@ -1138,6 +1170,118 @@ impl Gikli {
             ));
         }
         self.read_changes(repository)
+    }
+
+    /// Commits the changes at `paths`, relative to the root of `repository`, as they are in the
+    /// working tree, with `message` as written, and returns the changes after that. Unversioned
+    /// Files among them are added in the same step, and go back to being unversioned when the commit
+    /// fails, unless a cancelled run left the lock of the index in the way. What is staged at any
+    /// other path stays staged, and out of the commit. Hooks run as the user configured them.
+    ///
+    /// Without a `user.name` and a `user.email` this returns [`Failure::CommitIdentityMissing`], and
+    /// nothing happens until [`Self::set_commit_identity`] has the answer.
+    pub fn commit_files(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+        message: &str,
+    ) -> Result<ChangeSet, Failure> {
+        if message.trim().is_empty() {
+            return Err(Failure::CommitMessageEmpty);
+        }
+        let runner = self.runner(&repository.root)?;
+        let status = read_status(&runner, repository, true)?;
+        let selection = commit::Selection::of(&status, paths);
+        if selection.committed.is_empty() {
+            return Err(Failure::NothingToCommit);
+        }
+        commit::ensure_identity(&runner, &repository.root)?;
+        let operation = LongOperation::CommitFiles {
+            repository: repository.clone(),
+        };
+        let root = &repository.root;
+        let git_dir = runner
+            .relative_git_dir(root)
+            .map_err(git_failed_to_start)?
+            .ok_or_else(|| Failure::ChangesUnreadable {
+                folder: root.clone(),
+            })?;
+        let input =
+            commit::CommitInput::write(root, &git_dir, &selection, message).map_err(|error| {
+                Failure::CommitInputNotWritten {
+                    folder: root.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        let failed = self
+            .operations
+            .run(operation, runner.runs_natively(), |run| {
+                let git = |command: &[String]| runner.run_operation(root, &as_args(command), run);
+                if let Some(add) = input.add_command() {
+                    let added = git(&add)?;
+                    if !added.success {
+                        return Ok(Some(added));
+                    }
+                }
+                let committed = git(&input.commit_command())?;
+                if committed.success {
+                    return Ok(None);
+                }
+                if let Some(forget) = input.forget_added_command() {
+                    // Not as part of the operation: a cancelled one would end this at once. When
+                    // it fails, the files stay added, and the operation log says why.
+                    let _ = runner.run(root, &as_args(&forget));
+                }
+                Ok(Some(committed))
+            })
+            .map_err(git_failed_to_start)?;
+        if let Some(invocation) = failed {
+            return Err(failure_of(
+                &runner,
+                root,
+                &invocation,
+                Failure::CommitFailed {
+                    folder: root.clone(),
+                },
+            ));
+        }
+        self.read_changes(repository)
+    }
+
+    /// Saves the answer to [`Failure::CommitIdentityMissing`] in git's configuration: for every
+    /// Repository of the user if `everywhere`, and for `repository` alone otherwise, without the
+    /// spaces around it. A value that is None stays as it is. A value without text saves nothing.
+    pub fn set_commit_identity(
+        &self,
+        repository: &Repository,
+        name: Option<&str>,
+        email: Option<&str>,
+        everywhere: bool,
+    ) -> Result<(), Failure> {
+        let answers = [("user.name", name), ("user.email", email)];
+        let answers = answers.map(|(key, value)| (key, value.map(str::trim)));
+        if answers.iter().any(|(_, value)| *value == Some("")) {
+            return Err(Failure::CommitIdentityEmpty);
+        }
+        let runner = self.runner(&repository.root)?;
+        let scope = if everywhere { "--global" } else { "--local" };
+        for (key, value) in answers {
+            let Some(value) = value else { continue };
+            let invocation = runner
+                .run(&repository.root, &["config", scope, "--", key, value])
+                .map_err(git_failed_to_start)?;
+            if !invocation.success {
+                return Err(failure_of(
+                    &runner,
+                    &repository.root,
+                    &invocation,
+                    Failure::CommitIdentityNotSaved {
+                        folder: repository.root.clone(),
+                    },
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Reads the changes of `repository`, makes its Changelists follow them, and applies `choice`,
@@ -1585,6 +1729,11 @@ fn failure_of(
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,
     }
+}
+
+/// `command`, a list of arguments gikli built, as the runner takes it.
+fn as_args(command: &[String]) -> Vec<&str> {
+    command.iter().map(String::as_str).collect()
 }
 
 fn git_failed_to_start(error: std::io::Error) -> Failure {

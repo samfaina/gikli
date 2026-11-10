@@ -622,7 +622,7 @@ fn a_run_cancelled_while_it_holds_the_index_lock_ends_with_the_offer_to_remove_i
         root: repository.toplevel_by_git(),
     };
     let lock = in_git_directory(&repository, "index.lock");
-    // `git commit --only` leaves this one too, and gikli does not commit yet.
+    // `git commit --only` leaves this one too.
     let next_index_lock = in_git_directory(&repository, "next-index-4242.lock");
     let gikli = sandbox.gikli();
 

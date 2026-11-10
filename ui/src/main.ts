@@ -73,6 +73,7 @@ import {
 import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
 import { createChangeSelection } from "./change-selection";
+import { createCommitPanel } from "./commit-panel";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -694,13 +695,20 @@ function repositoryView(repository: Repository): HTMLElement {
       drawnChanges = null;
     }
   };
+  const describeChange = (change: Change): string => [t(STATUS_LABELS[change.status]), ...changeDetails(change)].join(" · ");
   const selection = createChangeSelection({
     repository,
     changes,
     run: (action) => void runChangelistAction(action),
     changed: () => void refreshChanges(),
     describeError,
-    describeChange: (change) => [t(STATUS_LABELS[change.status]), ...changeDetails(change)].join(" · "),
+    describeChange,
+  });
+  const commitPanel = createCommitPanel({
+    repository,
+    describeChange,
+    committed: () => void refreshChanges(),
+    errorView,
   });
   const newChangelist = changelistButton("new-changelist", t("newChangelist"), () =>
     form.open({
@@ -715,17 +723,13 @@ function repositoryView(repository: Repository): HTMLElement {
   header.append(title, refresh, newChangelist);
   const watching = document.createElement("div");
   const features = document.createElement("div");
-  section.append(
-    line("repository-root", t("repositoryRoot", { root: repository.root })),
-    header,
-    form.view,
-    selection.form,
-    selection.rollbackForm,
-    selection.menu,
-    watching,
-    changes,
-    features,
-  );
+  const changesColumn = document.createElement("div");
+  changesColumn.className = "changes-column";
+  changesColumn.append(form.view, selection.form, selection.rollbackForm, selection.menu, watching, changes, features);
+  const body = document.createElement("div");
+  body.className = "repository-body";
+  body.append(changesColumn, commitPanel.view);
+  section.append(line("repository-root", t("repositoryRoot", { root: repository.root })), header, body);
   void showUnavailableFeatures(repository, features);
 
   const actions: ChangelistActions = {
@@ -772,6 +776,7 @@ function repositoryView(repository: Repository): HTMLElement {
             const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
             changes.replaceChildren(changeList(changeSet, actions));
             selection.drawn(changeSet);
+            commitPanel.drawn(changeSet);
             drawnChanges = found;
             if (focused !== undefined) {
               focusChangeRow(changes, focused);
@@ -1481,6 +1486,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationAddFiles", { root: operation.repository.root });
     case "rollbackFiles":
       return t("operationRollbackFiles", { root: operation.repository.root });
+    case "commitFiles":
+      return t("operationCommitFiles", { root: operation.repository.root });
   }
 }
 
@@ -1691,6 +1698,20 @@ function describeFailure(failure: Failure): string {
       return t("failureFilesNotRolledBack", { folder: failure.folder });
     case "rollbackListOutdated":
       return t("failureRollbackListOutdated");
+    case "commitMessageEmpty":
+      return t("failureCommitMessageEmpty");
+    case "nothingToCommit":
+      return t("failureNothingToCommit");
+    case "commitFailed":
+      return t("failureCommitFailed", { folder: failure.folder });
+    case "commitInputNotWritten":
+      return t("failureCommitInputNotWritten", { folder: failure.folder, message: failure.message });
+    case "commitIdentityMissing":
+      return t("failureCommitIdentityMissing");
+    case "commitIdentityEmpty":
+      return t("failureCommitIdentityEmpty");
+    case "commitIdentityNotSaved":
+      return t("failureCommitIdentityNotSaved", { folder: failure.folder });
     case "indexLockNotRemoved":
       return t("failureIndexLockNotRemoved", { lock: failure.lock, message: failure.message });
     case "folderNotTrusted":
