@@ -102,7 +102,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
 
   const updateSubmit = (): void => {
     const staging = shownChanges?.staging ?? null;
-    const nothingToCommit = staging !== null ? staging.staged.changes.length === 0 : ticked.size === 0;
+    const nothingToCommit = staging !== null ? staging.staged.changes.length === 0 && !staging.merging : ticked.size === 0;
     submit.disabled = committing || nothingToCommit || message.value.trim() === "";
     submit.textContent = t(amend.checked ? "commitSubmitAmend" : "commitSubmit");
   };

@@ -887,6 +887,8 @@ function changeList(changeSet: ChangeSet, actions: ChangelistActions): HTMLEleme
       return button;
     };
     const hasTrackedChanges = staging.unstaged.changes.length > 0;
+    // Staging marks a conflict resolved, markers and all, which takes a decision about each file.
+    const canStageAtOnce = !staging.unstaged.changes.some((change) => change.status === "conflicted");
     view.append(
       changeGroupView(repository, "staged-changes", [groupName(t("stagedChanges"))], staging.staged.nodes, "staged"),
       changeGroupView(
@@ -894,8 +896,8 @@ function changeList(changeSet: ChangeSet, actions: ChangelistActions): HTMLEleme
         "unstaged-changes",
         [
           groupName(t("unstagedChanges")),
-          stageButton("stage-all", "stageAll", hasTrackedChanges || unversionedFiles.changes.length > 0, actions.stageAll),
-          stageButton("stage-tracked", "stageTracked", hasTrackedChanges, actions.stageTracked),
+          stageButton("stage-all", "stageAll", canStageAtOnce && (hasTrackedChanges || unversionedFiles.changes.length > 0), actions.stageAll),
+          stageButton("stage-tracked", "stageTracked", canStageAtOnce && hasTrackedChanges, actions.stageTracked),
         ],
         staging.unstaged.nodes,
         "unstaged",
@@ -929,7 +931,7 @@ interface ChangelistActions {
   stageTracked: () => void;
 }
 
-/** A button that manages Changelists. */
+/** A button of the changes view that manages Changelists or the index. */
 function changelistButton(testId: string, text: string, act: () => void): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";

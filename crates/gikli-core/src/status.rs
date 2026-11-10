@@ -36,17 +36,23 @@ pub struct StagingArea {
     pub staged: ChangeGroup,
     /// How the working tree differs from the index, without the files git does not track yet.
     pub unstaged: ChangeGroup,
+    /// Whether a merge is in progress, which a commit concludes even with nothing staged.
+    pub merging: bool,
 }
 
 impl StagingArea {
+    /// The `staged` and `unstaged` changes arranged by `grouping`, with `merging` saying whether a
+    /// merge is in progress.
     pub(crate) fn new(
         staged: Vec<Change>,
         unstaged: Vec<Change>,
+        merging: bool,
         grouping: ChangeGrouping,
     ) -> Self {
         Self {
             staged: ChangeGroup::new(staged, grouping),
             unstaged: ChangeGroup::new(unstaged, grouping),
+            merging,
         }
     }
 }
@@ -554,6 +560,22 @@ impl Status {
     }
 }
 
+impl Status {
+    /// The paths among `paths` that have something staged, each staged move with the path it came
+    /// from, as it is two changes to git.
+    pub fn staged_paths(&self, paths: &[String]) -> Vec<String> {
+        let text_of = |path: &Path| path.to_string_lossy().into_owned();
+        let mut staged = Vec::new();
+        for change in &self.staged {
+            if paths.iter().any(|path| Path::new(path) == change.path) {
+                staged.push(text_of(&change.path));
+                staged.extend(change.renamed_from().map(text_of));
+            }
+        }
+        staged
+    }
+}
+
 /// The two sides of the index, while the status is being read.
 #[derive(Default)]
 struct IndexSides {
@@ -563,7 +585,7 @@ struct IndexSides {
 
 impl IndexSides {
     /// Adds a file at `path` to the sides its `XY` field names. `original_path` is where a rename
-    /// or a copy came from, which is what `X` says of a `2` record.
+    /// or a copy came from, on the side whose letter says so.
     fn add(&mut self, xy: &[u8], sub: &[u8], path: &[u8], original_path: Option<&[u8]>) {
         let [index, worktree] = xy else {
             return;
@@ -575,8 +597,12 @@ impl IndexSides {
             });
         }
         if let Some(status) = unstaged_status(*worktree) {
-            self.unstaged
-                .push(Change::new(path, status).in_submodule(sub));
+            self.unstaged.push(Change {
+                original_path: original_path
+                    .filter(|_| status == ChangeStatus::Renamed)
+                    .map(path_from_bytes),
+                ..Change::new(path, status).in_submodule(sub)
+            });
         }
     }
 }

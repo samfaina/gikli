@@ -62,19 +62,6 @@ impl Selection {
     }
 }
 
-/// The paths among `paths` that have something staged in `status`, each staged move with the path
-/// it came from, as it is two changes to git.
-pub(crate) fn staged_paths(status: &Status, paths: &[String]) -> Vec<String> {
-    let mut staged = Vec::new();
-    for change in &status.staged {
-        if paths.iter().any(|path| Path::new(path) == change.path) {
-            staged.push(text_of(&change.path));
-            staged.extend(change.renamed_from().map(text_of));
-        }
-    }
-    staged
-}
-
 /// Whether a file git does not track is at `path`, or a folder of them, or a file in the way of it.
 fn is_taken_by_a_new_file(status: &Status, path: &Path) -> bool {
     status.changes.iter().any(|file| {
@@ -99,8 +86,8 @@ pub(crate) enum CommitScope {
     Index,
 }
 
-/// What git reads for one commit: the message and the paths, which do not fit on a command line
-/// when a Changelist is large. The files are in gikli's folder of the git directory, the one place
+/// What git reads for one commit or one unstaging: the message and the paths, which do not fit on
+/// a command line when a Changelist is large. The files are in gikli's folder of the git directory, the one place
 /// git inside WSL and gikli on Windows both reach by a path of their own. They go when this is
 /// dropped.
 pub(crate) struct CommitInput {
@@ -157,6 +144,17 @@ impl CommitInput {
     pub fn forget_added_command(&self) -> Option<Vec<String>> {
         self.has_unversioned_files
             .then(|| self.command_on(UNVERSIONED_PATHS, &["rm", "--quiet", "--force", "--cached"]))
+    }
+
+    /// The arguments after `git` that take the paths out of the index and leave the working tree.
+    /// `git restore` needs a commit to restore from, when `has_commits` says there is none.
+    pub fn unstage_command(&self, has_commits: bool) -> Vec<String> {
+        let command: &[&str] = if has_commits {
+            &["restore", "--staged"]
+        } else {
+            &["rm", "--quiet", "--force", "--cached"]
+        };
+        self.command_on(PATHS, command)
     }
 
     /// The arguments after `git` that commit `scope`. The message goes in as written: the cleanup
@@ -379,6 +377,11 @@ pub(crate) fn warning(runner: &GitRunner, root: &Path) -> Result<Option<CommitWa
         .map_err(git_failed_to_start)?
         .success;
     Ok((!on_a_branch).then_some(CommitWarning::DetachedHead))
+}
+
+/// Whether the git directory `git_dir` holds a merge in progress.
+pub(crate) fn is_merging(git_dir: &Path) -> bool {
+    git_dir.join("MERGE_HEAD").is_file()
 }
 
 /// Whether the git directory `git_dir` holds a rebase in progress. `git am` keeps its state in

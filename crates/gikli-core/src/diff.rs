@@ -15,7 +15,7 @@ use crate::{
     ChangeSet, Failure, Repository, Settings, StagingSide, failure_of, git_failed_to_start,
 };
 
-/// A changed file, compared with its version in HEAD.
+/// A changed file, compared with its version in HEAD, or with the index on a side of Staging mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileDiff {
@@ -50,15 +50,17 @@ pub enum DiffContent {
     Folder,
 }
 
-/// The two versions of a text file and where they differ.
+/// The two versions of a text file and where they differ. [`FileDiff::side`] says what each side
+/// holds on a side of Staging mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextDiff {
-    /// The file in HEAD, or None when HEAD does not have it.
+    /// The older version: the file in HEAD, or None when HEAD does not have it.
     pub head: Option<String>,
-    /// The file on disk, or None when there is none.
+    /// The newer version: the file on disk, or None when there is none.
     pub local: Option<String>,
-    /// Identifies what is on disk, for saving over it: see [`crate::Gikli::save_local_file`].
+    /// Identifies what is on disk, for saving over it: see [`crate::Gikli::save_local_file`]. Empty
+    /// when the local side is the index, which is not saved over.
     pub local_version: String,
     /// Why the local side cannot be edited, when it cannot.
     pub local_read_only: Option<LocalReadOnly>,
@@ -581,8 +583,11 @@ impl<'a> ComparedFile<'a> {
         if !invocation.success {
             return Err(self.unreadable(&invocation));
         }
-        // `mode id stage`, a tab, and the path.
-        let entry = invocation.stdout.split(|byte| *byte == b'\t').next();
+        // `mode id stage`, a tab, and the path. A folder with the name of this file matches too.
+        let entry = invocation.stdout.split(|byte| *byte == 0).find_map(|line| {
+            let tab = line.iter().position(|byte| *byte == b'\t')?;
+            (&line[tab + 1..] == self.path.as_bytes()).then_some(&line[..tab])
+        });
         let mut fields = entry.unwrap_or_default().split(|byte| *byte == b' ');
         let (Some(mode), Some(id)) = (fields.next(), fields.next()) else {
             return Ok(None);
@@ -734,8 +739,14 @@ fn region_of(start: SameLine, context: usize, hidden: usize) -> Option<Unchanged
 /// became or stopped being a symbolic link comes as a deletion and an addition, both from the top,
 /// and that is one difference.
 fn parse_differences(output: &[u8]) -> Vec<Difference> {
+    let mut files = 0;
     let hunks = output
         .split(|byte| *byte == b'\n')
+        // The file comes first: what follows is in a folder with its name, which git matches too.
+        .take_while(|line| {
+            files += usize::from(line.starts_with(b"diff --git "));
+            files <= 1
+        })
         .filter_map(|line| line.strip_prefix(b"@@ -"))
         .filter_map(parse_hunk_header);
     let mut differences: Vec<Difference> = Vec::new();

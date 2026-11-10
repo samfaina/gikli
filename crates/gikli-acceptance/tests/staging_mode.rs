@@ -986,3 +986,179 @@ fn a_commit_in_changelist_mode_still_takes_the_working_tree() {
 
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "on disk\n");
 }
+
+#[test]
+fn a_staged_deletion_is_not_mistaken_for_a_new_file_in_a_folder_of_the_same_name() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_commit(&sandbox);
+    repository.write("x", "the file\n");
+    repository.commit_all("A file");
+    repository.delete("x");
+    repository.write("x/y", "in the folder\n");
+    repository.git(&["add", "--all"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    let (text, _) = side_diff(&gikli, &root, "x", StagingSide::Staged);
+
+    assert_eq!(text.head.as_deref(), Some("the file\n"));
+    assert_eq!(text.local, None);
+    assert_eq!(text.differences.len(), 1);
+}
+
+#[test]
+fn a_merge_with_nothing_to_stage_can_be_concluded() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_commit(&sandbox);
+    repository.git(&["checkout", "--quiet", "-b", "other"]);
+    repository.write("a.txt", "theirs\n");
+    repository.commit_all("Theirs");
+    repository.git(&["checkout", "--quiet", "-"]);
+    repository.git(&[
+        "merge",
+        "--quiet",
+        "--strategy=ours",
+        "--no-commit",
+        "other",
+    ]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    assert!(staging_area(&gikli, &root).merging);
+    gikli
+        .commit_staged(&root, "Merge other")
+        .expect("conclude the merge");
+
+    assert_eq!(
+        repository.git(&["rev-list", "--count", "--merges", "HEAD"]),
+        "1\n"
+    );
+}
+
+#[test]
+fn outside_a_merge_the_staging_area_says_so() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_commit(&sandbox);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    assert!(!staging_area(&gikli, &root).merging);
+}
+
+#[test]
+fn a_file_added_with_intent_to_add_is_unstaged_and_stays_out_of_a_commit() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_commit(&sandbox);
+    repository.write("planned.txt", "planned\n");
+    repository.git(&["add", "--intent-to-add", "--", "planned.txt"]);
+    repository.write("a.txt", "a changed\n");
+    repository.git(&["add", "--", "a.txt"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    let area = staging_area(&gikli, &root);
+    gikli.commit_staged(&root, "Only a").expect("commit");
+
+    assert_eq!(
+        entries(&area.staged.changes),
+        vec![(Path::new("a.txt"), ChangeStatus::Modified)]
+    );
+    assert_eq!(
+        entries(&area.unstaged.changes),
+        vec![(Path::new("planned.txt"), ChangeStatus::Added)]
+    );
+    assert_eq!(
+        repository.git(&["ls-tree", "--name-only", "HEAD"]),
+        "a.txt\nb.txt\n"
+    );
+}
+
+#[test]
+fn a_file_added_with_intent_to_add_that_git_finds_moved_says_where_from() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_commit(&sandbox);
+    repository.write("a.txt", "one\ntwo\nthree\nfour\nfive\n");
+    repository.commit_all("Longer");
+    std::fs::rename(
+        repository.root().join("a.txt"),
+        repository.root().join("moved.txt"),
+    )
+    .expect("move");
+    repository.git(&["add", "--intent-to-add", "--", "moved.txt"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    let area = staging_area(&gikli, &root);
+
+    let moved = area
+        .unstaged
+        .changes
+        .iter()
+        .find(|change| change.path == Path::new("moved.txt"))
+        .expect("moved.txt is unstaged");
+    assert_eq!(moved.status, ChangeStatus::Renamed);
+    assert_eq!(moved.original_path.as_deref(), Some(Path::new("a.txt")));
+}
+
+#[test]
+fn paths_git_could_read_as_patterns_or_options_are_taken_literally() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_commit(&sandbox);
+    repository.write("[a] b.txt", "literal\n");
+    repository.write("-dash.txt", "dash\n");
+    repository.write("a b.txt", "a file the pattern would match\n");
+    let selected = paths(&["[a] b.txt", "-dash.txt"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    gikli.add_files(&root, &selected).expect("stage");
+    assert_eq!(
+        entries(&staging_area(&gikli, &root).staged.changes).len(),
+        2,
+        "only the two selected files are staged"
+    );
+
+    let (text, _) = side_diff(&gikli, &root, "[a] b.txt", StagingSide::Staged);
+    assert_eq!(text.local.as_deref(), Some("literal\n"));
+
+    gikli.unstage_files(&root, &selected).expect("unstage");
+    assert_eq!(staging_area(&gikli, &root).staged.changes, vec![]);
+}
+
+#[test]
+fn more_files_than_fit_on_a_command_line_can_be_unstaged() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_commit(&sandbox);
+    let padding = "a-rather-long-name-for-a-file-so-that-few-of-them-fill-a-command-line";
+    let names: Vec<String> = (0..700).map(|n| format!("{padding}-{n}.txt")).collect();
+    for name in &names {
+        std::fs::write(repository.root().join(name), "new\n").expect("write");
+    }
+    repository.git(&["add", "--all"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    gikli.unstage_files(&root, &names).expect("unstage");
+
+    assert_eq!(staging_area(&gikli, &root).staged.changes, vec![]);
+}
+
+#[test]
+fn a_submodule_shows_no_text_diff_on_the_staged_side() {
+    let sandbox = Sandbox::new();
+    sandbox.allow_local_submodules();
+    let library = sandbox.repository("library");
+    library.write("lib.txt", "lib\n");
+    library.commit_all("Library");
+    let repository = repository_with_a_commit(&sandbox);
+    let url = gikli_acceptance::file_url(library.root());
+    repository.git(&["submodule", "--quiet", "add", "--", &url, "lib"]);
+    let gikli = in_staging_mode(&sandbox);
+    let root = opened(&gikli, &repository);
+
+    let diff = gikli
+        .read_staging_diff(&root, "lib", StagingSide::Staged)
+        .expect("read diff");
+
+    assert_eq!(diff.content, DiffContent::Folder);
+}

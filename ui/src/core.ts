@@ -172,6 +172,8 @@ export interface StagingArea {
   staged: ChangeGroup;
   /** How the working tree differs from the index, without the files git does not track yet. */
   unstaged: ChangeGroup;
+  /** Whether a merge is in progress, which a commit concludes even with nothing staged. */
+  merging: boolean;
 }
 
 /** One of the two comparisons of Staging mode: the index against HEAD, or the working tree against the index. */
@@ -198,13 +200,13 @@ export interface UnchangedRegion {
 /** Why the local side of a diff cannot be edited. */
 export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink" | "index";
 
-/** The two versions of a text file and where they differ, with `\n` between lines. */
+/** The two versions of a text file and where they differ, with `\n` between lines. {@link FileDiff.side} says what each side holds on a side of Staging mode. */
 export interface TextDiff {
-  /** null when HEAD does not have the file. */
+  /** The older version: null when HEAD does not have the file. */
   head: string | null;
-  /** null when there is no file on disk. */
+  /** The newer version: null when there is no file on disk. */
   local: string | null;
-  /** Identifies what is on disk: {@link saveLocalFile} takes it back. */
+  /** Identifies what is on disk: {@link saveLocalFile} takes it back. Empty when the local side is the index. */
   localVersion: string;
   localReadOnly: LocalReadOnly | null;
   /** From the top of the file down. */
@@ -216,7 +218,7 @@ export interface TextDiff {
 /** What the diff view can show of a file: a text diff, or nothing of a binary file, a submodule or a nested Repository. */
 export type DiffContent = ({ kind: "text" } & TextDiff) | { kind: "binary" } | { kind: "folder" };
 
-/** A changed file, compared with its version in HEAD. */
+/** A changed file, compared with its version in HEAD, or with the index on a side of Staging mode. */
 export interface FileDiff {
   repository: Repository;
   /** Relative to the Repository root, with `/` between folders. */

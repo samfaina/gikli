@@ -1086,33 +1086,32 @@ impl Gikli {
     pub fn unstage_files(&self, repository: &Repository, paths: &[String]) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?;
         let status = read_status(&runner, repository, false)?;
-        let staged = commit::staged_paths(&status, paths);
+        let staged = status.staged_paths(paths);
         if staged.is_empty() {
             return Ok(());
         }
-        // `git restore` needs a commit to restore from.
-        let command: &[&str] = if commit::has_commits(&runner, &repository.root)? {
-            &["restore", "--staged"]
-        } else {
-            &["rm", "--quiet", "--force", "--cached"]
+        let root = &repository.root;
+        let not_unstaged = || Failure::FilesNotUnstaged {
+            folder: root.clone(),
         };
-        let mut args = vec!["--literal-pathspecs"];
-        args.extend(command);
-        args.push("--");
-        args.extend(staged.iter().map(String::as_str));
+        let has_commits = commit::has_commits(&runner, root)?;
+        let git_dir = runner
+            .relative_git_dir(root)
+            .map_err(git_failed_to_start)?
+            .ok_or_else(not_unstaged)?;
+        let selection = commit::Selection {
+            unversioned: Vec::new(),
+            committed: staged,
+        };
+        let input = commit::CommitInput::write(root, &git_dir, &selection, "")
+            .map_err(|_| not_unstaged())?;
         let operation = LongOperation::UnstageFiles {
             repository: repository.clone(),
         };
-        let invocation = self.run_operation(&runner, operation, &repository.root, &args)?;
+        let command = input.unstage_command(has_commits);
+        let invocation = self.run_operation(&runner, operation, root, &as_args(&command))?;
         if !invocation.success {
-            return Err(failure_of(
-                &runner,
-                &repository.root,
-                &invocation,
-                Failure::FilesNotUnstaged {
-                    folder: repository.root.clone(),
-                },
-            ));
+            return Err(failure_of(&runner, root, &invocation, not_unstaged()));
         }
         Ok(())
     }
@@ -1285,8 +1284,8 @@ impl Gikli {
 
     /// Commits what is staged in `repository`, with `message` as written, and returns the changes
     /// after that. What is not staged stays as it is, even in a file with another version staged.
-    /// Hooks run as the user configured them. With nothing staged this returns
-    /// [`Failure::NothingToCommit`], and without a `user.name` and a `user.email`
+    /// Hooks run as the user configured them. With nothing staged and no merge to conclude this
+    /// returns [`Failure::NothingToCommit`], and without a `user.name` and a `user.email`
     /// [`Failure::CommitIdentityMissing`].
     pub fn commit_staged(
         &self,
@@ -1331,7 +1330,15 @@ impl Gikli {
         kind: commit::CommitKind,
     ) -> Result<ChangeSet, Failure> {
         let runner = self.commit_runner(repository, message, kind)?;
-        if read_status(&runner, repository, false)?.staged.is_empty() {
+        let git_dir = runner
+            .git_dir(&repository.root)
+            .map_err(git_failed_to_start)?
+            .ok_or_else(|| Failure::ChangesUnreadable {
+                folder: repository.root.clone(),
+            })?;
+        let status = read_status(&runner, repository, false)?;
+        // A merge resolved to what HEAD already has stages nothing, and still has to be concluded.
+        if status.staged.is_empty() && !commit::is_merging(&git_dir) {
             return Err(Failure::NothingToCommit);
         }
         let selection = commit::Selection::default();
@@ -1531,9 +1538,14 @@ impl Gikli {
             }
             chosen
         };
-        let staging = settings
-            .staging_mode
-            .then(|| StagingArea::new(status.staged, status.unstaged, settings.change_grouping));
+        let staging = settings.staging_mode.then(|| {
+            StagingArea::new(
+                status.staged,
+                status.unstaged,
+                commit::is_merging(&git_dir),
+                settings.change_grouping,
+            )
+        });
         Ok(ChangeSet::new(
             repository.clone(),
             status.changes,
