@@ -1,6 +1,6 @@
 // The form that lists what a rollback would discard, and discards it once the user confirms.
 
-import { isFailure, rollbackFiles, rollbackPlan, type Change, type RollbackPlan, type Repository } from "./core";
+import { isFailure, rollbackFiles, rollbackPlan, stagingRollbackPlan, type Change, type RollbackPlan, type Repository, type StagingSide } from "./core";
 import { t } from "./strings";
 
 /** What the form needs from the view of the Repository around it. */
@@ -18,7 +18,7 @@ export interface RollbackFormHost {
  * A form that confirms a rollback, hidden until something opens it. Only its button runs the rollback:
  * it is no submit button, so that Enter in the form cannot, and the focus starts on Cancel.
  */
-export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement; open: (paths: string[]) => void } {
+export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement; open: (paths: string[], side?: StagingSide | null) => void } {
   const { repository } = host;
   const view = document.createElement("div");
   view.className = "changelist-form";
@@ -57,6 +57,8 @@ export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement;
   let plan: RollbackPlan | null = null;
   /** The paths the user selected, which the list is about. */
   let selection: string[] = [];
+  /** The side of the index the selection is on in Staging mode. */
+  let selectionSide: StagingSide | null = null;
   /** Counts the times the list was asked for, so a late answer about an earlier selection is dropped. */
   let requests = 0;
 
@@ -82,7 +84,7 @@ export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement;
     requests += 1;
     const thisRequest = requests;
     try {
-      const found = await rollbackPlan(repository, selection);
+      const found = await (selectionSide === null ? rollbackPlan(repository, selection) : stagingRollbackPlan(repository, selection, selectionSide));
       if (thisRequest === requests) {
         show(found, found.files.length === 0 ? t("rollbackNothing") : note);
       }
@@ -122,8 +124,9 @@ export function createRollbackForm(host: RollbackFormHost): { view: HTMLElement;
 
   return {
     view,
-    open: (paths) => {
+    open: (paths, side = null) => {
       selection = paths;
+      selectionSide = side;
       show(null, "");
       view.hidden = false;
       cancel.focus();

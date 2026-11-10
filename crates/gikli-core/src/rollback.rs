@@ -1,11 +1,11 @@
 //! Rollback: discarding the uncommitted changes of the files the user chose, once they have
 //! confirmed the list of what goes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::status::{Change, ChangeStatus, Status};
+use crate::status::{Change, ChangeStatus, StagingSide, Status};
 
 /// What rolling back a selection of changes would discard, for the user to confirm first. A rollback
 /// takes the plan they confirmed, and runs only while it still holds.
@@ -18,6 +18,13 @@ pub struct RollbackPlan {
     /// Whether any of them is a file the rollback takes out of git, whose local copy the user can
     /// choose to delete as well.
     pub has_added_files: bool,
+    /// The side of the index the plan is about, in Staging mode. None for a rollback of changes in
+    /// Changelists, which discards every version of a file.
+    pub side: Option<StagingSide>,
+    /// The files on both sides of the index, whose other side the rollback keeps. When a file starts
+    /// or stops being on both sides, the rollback would discard something else, so the plan no
+    /// longer holds.
+    pub on_both_sides: Vec<PathBuf>,
 }
 
 impl RollbackPlan {
@@ -27,28 +34,88 @@ impl RollbackPlan {
     }
 }
 
-/// The changes in `status` at `paths` that a rollback can discard. Only a change in a Changelist has
-/// something to go back to. A submodule is left out unless it is new: git moves only what the
-/// Repository records, so a changed one would stay as it is, and a moved one would lose its files.
-fn selected<'s>(status: &'s Status, paths: &[String]) -> Vec<&'s Change> {
-    status
-        .changes
-        .iter()
+/// What a rollback does to the file of a change.
+enum Action {
+    /// Takes the file out of git, as the last commit does not hold it. Its local copy can go too.
+    TakeOutOfGit,
+    /// Brings every version of the file back to the last commit.
+    BackToLastCommit,
+    /// Takes the file out of the index, as the last commit does not hold it. The file on disk is the
+    /// other side, and stays.
+    TakeOutOfIndex,
+    /// Brings the index back to the last commit. The file on disk is the other side, and stays.
+    IndexToLastCommit,
+    /// Brings the file on disk back to the index. What is staged is the other side, and stays.
+    DiskToIndex,
+}
+
+impl Action {
+    /// What a rollback on `side` does to the file of `change`. A file on both sides of the index
+    /// keeps the other side.
+    fn of(status: &Status, change: &Change, side: Option<StagingSide>) -> Self {
+        let holds_file = |rows: &[Change]| rows.iter().any(|row| row.path == change.path);
+        let out_of_git = takes_out_of_git(change);
+        match side {
+            Some(StagingSide::Unstaged) if holds_file(&status.staged) => Self::DiskToIndex,
+            Some(StagingSide::Staged) if holds_file(&status.unstaged) => {
+                if out_of_git {
+                    Self::TakeOutOfIndex
+                } else {
+                    Self::IndexToLastCommit
+                }
+            }
+            _ if out_of_git => Self::TakeOutOfGit,
+            _ => Self::BackToLastCommit,
+        }
+    }
+
+    /// Whether the file is on both sides of the index, and this leaves the other side.
+    fn keeps_other_side(&self) -> bool {
+        !matches!(self, Self::TakeOutOfGit | Self::BackToLastCommit)
+    }
+}
+
+/// The changes in `status` at `paths` that a rollback on `side` can discard, each with what the
+/// rollback does to it. A new or ignored file has nothing to go back to. A submodule is left out
+/// unless it is new: git moves only what the Repository records, so a changed one would stay as it
+/// is, and a moved one would lose its files.
+fn selected<'s>(
+    status: &'s Status,
+    paths: &[String],
+    side: Option<StagingSide>,
+) -> Vec<(&'s Change, Action)> {
+    let rows = match side {
+        None => &status.changes,
+        Some(StagingSide::Staged) => &status.staged,
+        Some(StagingSide::Unstaged) => &status.unstaged,
+    };
+    rows.iter()
         .filter(|change| change.status.is_in_changelists())
         .filter(|change| change.status == ChangeStatus::Added || change.submodule.is_none())
         .filter(|change| paths.iter().any(|path| Path::new(path) == change.path))
+        .map(|change| (change, Action::of(status, change, side)))
         .collect()
 }
 
-/// What rolling back the changes in `status` at `paths` would discard. `status` must list the ignored
-/// files, as a rollback can write over them too.
-pub(crate) fn plan(status: &Status, paths: &[String]) -> RollbackPlan {
-    let chosen = selected(status, paths);
-    let has_added_files = chosen.iter().any(|change| takes_out_of_git(change));
+/// What rolling back the changes in `status` at `paths` on `side` would discard. `status` must list
+/// the ignored files, as a rollback can write over them too.
+pub(crate) fn plan(status: &Status, paths: &[String], side: Option<StagingSide>) -> RollbackPlan {
+    let chosen = selected(status, paths, side);
+    let has_added_files = chosen
+        .iter()
+        .any(|(_, action)| matches!(action, Action::TakeOutOfGit));
+    let on_both_sides = chosen
+        .iter()
+        .filter(|(_, action)| action.keeps_other_side())
+        .map(|(change, _)| change.path.clone())
+        .collect();
     let restored: Vec<&Path> = chosen
         .iter()
-        .filter(|change| !takes_out_of_git(change))
-        .map(|change| restored_path(change))
+        .filter_map(|(change, action)| match action {
+            Action::DiskToIndex => Some(change.path.as_path()),
+            Action::BackToLastCommit => Some(restored_path(change)),
+            _ => None,
+        })
         .collect();
     // A file at a path that comes back, or a folder or a file in the way of one.
     let written_over = status.changes.iter().filter(|file| {
@@ -59,7 +126,7 @@ pub(crate) fn plan(status: &Status, paths: &[String]) -> RollbackPlan {
     });
     let mut files: Vec<Change> = chosen
         .iter()
-        .copied()
+        .map(|(change, _)| *change)
         .chain(written_over)
         .cloned()
         .collect();
@@ -67,34 +134,44 @@ pub(crate) fn plan(status: &Status, paths: &[String]) -> RollbackPlan {
     RollbackPlan {
         files,
         has_added_files,
+        side,
+        on_both_sides,
     }
 }
 
-/// The arguments after `git` of each command that rolls back the changes in `status` at `paths`, in
-/// the order to run them. The file of an added change goes too if `delete_added_files`.
+/// The arguments after `git` of each command that rolls back the changes in `status` at `paths` on
+/// `side`, in the order to run them. The file of an added change goes too if `delete_added_files`.
 pub(crate) fn commands(
     status: &Status,
     paths: &[String],
+    side: Option<StagingSide>,
     delete_added_files: bool,
 ) -> Vec<Vec<String>> {
     let mut steps = Steps::default();
-    for change in selected(status, paths) {
+    for (change, action) in selected(status, paths, side) {
         let path = text_of(&change.path);
-        if takes_out_of_git(change) {
-            if delete_added_files {
-                steps.delete.push(path);
-            } else {
-                steps.unindex.push(path);
+        match action {
+            Action::DiskToIndex => steps.disk_to_index.push(path),
+            Action::TakeOutOfIndex => steps.unindex.push(path),
+            Action::IndexToLastCommit => {
+                steps.index_to_head.push(path);
+                // A move is two changes to git.
+                steps
+                    .index_to_head
+                    .extend(change.renamed_from().map(text_of));
             }
-            continue;
-        }
-        steps.restore.push(text_of(restored_path(change)));
-        if change.renamed_from().is_some() {
-            // Going back from a move leaves nothing at the new path, as a modified file keeps
-            // nothing of what it held.
-            steps.delete.push(path);
-        } else if let Some(moved_to) = status.moved_and_removed.get(&change.path) {
-            steps.delete.push(text_of(moved_to));
+            Action::TakeOutOfGit if delete_added_files => steps.delete.push(path),
+            Action::TakeOutOfGit => steps.unindex.push(path),
+            Action::BackToLastCommit => {
+                steps.restore.push(text_of(restored_path(change)));
+                if change.renamed_from().is_some() {
+                    // Going back from a move leaves nothing at the new path, as a modified file
+                    // keeps nothing of what it held.
+                    steps.delete.push(path);
+                } else if let Some(moved_to) = status.moved_and_removed.get(&change.path) {
+                    steps.delete.push(text_of(moved_to));
+                }
+            }
         }
     }
     steps.into_commands()
@@ -130,6 +207,10 @@ struct Steps {
     delete: Vec<String>,
     /// Brought back as the last commit has them.
     restore: Vec<String>,
+    /// Brought back in the index as the last commit has them, and left on disk.
+    index_to_head: Vec<String>,
+    /// Brought back on disk as the index has them.
+    disk_to_index: Vec<String>,
 }
 
 impl Steps {
@@ -145,6 +226,11 @@ impl Steps {
                 vec!["restore", "--source=HEAD", "--staged", "--worktree"],
                 self.restore,
             ),
+            (
+                vec!["restore", "--source=HEAD", "--staged"],
+                self.index_to_head,
+            ),
+            (vec!["restore", "--worktree"], self.disk_to_index),
         ]
         .into_iter()
         .filter(|(_, paths)| !paths.is_empty())

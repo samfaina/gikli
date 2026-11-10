@@ -1212,7 +1212,20 @@ impl Gikli {
     ) -> Result<RollbackPlan, Failure> {
         let runner = self.runner(&repository.root)?;
         let status = read_status(&runner, repository, true)?;
-        Ok(rollback::plan(&status, paths))
+        Ok(rollback::plan(&status, paths, None))
+    }
+
+    /// What rolling back the changes at `paths`, relative to the root of `repository`, on `side` of
+    /// the index would discard, for the user to confirm before anything goes. It changes nothing.
+    pub fn staging_rollback_plan(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+        side: StagingSide,
+    ) -> Result<RollbackPlan, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let status = read_status(&runner, repository, true)?;
+        Ok(rollback::plan(&status, paths, Some(side)))
     }
 
     /// Discards the changes on `plan`, which the user confirmed, and returns the changes after that.
@@ -1228,10 +1241,10 @@ impl Gikli {
         let runner = self.runner(&repository.root)?;
         let status = read_status(&runner, repository, true)?;
         let paths = plan.paths();
-        if rollback::plan(&status, &paths) != *plan {
+        if rollback::plan(&status, &paths, plan.side) != *plan {
             return Err(Failure::RollbackListOutdated);
         }
-        let commands = rollback::commands(&status, &paths, delete_added_files);
+        let commands = rollback::commands(&status, &paths, plan.side, delete_added_files);
         if commands.is_empty() {
             return self.read_changes(repository);
         }

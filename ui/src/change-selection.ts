@@ -199,8 +199,14 @@ export function createChangeSelection(host: ChangeSelectionHost): ChangeSelectio
       }),
       menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths)),
     ],
-    staged: [menuItem("unstage-files", t("unstageFiles"), (paths) => host.run(() => unstageFiles(repository, paths)))],
-    unstaged: [menuItem("stage-files", t("stageFiles"), (paths) => host.run(() => addFiles(repository, paths)))],
+    staged: [
+      menuItem("unstage-files", t("unstageFiles"), (paths) => host.run(() => unstageFiles(repository, paths))),
+      menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths, "staged")),
+    ],
+    unstaged: [
+      menuItem("stage-files", t("stageFiles"), (paths) => host.run(() => addFiles(repository, paths))),
+      menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths, "unstaged")),
+    ],
     unversioned: [menuItem("add-to-git", t("addToGit"), (paths) => host.run(() => addFiles(repository, paths)))],
     ignored: [menuItem("force-add-to-git", t("forceAddToGit"), (paths) => host.run(() => forceAddFiles(repository, paths)))],
   };
