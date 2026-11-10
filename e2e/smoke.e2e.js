@@ -691,7 +691,8 @@ describe("gikli", () => {
       await $('[data-testid="open-log"]').click();
       const row = $('[data-testid="log-row"] .log-subject');
       await row.waitForDisplayed({ timeout: 30000 });
-      assert.equal(await row.getText(), "Amended from the panel");
+      // Not getText: WebKitWebDriver answers "" for an element with overflow: hidden, as a cell of the log is.
+      assert.equal(await row.getProperty("textContent"), "Amended from the panel");
 
       await $('[data-testid="log-close"]').click();
       await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
