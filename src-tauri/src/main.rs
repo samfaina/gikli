@@ -13,7 +13,7 @@ use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, Failure, FailureAction, FileDiff,
     Gikli, GitCheck, HostEnvironment, MoveTarget, Notification, NotificationAction,
     NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt, Repository,
-    RunningOperation, Settings, answer_askpass_request,
+    RollbackPlan, RunningOperation, Settings, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -357,6 +357,34 @@ fn add_files(
 }
 
 #[tauri::command(async)]
+fn force_add_files(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+) -> Result<(), Failure> {
+    gikli.force_add_files(&repository, &paths)
+}
+
+#[tauri::command(async)]
+fn rollback_plan(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+) -> Result<RollbackPlan, Failure> {
+    gikli.rollback_plan(&repository, &paths)
+}
+
+#[tauri::command(async)]
+fn rollback_files(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    plan: RollbackPlan,
+    delete_added_files: bool,
+) -> Result<ChangeSet, Failure> {
+    gikli.rollback_files(&repository, &plan, delete_added_files)
+}
+
+#[tauri::command(async)]
 fn watch_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
     gikli.watch_changes(&repository)
 }
@@ -455,6 +483,9 @@ fn main() {
             read_diff,
             save_local_file,
             add_files,
+            force_add_files,
+            rollback_plan,
+            rollback_files,
             watch_changes,
             unwatch_changes,
             startup_folder

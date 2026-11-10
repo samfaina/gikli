@@ -256,7 +256,7 @@ impl ChangeNode {
 }
 
 /// One changed file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
     /// The file's path relative to the Repository root, with `/` between folders, as git
@@ -272,6 +272,13 @@ pub struct Change {
 }
 
 impl Change {
+    /// The path the file was at, when it is a rename.
+    pub(crate) fn renamed_from(&self) -> Option<&Path> {
+        self.original_path
+            .as_deref()
+            .filter(|_| self.status == ChangeStatus::Renamed)
+    }
+
     fn new(path: &[u8], status: ChangeStatus) -> Self {
         Self {
             path: path_from_bytes(path),
@@ -292,7 +299,7 @@ impl Change {
 }
 
 /// What changed inside a submodule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmoduleState {
     /// The submodule has another commit checked out than the one the Repository records.
@@ -319,7 +326,7 @@ impl SubmoduleState {
 }
 
 /// How a file differs from the last commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ChangeStatus {
     Modified,
@@ -351,7 +358,7 @@ impl ChangeStatus {
 
 /// What each side of a conflict did to the file. "Us" is the branch the operation runs on and
 /// "them" the changes it brings in, as git names them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConflictKind {
     /// Both sides changed the file.
@@ -371,6 +378,14 @@ pub enum ConflictKind {
 }
 
 impl ConflictKind {
+    /// Whether the last commit holds the file, as it holds our side.
+    pub(crate) fn is_in_last_commit(self) -> bool {
+        matches!(
+            self,
+            Self::BothModified | Self::BothAdded | Self::AddedByUs | Self::DeletedByThem
+        )
+    }
+
     /// The kind from the `XY` field of a conflict record.
     fn from_xy(xy: &[u8]) -> Option<Self> {
         Some(match xy {
@@ -417,14 +432,19 @@ pub(crate) struct Status {
     pub changes: Vec<Change>,
     /// The commit HEAD is on, or None when it is on no commit yet.
     pub head: Option<String>,
+    /// Where the index has each file moved and then removed from disk, by the path the last commit
+    /// has it at. Such a file shows only as deleted at that path.
+    pub moved_and_removed: BTreeMap<PathBuf, PathBuf>,
 }
 
 impl Status {
     /// Reads the output of `git` [`status_args`].
     pub fn parse(output: &[u8]) -> Self {
+        let mut moved_and_removed = BTreeMap::new();
         Self {
-            changes: parse_changes(output),
+            changes: parse_changes(output, &mut moved_and_removed),
             head: parse_head(output),
+            moved_and_removed,
         }
     }
 }
@@ -437,7 +457,7 @@ fn parse_head(output: &[u8]) -> Option<String> {
         .map(|oid| String::from_utf8_lossy(oid).into_owned())
 }
 
-fn parse_changes(output: &[u8]) -> Vec<Change> {
+fn parse_changes(output: &[u8], moved_and_removed: &mut BTreeMap<PathBuf, PathBuf>) -> Vec<Change> {
     let mut records = output.split(|byte| *byte == 0);
     let mut changes = Vec::new();
     while let Some(record) = records.next() {
@@ -461,7 +481,13 @@ fn parse_changes(output: &[u8]) -> Vec<Change> {
                 fields
                     .nth(6)
                     .zip(original_path)
-                    .and_then(|(path, original_path)| moved(xy, path, original_path))
+                    .and_then(|(path, original_path)| {
+                        if xy == b"RD" {
+                            moved_and_removed
+                                .insert(path_from_bytes(original_path), path_from_bytes(path));
+                        }
+                        moved(xy, path, original_path)
+                    })
                     .map(|change| change.in_submodule(sub))
             }
             // `u XY sub m1 m2 m3 mW h1 h2 h3 path`: a conflicted file.
@@ -521,7 +547,8 @@ fn tracked_status(xy: &[u8]) -> Option<ChangeStatus> {
         // Added and then deleted: in neither the last commit nor the working tree. JetBrains
         // shows no change for it, and neither does gikli.
         (b'A', b'D') => return None,
-        (b'A', _) => ChangeStatus::Added,
+        // `.A` is a file added with `--intent-to-add`: git knows it is coming, without its content.
+        (b'A', _) | (_, b'A') => ChangeStatus::Added,
         (b'D', _) | (_, b'D') => ChangeStatus::Deleted,
         _ => ChangeStatus::Modified,
     })

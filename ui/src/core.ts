@@ -277,6 +277,8 @@ export type Failure =
   | { kind: "notAWorkingTree"; folder: string }
   | { kind: "projectNotOpened"; folder: string }
   | { kind: "filesNotAdded"; folder: string }
+  | { kind: "filesNotRolledBack"; folder: string }
+  | { kind: "rollbackListOutdated" }
   | { kind: "indexLockNotRemoved"; lock: string; message: string }
   | { kind: "folderNotTrusted"; folder: string }
   | { kind: "changesUnreadable"; folder: string }
@@ -354,7 +356,8 @@ export interface CloneUrlForms {
 /** A git command that takes long enough to show its progress. */
 export type LongOperation =
   | { kind: "clone"; url: string; folder: string }
-  | { kind: "addFiles"; repository: Repository };
+  | { kind: "addFiles"; repository: Repository }
+  | { kind: "rollbackFiles"; repository: Repository };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -621,6 +624,33 @@ export function saveLocalFile(repository: Repository, path: string, text: string
 /** Adds `paths`, relative to the Repository root and taken literally, to the git index. Rejects with a {@link Failure}. */
 export function addFiles(repository: Repository, paths: string[]): Promise<void> {
   return invoke("add_files", { repository, paths });
+}
+
+/** Adds `paths`, relative to the Repository root and taken literally, to the git index, even when git ignores them. Rejects with a {@link Failure}. */
+export function forceAddFiles(repository: Repository, paths: string[]): Promise<void> {
+  return invoke("force_add_files", { repository, paths });
+}
+
+/** What rolling back some changes would discard, for the user to confirm first. */
+export interface RollbackPlan {
+  /** The files whose changes would be discarded, and the new or ignored files it would write over, ordered by path. */
+  files: Change[];
+  /** Whether any is a file the rollback takes out of git, whose local copy the user can delete as well. */
+  hasAddedFiles: boolean;
+}
+
+/** What rolling back the changes at `paths`, relative to the Repository root, would discard. It changes nothing. Rejects with a {@link Failure}. */
+export function rollbackPlan(repository: Repository, paths: string[]): Promise<RollbackPlan> {
+  return invoke("rollback_plan", { repository, paths });
+}
+
+/**
+ * Discards the changes on `plan`, which the user confirmed. Added files leave git, and their local
+ * copies go too if `deleteAddedFiles`. Rejects with a {@link Failure}, without discarding anything
+ * when the plan no longer holds.
+ */
+export function rollbackFiles(repository: Repository, plan: RollbackPlan, deleteAddedFiles: boolean): Promise<ChangeSet> {
+  return invoke("rollback_files", { repository, plan, deleteAddedFiles });
 }
 
 /**

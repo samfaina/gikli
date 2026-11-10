@@ -22,6 +22,8 @@ pub enum LongOperation {
     Clone { url: String, folder: PathBuf },
     /// Adding files to the git index of `repository`, where a filter can take as long as a hook.
     AddFiles { repository: Repository },
+    /// Rolling back files of `repository`, where a filter can take as long as a hook.
+    RollbackFiles { repository: Repository },
 }
 
 /// How far one phase of a long operation has come, as git reports it.

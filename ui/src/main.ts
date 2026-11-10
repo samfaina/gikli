@@ -72,7 +72,7 @@ import {
 } from "./core";
 import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
-import { createChangeMoves } from "./change-moves";
+import { createChangeSelection } from "./change-selection";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -694,12 +694,13 @@ function repositoryView(repository: Repository): HTMLElement {
       drawnChanges = null;
     }
   };
-  const moves = createChangeMoves({
+  const selection = createChangeSelection({
     repository,
     changes,
     run: (action) => void runChangelistAction(action),
-    moved: () => void refreshChanges(),
+    changed: () => void refreshChanges(),
     describeError,
+    describeChange: (change) => [t(STATUS_LABELS[change.status]), ...changeDetails(change)].join(" · "),
   });
   const newChangelist = changelistButton("new-changelist", t("newChangelist"), () =>
     form.open({
@@ -718,8 +719,9 @@ function repositoryView(repository: Repository): HTMLElement {
     line("repository-root", t("repositoryRoot", { root: repository.root })),
     header,
     form.view,
-    moves.form,
-    moves.menu,
+    selection.form,
+    selection.rollbackForm,
+    selection.menu,
     watching,
     changes,
     features,
@@ -769,7 +771,7 @@ function repositoryView(repository: Repository): HTMLElement {
             // The row the user was on stays theirs when the rows are drawn again.
             const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
             changes.replaceChildren(changeList(changeSet, actions));
-            moves.drawn(changeSet);
+            selection.drawn(changeSet);
             drawnChanges = found;
             if (focused !== undefined) {
               focusChangeRow(changes, focused);
@@ -1477,6 +1479,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationClone", { url: operation.url });
     case "addFiles":
       return t("operationAddFiles", { root: operation.repository.root });
+    case "rollbackFiles":
+      return t("operationRollbackFiles", { root: operation.repository.root });
   }
 }
 
@@ -1683,6 +1687,10 @@ function describeFailure(failure: Failure): string {
       return t("failureCloneFailed", { url: failure.url, folder: failure.folder });
     case "filesNotAdded":
       return t("failureFilesNotAdded", { folder: failure.folder });
+    case "filesNotRolledBack":
+      return t("failureFilesNotRolledBack", { folder: failure.folder });
+    case "rollbackListOutdated":
+      return t("failureRollbackListOutdated");
     case "indexLockNotRemoved":
       return t("failureIndexLockNotRemoved", { lock: failure.lock, message: failure.message });
     case "folderNotTrusted":
