@@ -311,6 +311,9 @@ export type Failure =
   | { kind: "commitFailed"; folder: string }
   | { kind: "commitInputNotWritten"; folder: string; message: string }
   | { kind: "commitMessagesUnreadable"; folder: string }
+  | { kind: "logUnreadable"; folder: string }
+  /** The history changed since the page before: the log starts over from the first page. */
+  | { kind: "logChanged" }
   /** The user has to say who they are: see {@link setCommitIdentity}. */
   | { kind: "commitIdentityMissing"; nameMissing: boolean; emailMissing: boolean }
   /** A name or email has to have some text. */
@@ -757,6 +760,49 @@ export function commitStaged(repository: Repository, message: string): Promise<C
 /** Replaces the last commit with one that also holds what is staged, and has `message` as written. Rejects with a {@link Failure}. */
 export function amendWithStaged(repository: Repository, message: string): Promise<ChangeSet> {
   return invoke("amend_with_staged", { repository, message });
+}
+
+/** A line of the graph, from a column at its start to a column at its end. */
+export interface GraphLine {
+  from: number;
+  to: number;
+}
+
+/** How one row of the graph is drawn. */
+export interface GraphRow {
+  /** The column of the commit's node. */
+  column: number;
+  /** The lines from the top of the row to the height of the node. */
+  above: GraphLine[];
+  /** The lines from the height of the node to the bottom of the row. */
+  below: GraphLine[];
+}
+
+/** One commit of the log. */
+export interface LogRow {
+  hash: string;
+  parents: string[];
+  subject: string;
+  author: string;
+  /** When it was committed, in seconds since the epoch. */
+  committedAt: number;
+  graph: GraphRow;
+}
+
+/** Where a page of the log starts. Only the core reads it. */
+export type LogCursor = unknown;
+
+/** One page of the log, newest commit first. */
+export interface LogPage {
+  repository: Repository;
+  rows: LogRow[];
+  /** Where the next page starts, or null on the last page. */
+  next: LogCursor | null;
+}
+
+/** A page of the log, at most `count` commits, after `after` or from the newest commit. Rejects with a {@link Failure}. */
+export function readLog(repository: Repository, after: LogCursor | null, count: number): Promise<LogPage> {
+  return invoke("read_log", { repository, after, count });
 }
 
 /** The message of the last commit, or null when there is no commit yet. Rejects with a {@link Failure}. */

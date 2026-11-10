@@ -11,9 +11,10 @@ use std::path::PathBuf;
 
 use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitWarning, Failure,
-    FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, MoveTarget, Notification,
-    NotificationAction, NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt,
-    Repository, RollbackPlan, RunningOperation, Settings, StagingSide, answer_askpass_request,
+    FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, LogCursor, LogPage, MoveTarget,
+    Notification, NotificationAction, NotificationOutcome, OperationLogEntry, Project,
+    ProjectWindow, Prompt, Repository, RollbackPlan, RunningOperation, Settings, StagingSide,
+    answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -528,6 +529,16 @@ fn set_commit_identity(
 }
 
 #[tauri::command(async)]
+fn read_log(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    after: Option<LogCursor>,
+    count: usize,
+) -> Result<LogPage, Failure> {
+    gikli.read_log(&repository, after.as_ref(), count)
+}
+
+#[tauri::command(async)]
 fn watch_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
     gikli.watch_changes(&repository)
 }
@@ -643,6 +654,7 @@ fn main() {
             amend_with_staged,
             last_commit_message,
             set_commit_identity,
+            read_log,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
             set_staging_mode,

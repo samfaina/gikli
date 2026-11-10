@@ -773,3 +773,114 @@ button:disabled {
 .operation progress {
   flex: 0 0 160px;
 }
+
+/* The log takes the room the changes view leaves in the window. */
+.log {
+  --log-lane-0: #1f5fbf;
+  --log-lane-1: #2a7a2a;
+  --log-lane-2: #b35c00;
+  --log-lane-3: #7a4fb5;
+  --log-lane-4: #00788a;
+  --log-lane-5: #c4262e;
+  --log-lane-6: #6f7a2a;
+  --log-lane-7: #9b3d6b;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 240px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .log {
+    --log-lane-0: #6ea8ff;
+    --log-lane-1: #6cc66c;
+    --log-lane-2: #f0a050;
+    --log-lane-3: #b996ea;
+    --log-lane-4: #4fc6d6;
+    --log-lane-5: #ff7b72;
+    --log-lane-6: #b5c06a;
+    --log-lane-7: #e07fb0;
+  }
+}
+
+.log[hidden] {
+  display: none;
+}
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-title {
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  font-size: 1em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-message:not(:empty) {
+  padding: 8px 16px;
+  color: var(--muted);
+}
+
+.log-list {
+  flex: 1 1 0;
+  overflow: auto;
+}
+
+.log-rows {
+  position: relative;
+}
+
+.log-row {
+  position: absolute;
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: minmax(0, var(--log-graph-width)) minmax(0, 1fr) 160px 130px 80px;
+  align-items: center;
+  gap: 8px;
+  height: var(--log-row-height);
+  padding: 0 16px;
+  white-space: nowrap;
+}
+
+.log-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-author,
+.log-date,
+.log-hash {
+  color: var(--muted);
+}
+
+.log-hash {
+  font-family: monospace;
+}
+
+.log-graph {
+  display: block;
+  overflow: hidden;
+}
+
+.log-graph line {
+  fill: none;
+  stroke-width: 2;
+}
+
+.log-graph .log-lane-0 { stroke: var(--log-lane-0); fill: var(--log-lane-0); }
+.log-graph .log-lane-1 { stroke: var(--log-lane-1); fill: var(--log-lane-1); }
+.log-graph .log-lane-2 { stroke: var(--log-lane-2); fill: var(--log-lane-2); }
+.log-graph .log-lane-3 { stroke: var(--log-lane-3); fill: var(--log-lane-3); }
+.log-graph .log-lane-4 { stroke: var(--log-lane-4); fill: var(--log-lane-4); }
+.log-graph .log-lane-5 { stroke: var(--log-lane-5); fill: var(--log-lane-5); }
+.log-graph .log-lane-6 { stroke: var(--log-lane-6); fill: var(--log-lane-6); }
+.log-graph .log-lane-7 { stroke: var(--log-lane-7); fill: var(--log-lane-7); }

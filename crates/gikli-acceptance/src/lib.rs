@@ -36,6 +36,14 @@ pub const TWO_CHANGELISTS: &str = r#"{
   ]
 }"#;
 
+/// The moment [`TestRepository::git_at`] counts its minutes from, in seconds since the epoch.
+pub const FIRST_MINUTE: i64 = 1_700_000_000;
+
+/// The moment `minute` minutes after [`FIRST_MINUTE`], in seconds since the epoch.
+pub fn minute_as_seconds(minute: i64) -> i64 {
+    FIRST_MINUTE + minute * 60
+}
+
 /// A temporary folder with its own git configuration, holding the repositories of one test.
 pub struct Sandbox {
     dir: Option<TempDir>,
@@ -637,6 +645,26 @@ impl TestRepository {
     pub fn commit_all(&self, message: &str) {
         self.git(&["add", "--all"]);
         self.git(&["commit", "--quiet", "--message", message]);
+    }
+
+    /// Runs plain git in the repository as if the clock said `minute` minutes after
+    /// [`FIRST_MINUTE`], for a test that depends on the order of commit dates, and returns its
+    /// standard output. Panics if git fails.
+    pub fn git_at(&self, minute: i64, args: &[&str]) -> String {
+        let date = format!("{} +0000", minute_as_seconds(minute));
+        let mut env = self.env.clone();
+        env.push(("GIT_AUTHOR_DATE".into(), date.clone().into()));
+        env.push(("GIT_COMMITTER_DATE".into(), date.into()));
+        let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+        run_git(&self.root, &env, &args)
+    }
+
+    /// Commits nothing new, with plain git, at `minute` as in [`Self::git_at`].
+    pub fn commit_at(&self, minute: i64, message: &str) {
+        self.git_at(
+            minute,
+            &["commit", "--quiet", "--allow-empty", "--message", message],
+        );
     }
 
     /// Adds `remote` under `name`.
