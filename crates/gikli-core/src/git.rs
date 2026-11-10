@@ -481,8 +481,13 @@ fn watch_run(
             tell_hook(trace, &mut hook, operation);
             next_trace_read = now + TRACE_READ_INTERVAL;
         }
-        if cancellation.is_requested() && now >= *give_up.get_or_insert(now + process_tree::GRACE) {
-            break;
+        if cancellation.is_requested() {
+            // Again, as the request can miss a process, and one holding git's output keeps this
+            // going.
+            cancellation.request();
+            if now >= *give_up.get_or_insert(now + process_tree::GRACE) {
+                break;
+            }
         }
     }
     stderr.add(&trace.stderr_ended(), operation);

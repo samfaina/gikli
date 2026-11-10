@@ -18,6 +18,10 @@ use gikli_core::{
 /// left alive would take to end: never.
 const DEADLINE: Duration = Duration::from_secs(60);
 
+/// How long gikli waits for a program that left a cancelled run to stop holding git's output.
+#[cfg(unix)]
+const PROGRAM_THAT_LEFT_IS_GIVEN: Duration = Duration::from_secs(5);
+
 /// What a hook writes before it blocks, to find in the operation log.
 const WRITTEN_BEFORE_BLOCKING: &str = "Waiting for the release code";
 
@@ -584,6 +588,69 @@ fn a_program_that_left_the_run_does_not_hold_back_the_cancel() {
             .any(|name| name == BLOCKING_PROGRAM),
         "what stayed in the run ended"
     );
+}
+
+/// A program that joins the run after the cancel went by plays one that the cancel missed while it
+/// was being forked, which no hook can make happen on demand. It holds git's output open, so the
+/// run lasts until it is gone, and that takes less than what a program that left the run is given.
+#[cfg(unix)]
+#[test]
+fn a_program_the_cancel_missed_is_ended_without_holding_back_the_cancel() {
+    if !std::process::Command::new("perl")
+        .args(["-e", "use POSIX;"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("skipped: needs perl with POSIX");
+        return;
+    }
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_commit(&sandbox);
+    let aside = sandbox.root().join("program-is-aside");
+    let cancelled = sandbox.root().join("run-is-cancelled");
+    let joined = sandbox.root().join("program-joined");
+    let script = sandbox.root().join("join-after-the-cancel.pl");
+    fs::write(
+        &script,
+        format!(
+            "use POSIX;\n\
+             my $run = getpgrp();\n\
+             setpgid(0, 0) or die $!;\n\
+             open(my $aside, '>', '{}') or die $!;\n\
+             close($aside);\n\
+             select(undef, undef, undef, 0.02) until -e '{}';\n\
+             setpgid(0, $run) or die $!;\n\
+             open(my $joined, '>', '{}') or die $!;\n\
+             close($joined);\n\
+             exec('sleep', '3600');\n",
+            as_git_writes_it(&aside),
+            as_git_writes_it(&cancelled),
+            as_git_writes_it(&joined),
+        ),
+    )
+    .expect("write the script");
+    sandbox.hook(
+        "post-checkout",
+        &format!("perl '{}' &\n{BLOCKS}", as_git_writes_it(&script)),
+    );
+    let target = sandbox.root().join("clone");
+    let url = file_url(remote.root());
+    let gikli = sandbox.gikli();
+
+    let (result, took) = std::thread::scope(|scope| {
+        let clone = scope.spawn(|| gikli.clone_repository(&url, &target));
+        wait_for_file(&aside);
+        gikli.cancel_operation(the_running_operation(&gikli).id);
+        fs::write(&cancelled, "").expect("say the cancel went by");
+        let started = Instant::now();
+        let result = result_of(clone);
+        (result, started.elapsed())
+    });
+
+    assert!(joined.exists(), "the program joined the run");
+    result.expect("the clone is complete, so it opens");
+    assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+    assert!(took < PROGRAM_THAT_LEFT_IS_GIVEN, "{took:?}");
 }
 
 /// A repository where adding `held.txt` blocks, with the index locked, in a filter that creates

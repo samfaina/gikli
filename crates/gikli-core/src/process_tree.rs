@@ -63,8 +63,7 @@ impl Cancellation {
 
     /// Waits for `child`, the process of the run this reaches. When the run was cancelled, it also
     /// ends the rest of its processes and waits for them, for a bounded time, so that nothing the
-    /// run started is left once this returns. The request alone may not be enough: a signal to a
-    /// process group reaches the processes in it at that moment, so it can miss one being forked.
+    /// run started is left once this returns.
     pub fn wait_for(&self, child: &mut Child) -> io::Result<ExitStatus> {
         let (status, tree) = loop {
             // Locked, so the request never reaches a pid that was already given back.
@@ -79,7 +78,8 @@ impl Cancellation {
         if let Some(tree) = tree {
             let give_up = Instant::now() + GRACE;
             while !tree.is_gone() && Instant::now() < give_up {
-                // Again, for a process that was being started while the request went by.
+                // Again, as the request can miss a process. The run's pid is not given back while
+                // anything of the run is left, which is what was just seen.
                 tree.end();
                 std::thread::sleep(POLL);
             }
@@ -246,6 +246,7 @@ mod platform {
             })
         }
 
+        /// Reaches the processes in the group at this moment, so it can miss one being forked.
         pub fn end(&self) {
             // SAFETY: this takes no pointers. A group with no process left only gives an error.
             unsafe { libc::killpg(self.group, libc::SIGKILL) };
@@ -285,7 +286,7 @@ mod tests {
 
     use super::*;
 
-    fn blocks() -> Command {
+    fn blocking_command() -> Command {
         let mut command = Command::new("sleep");
         command.arg("3600");
         command
@@ -296,10 +297,11 @@ mod tests {
     #[test]
     fn a_process_the_cancel_missed_is_ended_too() {
         let cancellation = Cancellation::default();
-        let mut run = spawn_contained(blocks().process_group(0), &cancellation).expect("start");
+        let mut run =
+            spawn_contained(blocking_command().process_group(0), &cancellation).expect("start");
         cancellation.request();
-        let mut missed = blocks()
-            .process_group(run.id() as i32)
+        let mut missed = blocking_command()
+            .process_group(run.id() as libc::pid_t)
             .spawn()
             .expect("join the group of the run");
 
@@ -307,10 +309,10 @@ mod tests {
             let waiting = scope.spawn(|| cancellation.wait_for(&mut run));
             loop {
                 // In this order: once the wait is over, what is missed has ended if it ever will.
-                // The test is its parent, so the group is only gone once this has collected it.
-                let waited = waiting.is_finished();
+                // The test is its parent, so on Linux the group goes when this collects it.
+                let wait_is_over = waiting.is_finished();
                 let status = missed.try_wait().expect("look at the process");
-                if waited || status.is_some() {
+                if wait_is_over || status.is_some() {
                     break status;
                 }
                 std::thread::sleep(POLL);
