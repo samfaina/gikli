@@ -23,6 +23,48 @@ pub struct ChangeSet {
     pub unversioned_files: ChangeGroup,
     /// The files git ignores, listed only when the user turns ignored files on.
     pub ignored_files: ChangeGroup,
+    /// The git index as Staged and Unstaged changes, in Staging mode.
+    pub staging: Option<StagingArea>,
+}
+
+/// The uncommitted changes of a Repository as the git index divides them, as Staging mode shows
+/// them. A file with one version staged and another on disk is on both sides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagingArea {
+    /// How the index differs from the last commit.
+    pub staged: ChangeGroup,
+    /// How the working tree differs from the index, without the files git does not track yet.
+    pub unstaged: ChangeGroup,
+    /// Whether a merge is in progress, which a commit concludes even with nothing staged.
+    pub merging: bool,
+}
+
+impl StagingArea {
+    /// The `staged` and `unstaged` changes arranged by `grouping`, with `merging` saying whether a
+    /// merge is in progress.
+    pub(crate) fn new(
+        staged: Vec<Change>,
+        unstaged: Vec<Change>,
+        merging: bool,
+        grouping: ChangeGrouping,
+    ) -> Self {
+        Self {
+            staged: ChangeGroup::new(staged, grouping),
+            unstaged: ChangeGroup::new(unstaged, grouping),
+            merging,
+        }
+    }
+}
+
+/// One of the two comparisons of Staging mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StagingSide {
+    /// The index against the last commit.
+    Staged,
+    /// The working tree against the index.
+    Unstaged,
 }
 
 /// A named group of uncommitted changes that belongs to gikli and that git does not know about.
@@ -104,6 +146,7 @@ impl ChangeSet {
         repository: Repository,
         changes: Vec<Change>,
         lists: &Changelists,
+        staging: Option<StagingArea>,
         grouping: ChangeGrouping,
     ) -> Self {
         let mut in_lists = vec![Vec::new(); lists.lists().len()];
@@ -137,6 +180,7 @@ impl ChangeSet {
             changelists,
             unversioned_files: ChangeGroup::new(unversioned, grouping),
             ignored_files: ChangeGroup::new(ignored, grouping),
+            staging,
         }
     }
 
@@ -146,6 +190,24 @@ impl ChangeSet {
             .iter()
             .find(|change| change.path == path)
             .and_then(|change| change.original_path.clone())
+    }
+
+    /// The path the file at `path` was staged as moved or copied from, if it was.
+    pub(crate) fn staged_original_path_of(&self, path: &Path) -> Option<PathBuf> {
+        self.staging
+            .as_ref()?
+            .staged
+            .changes
+            .iter()
+            .find(|change| change.path == path)
+            .and_then(|change| change.original_path.clone())
+    }
+
+    /// Whether the file at `path` is in conflict.
+    pub(crate) fn is_conflicted(&self, path: &Path) -> bool {
+        self.changes
+            .iter()
+            .any(|change| change.path == path && change.status == ChangeStatus::Conflicted)
     }
 
     /// The files before and after `path` in the changes view when arranged by `grouping`, leaving
@@ -162,30 +224,64 @@ impl ChangeSet {
             .map(|list| list.group.changes.clone())
             .collect();
         groups.push(self.unversioned_files.changes.clone());
-        let is_a_change = groups.iter().flatten().any(|change| change.path == path);
         let active = self.changelists.iter().position(|list| list.active);
-        if !is_a_change && let Some(changes) = active.map(|active| &mut groups[active]) {
-            changes.push(Change {
-                path: path.to_path_buf(),
-                status: ChangeStatus::Modified,
-                original_path: None,
-                conflict: None,
-                submodule: None,
-            });
-            changes.sort_by(|left, right| left.path.cmp(&right.path));
-        }
-        let mut files = Vec::new();
-        for changes in groups {
-            for node in ChangeGroup::new(changes, grouping).nodes {
-                node.collect_files(&mut files);
-            }
-        }
-        let Some(place) = files.iter().position(|file| file == path) else {
+        neighbors_among(groups, active, path, grouping)
+    }
+
+    /// The files before and after `path` among those on `side` in the changes view of Staging mode
+    /// when arranged by `grouping`, with Unversioned Files after the Unstaged changes. A file that
+    /// is not on that side takes the place it would have there, as the user can still be looking
+    /// at it when it leaves. None outside Staging mode.
+    pub(crate) fn neighbors_on_side(
+        &self,
+        path: &Path,
+        side: StagingSide,
+        grouping: ChangeGrouping,
+    ) -> (Option<PathBuf>, Option<PathBuf>) {
+        let Some(staging) = &self.staging else {
             return (None, None);
         };
-        let before = place.checked_sub(1).and_then(|before| files.get(before));
-        (before.cloned(), files.get(place + 1).cloned())
+        let groups = match side {
+            StagingSide::Staged => vec![staging.staged.changes.clone()],
+            StagingSide::Unstaged => vec![
+                staging.unstaged.changes.clone(),
+                self.unversioned_files.changes.clone(),
+            ],
+        };
+        neighbors_among(groups, Some(0), path, grouping)
     }
+}
+
+/// The files before and after `path` when `groups` are shown in order, each arranged by `grouping`.
+/// A file in none of them takes the place it would have in the group at `home`, when there is one.
+fn neighbors_among(
+    mut groups: Vec<Vec<Change>>,
+    home: Option<usize>,
+    path: &Path,
+    grouping: ChangeGrouping,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let is_a_change = groups.iter().flatten().any(|change| change.path == path);
+    if !is_a_change && let Some(changes) = home.map(|home| &mut groups[home]) {
+        changes.push(Change {
+            path: path.to_path_buf(),
+            status: ChangeStatus::Modified,
+            original_path: None,
+            conflict: None,
+            submodule: None,
+        });
+        changes.sort_by(|left, right| left.path.cmp(&right.path));
+    }
+    let mut files = Vec::new();
+    for changes in groups {
+        for node in ChangeGroup::new(changes, grouping).nodes {
+            node.collect_files(&mut files);
+        }
+    }
+    let Some(place) = files.iter().position(|file| file == path) else {
+        return (None, None);
+    };
+    let before = place.checked_sub(1).and_then(|before| files.get(before));
+    (before.cloned(), files.get(place + 1).cloned())
 }
 
 /// The subfolders and files of one folder, while the tree is being built.
@@ -435,18 +531,104 @@ pub(crate) struct Status {
     /// Where the index has each file moved and then removed from disk, by the path the last commit
     /// has it at. Such a file shows only as deleted at that path.
     pub moved_and_removed: BTreeMap<PathBuf, PathBuf>,
+    /// How the index differs from the last commit, ordered by path.
+    pub staged: Vec<Change>,
+    /// How the working tree differs from the index, ordered by path, without the files git does not
+    /// track yet.
+    pub unstaged: Vec<Change>,
 }
 
 impl Status {
     /// Reads the output of `git` [`status_args`].
     pub fn parse(output: &[u8]) -> Self {
         let mut moved_and_removed = BTreeMap::new();
+        let mut sides = IndexSides::default();
+        let changes = parse_changes(output, &mut moved_and_removed, &mut sides);
+        sides
+            .staged
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        sides
+            .unstaged
+            .sort_by(|left, right| left.path.cmp(&right.path));
         Self {
-            changes: parse_changes(output, &mut moved_and_removed),
+            changes,
             head: parse_head(output),
             moved_and_removed,
+            staged: sides.staged,
+            unstaged: sides.unstaged,
         }
     }
+}
+
+impl Status {
+    /// The paths among `paths` that have something staged, each staged move with the path it came
+    /// from, as it is two changes to git.
+    pub fn staged_paths(&self, paths: &[String]) -> Vec<String> {
+        let text_of = |path: &Path| path.to_string_lossy().into_owned();
+        let mut staged = Vec::new();
+        for change in &self.staged {
+            if paths.iter().any(|path| Path::new(path) == change.path) {
+                staged.push(text_of(&change.path));
+                staged.extend(change.renamed_from().map(text_of));
+            }
+        }
+        staged
+    }
+}
+
+/// The two sides of the index, while the status is being read.
+#[derive(Default)]
+struct IndexSides {
+    staged: Vec<Change>,
+    unstaged: Vec<Change>,
+}
+
+impl IndexSides {
+    /// Adds a file at `path` to the sides its `XY` field names. `original_path` is where a rename
+    /// or a copy came from, on the side whose letter says so.
+    fn add(&mut self, xy: &[u8], sub: &[u8], path: &[u8], original_path: Option<&[u8]>) {
+        let [index, worktree] = xy else {
+            return;
+        };
+        if let Some(status) = staged_status(*index) {
+            self.staged.push(Change {
+                original_path: original_path.map(path_from_bytes),
+                ..Change::new(path, status).in_submodule(sub)
+            });
+        }
+        if let Some(status) = unstaged_status(*worktree) {
+            self.unstaged.push(Change {
+                original_path: original_path
+                    .filter(|_| status == ChangeStatus::Renamed)
+                    .map(path_from_bytes),
+                ..Change::new(path, status).in_submodule(sub)
+            });
+        }
+    }
+}
+
+/// What the `X` of an `XY` field says about a file: how the index differs from the last commit.
+fn staged_status(index: u8) -> Option<ChangeStatus> {
+    Some(match index {
+        b'M' | b'T' => ChangeStatus::Modified,
+        b'A' => ChangeStatus::Added,
+        b'D' => ChangeStatus::Deleted,
+        b'R' => ChangeStatus::Renamed,
+        b'C' => ChangeStatus::Copied,
+        _ => return None,
+    })
+}
+
+/// What the `Y` of an `XY` field says about a file: how the working tree differs from the index.
+/// `A` is a file added with `--intent-to-add`, and `R` one of those that git found moved.
+fn unstaged_status(worktree: u8) -> Option<ChangeStatus> {
+    Some(match worktree {
+        b'M' | b'T' => ChangeStatus::Modified,
+        b'A' => ChangeStatus::Added,
+        b'D' => ChangeStatus::Deleted,
+        b'R' => ChangeStatus::Renamed,
+        _ => return None,
+    })
 }
 
 fn parse_head(output: &[u8]) -> Option<String> {
@@ -457,7 +639,11 @@ fn parse_head(output: &[u8]) -> Option<String> {
         .map(|oid| String::from_utf8_lossy(oid).into_owned())
 }
 
-fn parse_changes(output: &[u8], moved_and_removed: &mut BTreeMap<PathBuf, PathBuf>) -> Vec<Change> {
+fn parse_changes(
+    output: &[u8],
+    moved_and_removed: &mut BTreeMap<PathBuf, PathBuf>,
+    sides: &mut IndexSides,
+) -> Vec<Change> {
     let mut records = output.split(|byte| *byte == 0);
     let mut changes = Vec::new();
     while let Some(record) = records.next() {
@@ -465,10 +651,14 @@ fn parse_changes(output: &[u8], moved_and_removed: &mut BTreeMap<PathBuf, PathBu
             // `1 XY sub mH mI mW hH hI path`: an ordinary change to a tracked file.
             Some((b'1', _)) => {
                 let mut fields = record.splitn(9, |byte| *byte == b' ').skip(1);
-                let status = fields.next().and_then(tracked_status);
+                let xy = fields.next().unwrap_or_default();
                 let sub = fields.next().unwrap_or_default();
-                status
-                    .zip(fields.nth(5))
+                let path = fields.nth(5);
+                if let Some(path) = path {
+                    sides.add(xy, sub, path, None);
+                }
+                tracked_status(xy)
+                    .zip(path)
                     .map(|(status, path)| Change::new(path, status).in_submodule(sub))
             }
             // `2 XY sub mH mI mW hH hI Xscore path`, then `origPath` as the next record: a
@@ -482,6 +672,7 @@ fn parse_changes(output: &[u8], moved_and_removed: &mut BTreeMap<PathBuf, PathBu
                     .nth(6)
                     .zip(original_path)
                     .and_then(|(path, original_path)| {
+                        sides.add(xy, sub, path, Some(original_path));
                         if xy == b"RD" {
                             moved_and_removed
                                 .insert(path_from_bytes(original_path), path_from_bytes(path));
@@ -495,9 +686,14 @@ fn parse_changes(output: &[u8], moved_and_removed: &mut BTreeMap<PathBuf, PathBu
                 let mut fields = record.splitn(11, |byte| *byte == b' ').skip(1);
                 let conflict = fields.next().and_then(ConflictKind::from_xy);
                 let sub = fields.next().unwrap_or_default();
-                fields.nth(7).map(|path| Change {
-                    conflict,
-                    ..Change::new(path, ChangeStatus::Conflicted).in_submodule(sub)
+                fields.nth(7).map(|path| {
+                    let change = Change {
+                        conflict,
+                        ..Change::new(path, ChangeStatus::Conflicted).in_submodule(sub)
+                    };
+                    // Nothing about it is ready to commit until the user resolves it.
+                    sides.unstaged.push(change.clone());
+                    change
                 })
             }
             // `? path`

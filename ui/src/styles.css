@@ -551,6 +551,15 @@ button:disabled {
   user-select: none;
 }
 
+/* A staged change is marked on the row itself, as a file can be on both sides. */
+.change[data-side="staged"] .change-status::before {
+  content: "\2713\00a0";
+}
+
+.change[data-side="staged"] .change-path {
+  font-weight: 600;
+}
+
 .changes li.change.selected {
   background: color-mix(in srgb, var(--accent) 25%, transparent);
 }

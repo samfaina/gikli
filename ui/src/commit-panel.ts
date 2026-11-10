@@ -2,7 +2,9 @@
 
 import {
   amendLastCommit,
+  amendWithStaged,
   commitFiles,
+  commitStaged,
   commitWarning,
   isFailure,
   lastCommitMessage,
@@ -99,7 +101,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   let prefillRequests = 0;
 
   const updateSubmit = (): void => {
-    submit.disabled = committing || ticked.size === 0 || message.value.trim() === "";
+    const staging = shownChanges?.staging ?? null;
+    const nothingToCommit = staging !== null ? staging.staged.changes.length === 0 && !staging.merging : ticked.size === 0;
+    submit.disabled = committing || nothingToCommit || message.value.trim() === "";
     submit.textContent = t(amend.checked ? "commitSubmitAmend" : "commitSubmit");
   };
   message.addEventListener("input", () => {
@@ -137,7 +141,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     if (shownChanges === null || message.value !== prefilled) {
       return;
     }
-    const paths = [...ticked].sort();
+    // Staging mode commits no Changelist, so no comment of one starts the message.
+    const paths = shownChanges.staging !== null ? [] : [...ticked].sort();
     const askedFor = JSON.stringify([amend.checked, paths, shownChanges.changelists.map((list) => [list.id, list.comment])]);
     // The last commit can change whenever the changes are read again, so an amend asks each time.
     if (askedFor === prefilledFor && !amend.checked) {
@@ -207,9 +212,41 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     return section;
   };
 
+  /** What a commit in Staging mode takes: the Staged changes, which nothing here can change. */
+  const stagedView = (changes: Change[]): HTMLElement => {
+    const section = document.createElement("div");
+    section.dataset.testid = "commit-staged";
+    const heading = document.createElement("div");
+    heading.className = "changelist-form-check commit-group";
+    heading.textContent = t("stagedChanges");
+    section.append(heading);
+    for (const change of changes) {
+      const row = document.createElement("div");
+      row.className = "changelist-form-check commit-file";
+      row.dataset.testid = "commit-file";
+      row.dataset.path = change.path;
+      row.textContent = t("commitFile", { path: change.path, description: host.describeChange(change) });
+      section.append(row);
+    }
+    return section;
+  };
+
   /** Draws the files, keeping the focus on the checkbox that had it. */
   function draw(): void {
     if (shownChanges === null) {
+      return;
+    }
+    if (shownChanges.staging !== null) {
+      const staged = shownChanges.staging.staged.changes;
+      if (staged.length === 0) {
+        const none = document.createElement("p");
+        none.textContent = t("commitNothingStaged");
+        files.replaceChildren(none);
+      } else {
+        files.replaceChildren(stagedView(staged));
+      }
+      updateSubmit();
+      void prefillMessage();
       return;
     }
     const focused = files.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.tick : undefined;
@@ -273,7 +310,11 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       return;
     }
     try {
-      await (amend.checked ? amendLastCommit : commitFiles)(host.repository, [...ticked], message.value);
+      if (shownChanges?.staging != null) {
+        await (amend.checked ? amendWithStaged : commitStaged)(host.repository, message.value);
+      } else {
+        await (amend.checked ? amendLastCommit : commitFiles)(host.repository, [...ticked], message.value);
+      }
       // The next commit is a new one unless the user says otherwise.
       amend.checked = false;
       if ((await settings()).clearCommitMessageAfterCommit) {

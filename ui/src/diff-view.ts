@@ -10,11 +10,14 @@ import { Decoration, EditorView, WidgetType, drawSelection, highlightSpecialChar
 
 import {
   readDiff,
+  readStagingDiff,
   saveLocalFile,
+  saveUnstagedFile,
   type FileDiff,
   type LineRange,
   type LocalReadOnly,
   type Repository,
+  type StagingSide,
   type TextDiff,
 } from "./core";
 import { element, hasShortcutKey, isMac } from "./dom";
@@ -31,8 +34,8 @@ export interface DiffViewHost {
 }
 
 export interface DiffView {
-  /** Shows the diff of the file at `path`, first saving what the user edited in the file shown. */
-  open(repository: Repository, path: string): Promise<void>;
+  /** Shows the diff of the file at `path` on `side` of the index, or against HEAD when it is left out, first saving what the user edited in the file shown. */
+  open(repository: Repository, path: string, side?: StagingSide | null): Promise<void>;
   /** Saves what the user edited and goes back to the changes view. Stays when that fails. */
   close(): Promise<void>;
   /** Saves what the user edited, and returns whether nothing is left unsaved. */
@@ -46,6 +49,8 @@ export interface DiffView {
 /** The file shown, with what it takes to show it and to save it. */
 interface Shown {
   diff: FileDiff;
+  /** The side of the index asked for, which next and previous file stay on. A conflicted file has a diff on no side. */
+  side: StagingSide | null;
   /** The editors, when the file has a text diff. */
   merge: MergeView | null;
   /** The local side as it is on disk. */
@@ -57,7 +62,13 @@ const READ_ONLY_LABELS: Record<LocalReadOnly, StringKey> = {
   noLocalFile: "diffLocalSideMissing",
   notUtf8: "diffLocalSideNotUtf8",
   symbolicLink: "diffLocalSideLink",
+  index: "diffLocalSideIndex",
 };
+
+/** The diff of the file at `path` on `side` of the index, or against HEAD when `side` is null. */
+function readFile(repository: Repository, path: string, side: StagingSide | null): Promise<FileDiff> {
+  return side === null ? readDiff(repository, path) : readStagingDiff(repository, path, side);
+}
 
 /** Brings back the lines of the collapsed region with this index. */
 const expandRegion = StateEffect.define<number>();
@@ -206,8 +217,8 @@ export function createDiffView(host: DiffViewHost): DiffView {
     message.replaceChildren(document.createTextNode(text));
   }
 
-  /** Shows `diff`. With `keepPlace`, stays where the user was in the same file. */
-  function show(diff: FileDiff, keepPlace: boolean): void {
+  /** Shows `diff`, read for `side`. With `keepPlace`, stays where the user was in the same file. */
+  function show(diff: FileDiff, side: StagingSide | null, keepPlace: boolean): void {
     const scrollTop = keepPlace ? (shown?.merge?.dom.scrollTop ?? 0) : 0;
     shown?.merge?.destroy();
     content.replaceChildren();
@@ -215,6 +226,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
     const merge = diff.content.kind === "text" ? showText(diff.content) : null;
     shown = {
       diff,
+      side,
       merge,
       savedLocal: merge?.b.state.doc ?? Text.empty,
     };
@@ -324,7 +336,12 @@ export function createDiffView(host: DiffViewHost): DiffView {
     saveButton.hidden = diff.content.kind !== "text" || diff.content.localReadOnly !== null;
     saveButton.disabled = !hasEdits();
     const text = diff.content.kind === "text" ? diff.content : null;
-    headLabel.textContent = t(text !== null && text.head === null ? "diffHeadSideMissing" : "diffHeadSide");
+    const headSideMissing = text !== null && text.head === null;
+    if (diff.side === "unstaged") {
+      headLabel.textContent = t(headSideMissing ? "diffIndexSideMissing" : "diffIndexSide");
+    } else {
+      headLabel.textContent = t(headSideMissing ? "diffHeadSideMissing" : "diffHeadSide");
+    }
     const readOnly = text?.localReadOnly ?? null;
     const edited = hasEdits() ? "diffLocalSideEdited" : "diffLocalSide";
     localLabel.textContent = t(readOnly === null ? edited : READ_ONLY_LABELS[readOnly]);
@@ -340,7 +357,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
     if (merge === null) {
       // A file without a text diff has one place to look, so the review moves on from it.
       if (direction === 1 && diff.afterLastDifference !== null) {
-        await open(diff.repository, diff.afterLastDifference);
+        await open(diff.repository, diff.afterLastDifference, shown.side);
       }
       return;
     }
@@ -356,7 +373,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
       }
       placeCursor(merge, target.fromB);
     } else if (direction === 1 && diff.afterLastDifference !== null) {
-      await open(diff.repository, diff.afterLastDifference);
+      await open(diff.repository, diff.afterLastDifference, shown.side);
     } else {
       say(t(direction === 1 ? "diffNoNextDifference" : "diffNoPreviousDifference"));
     }
@@ -365,21 +382,21 @@ export function createDiffView(host: DiffViewHost): DiffView {
   async function moveToFile(direction: "previous" | "next"): Promise<void> {
     const path = direction === "previous" ? shown?.diff.previousFile : shown?.diff.nextFile;
     if (shown !== null && path != null) {
-      await open(shown.diff.repository, path);
+      await open(shown.diff.repository, path, shown.side);
     }
   }
 
-  async function open(repository: Repository, path: string): Promise<void> {
+  async function open(repository: Repository, path: string, side: StagingSide | null = null): Promise<void> {
     if (!(await saveEdits())) {
       return;
     }
     const asked = ++lastOpen;
     try {
-      const diff = await readDiff(repository, path);
+      const diff = await readFile(repository, path, side);
       if (asked === lastOpen) {
         section.hidden = false;
         host.opened();
-        show(diff, false);
+        show(diff, side, false);
       }
     } catch (error) {
       if (asked !== lastOpen) {
@@ -426,7 +443,8 @@ export function createDiffView(host: DiffViewHost): DiffView {
     }
     const edited = merge.b.state.doc;
     try {
-      const saved = await saveLocalFile(file.diff.repository, file.diff.path, edited.toString(), file.diff.content.localVersion);
+      const save = file.side === "unstaged" ? saveUnstagedFile : saveLocalFile;
+      const saved = await save(file.diff.repository, file.diff.path, edited.toString(), file.diff.content.localVersion);
       // The editors stay as they are, with the user's cursor and undo history, and already show this text.
       file.diff = saved;
       file.savedLocal = edited;
@@ -455,7 +473,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
         return;
       }
       try {
-        show(await readDiff(file.diff.repository, file.diff.path), true);
+        show(await readFile(file.diff.repository, file.diff.path, file.side), file.side, true);
       } catch (error) {
         message.replaceChildren(host.errorView(error));
       }
@@ -489,7 +507,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
     // `shown` also changes when a file asked for before this read arrives first.
     const stillCounts = (): boolean => opened === lastOpen && asked === lastRefresh && shown === file;
     try {
-      const fresh = await readDiff(diff.repository, diff.path);
+      const fresh = await readFile(diff.repository, diff.path, file.side);
       if (!stillCounts() || shown === null || saving !== null || hasEdits()) {
         return;
       }
@@ -497,7 +515,7 @@ export function createDiffView(host: DiffViewHost): DiffView {
         shown.diff = fresh;
         updateControls();
       } else {
-        show(fresh, true);
+        show(fresh, file.side, true);
       }
     } catch (error) {
       if (stillCounts()) {

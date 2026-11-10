@@ -66,6 +66,13 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 ### Changelists
 
 - Changelist mode is the default; Staging mode is a setting. Changelists survive a switch to Staging mode and back.
+- Changelists keep following the changes while Staging mode is on, so a change made meanwhile is in the Active changelist on the way back and a file committed meanwhile has left its Changelist. Staging and unstaging move no file between Changelists.
+- In Staging mode a commit takes the index as it is, and an amend adds the index to the last commit. Either one needs something staged, except a commit that concludes a merge, which can stage nothing when the merge kept what HEAD has. New files stay in Unversioned Files until they are staged, and a conflicted file is an Unstaged change, whose diff compares with HEAD as the index holds no one version of it.
+- Staging a conflicted file marks it resolved, as in git, whatever it holds. So Stage All and Stage Tracked are not offered while a file is in conflict, and each one is staged on its own.
+- Rollback is not offered on Staged and Unstaged changes yet. It discards every version of a file down to HEAD, and a file on both sides needs a rollback that keeps the other side.
+- Unstaging a move takes both of its paths out of the index, as a move is one row and two changes to git.
+- In Staging mode next and previous file stay on the side of the diff the user opened: Staged, or Unstaged followed by Unversioned Files. A file with changes on both sides would otherwise be its own next file.
+- The index side of a Staged diff is read-only. Editing the index is part of the hunk and line staging of Scope 2.
 - The Active changelist cannot be deleted; another one must be made active first. Deleting any other Changelist moves its changes to the Active changelist. At least one Changelist always exists.
 - "Changes" is only the initial Changelist. It can be renamed and deleted like any other.
 - A Changelist needs a name, and no two Changelists of a Repository share one, so the user can tell them apart. The description is optional.

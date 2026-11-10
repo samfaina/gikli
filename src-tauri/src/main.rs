@@ -13,7 +13,7 @@ use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitWarning, Failure,
     FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, MoveTarget, Notification,
     NotificationAction, NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt,
-    Repository, RollbackPlan, RunningOperation, Settings, answer_askpass_request,
+    Repository, RollbackPlan, RunningOperation, Settings, StagingSide, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -115,6 +115,11 @@ fn set_clear_commit_message_after_commit(
     clear: bool,
 ) -> Result<Settings, Failure> {
     gikli.set_clear_commit_message_after_commit(clear)
+}
+
+#[tauri::command]
+fn set_staging_mode(gikli: State<'_, Gikli>, enabled: bool) -> Result<Settings, Failure> {
+    gikli.set_staging_mode(enabled)
 }
 
 #[tauri::command]
@@ -353,6 +358,27 @@ fn read_diff(
 }
 
 #[tauri::command(async)]
+fn read_staging_diff(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    path: String,
+    side: StagingSide,
+) -> Result<FileDiff, Failure> {
+    gikli.read_staging_diff(&repository, &path, side)
+}
+
+#[tauri::command(async)]
+fn save_unstaged_file(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    path: String,
+    text: String,
+    version: String,
+) -> Result<FileDiff, Failure> {
+    gikli.save_unstaged_file(&repository, &path, &text, &version)
+}
+
+#[tauri::command(async)]
 fn save_local_file(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -379,6 +405,25 @@ fn force_add_files(
     paths: Vec<String>,
 ) -> Result<(), Failure> {
     gikli.force_add_files(&repository, &paths)
+}
+
+#[tauri::command(async)]
+fn stage_all(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
+    gikli.stage_all(&repository)
+}
+
+#[tauri::command(async)]
+fn stage_tracked(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
+    gikli.stage_tracked(&repository)
+}
+
+#[tauri::command(async)]
+fn unstage_files(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+) -> Result<(), Failure> {
+    gikli.unstage_files(&repository, &paths)
 }
 
 #[tauri::command(async)]
@@ -443,6 +488,24 @@ fn amend_last_commit(
     message: String,
 ) -> Result<ChangeSet, Failure> {
     gikli.amend_last_commit(&repository, &paths, &message)
+}
+
+#[tauri::command(async)]
+fn commit_staged(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    message: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.commit_staged(&repository, &message)
+}
+
+#[tauri::command(async)]
+fn amend_with_staged(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    message: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.amend_with_staged(&repository, &message)
 }
 
 #[tauri::command(async)]
@@ -561,9 +624,14 @@ fn main() {
             set_changelist_comment,
             move_changes,
             read_diff,
+            read_staging_diff,
             save_local_file,
+            save_unstaged_file,
             add_files,
             force_add_files,
+            stage_all,
+            stage_tracked,
+            unstage_files,
             rollback_plan,
             rollback_files,
             previous_commit_messages,
@@ -571,10 +639,13 @@ fn main() {
             commit_warning,
             commit_files,
             amend_last_commit,
+            commit_staged,
+            amend_with_staged,
             last_commit_message,
             set_commit_identity,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
+            set_staging_mode,
             watch_changes,
             unwatch_changes,
             startup_folder

@@ -14,6 +14,7 @@ use crate::{Failure, failure_of, git_failed_to_start, trace};
 const PREVIOUS_MESSAGES_OFFERED: usize = 20;
 
 /// What a commit of a selection of changes works on.
+#[derive(Default)]
 pub(crate) struct Selection {
     /// The selected Unversioned Files, which git has to know before it can commit them.
     pub unversioned: Vec<String>,
@@ -76,8 +77,17 @@ pub(crate) enum CommitKind {
     Amend,
 }
 
-/// What git reads for one commit: the message and the paths, which do not fit on a command line
-/// when a Changelist is large. The files are in gikli's folder of the git directory, the one place
+/// What a commit records.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitScope {
+    /// The working tree content of the selected paths, as in Changelist mode.
+    Selection,
+    /// The git index as it is, as in Staging mode.
+    Index,
+}
+
+/// What git reads for one commit or one unstaging: the message and the paths, which do not fit on
+/// a command line when a Changelist is large. The files are in gikli's folder of the git directory, the one place
 /// git inside WSL and gikli on Windows both reach by a path of their own. They go when this is
 /// dropped.
 pub(crate) struct CommitInput {
@@ -136,13 +146,29 @@ impl CommitInput {
             .then(|| self.command_on(UNVERSIONED_PATHS, &["rm", "--quiet", "--force", "--cached"]))
     }
 
-    /// The arguments after `git` that commit the selection. The message goes in as written: the
-    /// cleanup is not left to `commit.cleanup`, and `commit.verbose` would cut it at a scissors line.
-    pub fn commit_command(&self, kind: CommitKind) -> Vec<String> {
-        let mut command = self.command_on(
-            PATHS,
-            &["commit", "--only", "--cleanup=verbatim", "--no-verbose"],
-        );
+    /// The arguments after `git` that take the paths out of the index and leave the working tree.
+    /// `git restore` needs a commit to restore from, when `has_commits` says there is none.
+    pub fn unstage_command(&self, has_commits: bool) -> Vec<String> {
+        let command: &[&str] = if has_commits {
+            &["restore", "--staged"]
+        } else {
+            &["rm", "--quiet", "--force", "--cached"]
+        };
+        self.command_on(PATHS, command)
+    }
+
+    /// The arguments after `git` that commit `scope`. The message goes in as written: the cleanup
+    /// is not left to `commit.cleanup`, and `commit.verbose` would cut it at a scissors line.
+    pub fn commit_command(&self, scope: CommitScope, kind: CommitKind) -> Vec<String> {
+        let mut command = match scope {
+            CommitScope::Selection => self.command_on(
+                PATHS,
+                &["commit", "--only", "--cleanup=verbatim", "--no-verbose"],
+            ),
+            CommitScope::Index => ["commit", "--cleanup=verbatim", "--no-verbose"]
+                .map(str::to_owned)
+                .to_vec(),
+        };
         if kind == CommitKind::Amend {
             command.push("--amend".to_owned());
         }
@@ -351,6 +377,11 @@ pub(crate) fn warning(runner: &GitRunner, root: &Path) -> Result<Option<CommitWa
         .map_err(git_failed_to_start)?
         .success;
     Ok((!on_a_branch).then_some(CommitWarning::DetachedHead))
+}
+
+/// Whether the git directory `git_dir` holds a merge in progress.
+pub(crate) fn is_merging(git_dir: &Path) -> bool {
+    git_dir.join("MERGE_HEAD").is_file()
 }
 
 /// Whether the git directory `git_dir` holds a rebase in progress. `git am` keeps its state in
