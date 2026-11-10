@@ -66,22 +66,21 @@ fn subjects(rows: &[LogRow]) -> Vec<&str> {
     rows.iter().map(|row| row.subject.as_str()).collect()
 }
 
-/// The hashes plain git lists for the whole graph, in its order.
-fn hashes_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&[
-            "log",
-            "--branches",
-            "--remotes",
-            "--tags",
-            "HEAD",
-            "--date-order",
-            "--format=%H",
-        ])
-        .lines()
-        .map(str::to_owned)
-        .collect()
+/// Checks that `rows` are the commits plain git lists from `revisions`, in its order, each with the
+/// parents git gives it.
+fn assert_git_lists(repository: &TestRepository, revisions: &[&str], rows: &[LogRow]) {
+    let mut args = vec!["log", "--date-order", "--format=%H %P"];
+    args.extend(revisions);
+    let by_git: Vec<String> = repository.git(&args).lines().map(str::to_owned).collect();
+    let by_gikli: Vec<String> = rows
+        .iter()
+        .map(|row| format!("{} {}", row.hash, row.parents.join(" ")))
+        .collect();
+    assert_eq!(by_gikli, by_git);
 }
+
+/// What the log shows: every branch, remote branch and tag, and HEAD.
+const WHOLE_GRAPH: &[&str] = &["--branches", "--remotes", "--tags", "HEAD"];
 
 #[test]
 fn every_branch_remote_branch_tag_and_head_show_in_order_of_commit_date() {
@@ -120,11 +119,7 @@ fn every_branch_remote_branch_tag_and_head_show_in_order_of_commit_date() {
             "Base",
         ]
     );
-    let hashes: Vec<&String> = page.rows.iter().map(|row| &row.hash).collect();
-    assert_eq!(
-        hashes,
-        hashes_by_git(&repository).iter().collect::<Vec<_>>()
-    );
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
 #[test]
@@ -145,6 +140,7 @@ fn commits_only_a_stash_or_a_backup_holds_stay_out_of_the_log() {
     let page = gikli.read_log(&root, None, 50).expect("read the log");
 
     assert_eq!(subjects(&page.rows), vec!["Base"]);
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
 #[test]
@@ -159,6 +155,7 @@ fn a_branch_with_commits_shows_while_head_is_on_a_branch_with_none() {
     let page = gikli.read_log(&root, None, 50).expect("read the log");
 
     assert_eq!(subjects(&page.rows), vec!["On main"]);
+    assert_git_lists(&repository, &["--branches"], &page.rows);
 }
 
 /// A row of the graph as a test states it: the subject, the column of the commit, and the lines
@@ -199,6 +196,7 @@ fn a_straight_history_stays_in_one_column() {
             ("First", 0, vec![(0, 0)], vec![]),
         ]
     );
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
 /// A repository where `side` left `main` at Base and was merged back:
@@ -235,15 +233,7 @@ fn a_merge_opens_a_lane_for_the_branch_it_brings_in_and_the_lane_closes_at_the_f
             ("Base", 0, vec![(0, 0)], vec![]),
         ]
     );
-    assert_eq!(page.rows[0].parents.len(), 2);
-    assert_eq!(
-        repository
-            .git(&["log", "-1", "--format=%P"])
-            .split_whitespace()
-            .count(),
-        2,
-        "git agrees the top commit is a merge"
-    );
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
 #[test]
@@ -272,6 +262,7 @@ fn branches_that_run_in_parallel_each_keep_a_lane_until_they_meet() {
             ("Base", 0, vec![(0, 0)], vec![]),
         ]
     );
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
 #[test]
@@ -315,6 +306,46 @@ fn a_merge_of_three_branches_gives_each_one_its_own_lane() {
             ("Base", 0, vec![(0, 0)], vec![]),
         ]
     );
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
+}
+
+#[test]
+fn a_commit_two_merges_bring_in_keeps_one_lane() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base");
+    repository.git(&["switch", "--quiet", "--create", "side"]);
+    repository.commit_at(2, "Side");
+    repository.git(&["switch", "--quiet", "--create", "other", "main"]);
+    let merge = |minute, message| {
+        repository.git_at(
+            minute,
+            &["merge", "--quiet", "--no-ff", "--message", message, "side"],
+        );
+    };
+    merge(4, "Merge two");
+    repository.git(&["switch", "--quiet", "main"]);
+    merge(3, "Merge one");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let page = gikli.read_log(&root, None, 50).expect("read the log");
+
+    assert_eq!(
+        drawn(&page.rows),
+        vec![
+            ("Merge two", 0, vec![], vec![(0, 0), (0, 1)]),
+            (
+                "Merge one",
+                2,
+                vec![(0, 0), (1, 1)],
+                vec![(0, 0), (1, 1), (2, 0), (2, 1)]
+            ),
+            ("Side", 1, vec![(0, 0), (1, 1)], vec![(0, 0), (1, 0)]),
+            ("Base", 0, vec![(0, 0)], vec![]),
+        ]
+    );
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
 #[test]
@@ -344,6 +375,7 @@ fn a_new_tip_takes_the_first_free_lane_and_unrelated_histories_each_get_one() {
             ("Root a", 1, vec![(1, 1)], vec![]),
         ]
     );
+    assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
 /// Every page of the log of `root`, `count` commits at a time.
@@ -380,8 +412,7 @@ fn the_log_comes_page_by_page_and_the_graph_goes_on_across_the_pages() {
             ("Base", 0, vec![(0, 0)], vec![]),
         ]
     );
-    let hashes: Vec<String> = rows.into_iter().map(|row| row.hash).collect();
-    assert_eq!(hashes, hashes_by_git(&repository));
+    assert_git_lists(&repository, WHOLE_GRAPH, &rows);
 }
 
 #[test]
@@ -398,6 +429,7 @@ fn the_page_that_reaches_the_oldest_commit_is_the_last() {
     assert_eq!(first.next, None);
     assert_eq!(short.rows.len(), 3);
     assert!(short.next.is_some(), "one commit is left");
+    assert_git_lists(&repository, WHOLE_GRAPH, &first.rows);
 }
 
 #[test]
@@ -416,6 +448,48 @@ fn a_page_asked_for_after_the_history_moved_says_so_instead_of_showing_the_wrong
         repository.git(&["log", "-1", "--format=%s"]),
         "Made after the first page\n"
     );
+}
+
+#[test]
+fn a_page_asked_for_after_a_branch_was_replaced_says_so_even_when_the_last_commit_stayed_in_place()
+{
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base");
+    repository.git(&["switch", "--quiet", "--create", "side"]);
+    repository.commit_at(2, "Below the page");
+    repository.commit_at(8, "Replaced one");
+    repository.commit_at(9, "Replaced two");
+    repository.git(&["switch", "--quiet", "main"]);
+    repository.commit_at(7, "Last of the page");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let first = gikli.read_log(&root, None, 3).expect("read the log");
+    assert_eq!(
+        subjects(&first.rows),
+        vec!["Replaced two", "Replaced one", "Last of the page"]
+    );
+
+    repository.git(&["switch", "--quiet", "side"]);
+    repository.git(&["reset", "--quiet", "--hard", "main~1"]);
+    repository.commit_at(10, "New one");
+    repository.commit_at(11, "New two");
+    assert_eq!(
+        repository.git(&[
+            "log",
+            "--branches",
+            "--date-order",
+            "--skip=2",
+            "-1",
+            "--format=%s"
+        ]),
+        "Last of the page\n",
+        "the last commit of the page is where it was"
+    );
+
+    let next = gikli.read_log(&root, first.next.as_ref(), 3);
+
+    assert_eq!(next, Err(Failure::LogChanged));
 }
 
 #[test]

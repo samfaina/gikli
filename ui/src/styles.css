@@ -776,7 +776,6 @@ button:disabled {
 
 /* The log takes the room the changes view leaves in the window. */
 .log {
-  --log-row-height: 26px;
   --log-lane-0: #1f5fbf;
   --log-lane-1: #2a7a2a;
   --log-lane-2: #b35c00;

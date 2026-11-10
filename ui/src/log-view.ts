@@ -24,7 +24,7 @@ export interface LogView {
 
 /** Commits to a page: enough to fill the list several times over. */
 const PAGE_SIZE = 200;
-/** The height of a row in pixels, the same as `--log-row-height` in the styles. */
+/** The height of a row in pixels. */
 const ROW_HEIGHT = 26;
 /** Rows drawn beyond each end of the view, and how close to the end the next page is asked for. */
 const ROWS_BEYOND_VIEW = 30;
@@ -51,7 +51,7 @@ export function createLogView(host: LogViewHost): LogView {
   let next: LogCursor | null = null;
   let loading = false;
   /** Tells the answer to the latest read from one that a refresh or a close overtook. */
-  let reads = 0;
+  let latestRead = 0;
   let columns = 1;
   let drawScheduled = false;
 
@@ -77,7 +77,7 @@ export function createLogView(host: LogViewHost): LogView {
       return;
     }
     repository = null;
-    reads += 1;
+    latestRead += 1;
     rows = [];
     next = null;
     loading = false;
@@ -100,12 +100,12 @@ export function createLogView(host: LogViewHost): LogView {
     if (repository === null) {
       return;
     }
-    reads += 1;
-    const read = reads;
+    latestRead += 1;
+    const thisRead = latestRead;
     loading = true;
     try {
       const page = await readLog(repository, after, PAGE_SIZE);
-      if (read !== reads) {
+      if (thisRead !== latestRead) {
         return;
       }
       loading = false;
@@ -115,7 +115,7 @@ export function createLogView(host: LogViewHost): LogView {
       message.replaceChildren(rows.length === 0 ? t("logEmpty") : "");
       draw();
     } catch (error) {
-      if (read !== reads) {
+      if (thisRead !== latestRead) {
         return;
       }
       loading = false;
@@ -148,6 +148,7 @@ export function createLogView(host: LogViewHost): LogView {
     const end = Math.min(rows.length, firstInView + inView + ROWS_BEYOND_VIEW);
     rowsView.style.height = `${(rows.length + (next === null ? 0 : 1)) * ROW_HEIGHT}px`;
     list.style.setProperty("--log-graph-width", `${columns * LANE_WIDTH}px`);
+    list.style.setProperty("--log-row-height", `${ROW_HEIGHT}px`);
     rowsView.replaceChildren(...rows.slice(start, end).map((row, index) => rowView(row, start + index, columns)));
     if (next !== null && !loading && end + ROWS_BEYOND_VIEW >= rows.length) {
       void readPage(next);

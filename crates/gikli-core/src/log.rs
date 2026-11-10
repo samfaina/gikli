@@ -1,8 +1,10 @@
 //! The log: the history of a Repository as a commit list with a graph, read a page at a time.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use serde::{Deserialize, Serialize};
 
-use crate::git::GitRunner;
+use crate::git::{GitRunner, Invocation};
 use crate::{Failure, Repository, commit, failure_of, git_failed_to_start};
 
 /// One page of the log, newest commit first.
@@ -57,9 +59,9 @@ pub struct GraphLine {
 pub struct LogCursor {
     /// How many commits came before this point.
     seen: usize,
-    /// The hash of the commit just before it.
-    last: String,
-    lanes: Vec<Option<String>>,
+    /// A digest of where the log started from, which tells whether the history moved since.
+    tips: String,
+    lanes: Lanes,
 }
 
 /// What git prints of each commit, a field per NUL. `-z` ends each commit with one more.
@@ -69,9 +71,9 @@ const FIELDS: usize = 5;
 /// A page of the log of `repository`: at most `count` commits, and at least one when there are any,
 /// after `after` or from the newest commit.
 ///
-/// A page after another one asks git for the last commit it showed again. When git no longer has it
-/// there, what lies behind it has changed too, and this returns [`Failure::LogChanged`] rather than
-/// going on with lanes that no longer fit.
+/// A later page goes on from the lanes of the page before, which only fit the history they were
+/// laid out for. So it needs the log to start from the same commits as then, and otherwise this
+/// returns [`Failure::LogChanged`].
 pub(crate) fn read(
     runner: &GitRunner,
     repository: &Repository,
@@ -80,10 +82,14 @@ pub(crate) fn read(
 ) -> Result<LogPage, Failure> {
     let count = count.max(1);
     let root = &repository.root;
+    let tips = tips_of(runner, repository)?;
+    if after.is_some_and(|cursor| cursor.tips != tips) {
+        return Err(Failure::LogChanged);
+    }
     let seen = after.map_or(0, |cursor| cursor.seen);
-    let skip = format!("--skip={}", seen.saturating_sub(1));
+    let skip = format!("--skip={seen}");
     // One more than the page, to know whether another comes after it.
-    let max_count = format!("--max-count={}", count + usize::from(after.is_some()) + 1);
+    let max_count = format!("--max-count={}", count + 1);
     let mut args = vec![
         "log",
         "--date-order",
@@ -101,41 +107,62 @@ pub(crate) fn read(
         args.push("HEAD");
     }
     args.push("--");
-    let invocation = runner.run(root, &args).map_err(git_failed_to_start)?;
+    let text = run_git(runner, repository, &args)?.stdout_text();
+    let fields: Vec<&str> = text.split_terminator('\0').collect();
+    let mut commits = fields.chunks_exact(FIELDS);
+    let mut lanes = after.map_or_else(Lanes::default, |cursor| cursor.lanes.clone());
+    let rows: Vec<LogRow> = commits
+        .by_ref()
+        .take(count)
+        .map(|commit| row_of(commit, &mut lanes))
+        .collect();
+    let next = commits.next().map(|_| LogCursor {
+        seen: seen + rows.len(),
+        tips,
+        lanes,
+    });
+    Ok(LogPage {
+        repository: repository.clone(),
+        rows,
+        next,
+    })
+}
+
+/// A digest of the commits the log of `repository` starts from. `--revs-only` leaves out an unborn
+/// HEAD.
+fn tips_of(runner: &GitRunner, repository: &Repository) -> Result<String, Failure> {
+    let tips = run_git(
+        runner,
+        repository,
+        &[
+            "rev-parse",
+            "--revs-only",
+            "--branches",
+            "--remotes",
+            "--tags",
+            "HEAD",
+        ],
+    )?;
+    let mut digest = DefaultHasher::new();
+    tips.stdout.hash(&mut digest);
+    Ok(format!("{:x}", digest.finish()))
+}
+
+/// Runs git with `args` in `repository`, for a read of its log.
+fn run_git(
+    runner: &GitRunner,
+    repository: &Repository,
+    args: &[&str],
+) -> Result<Invocation, Failure> {
+    let root = &repository.root;
+    let invocation = runner.run(root, args).map_err(git_failed_to_start)?;
     if !invocation.success {
         let unreadable = Failure::LogUnreadable {
             folder: root.clone(),
         };
         return Err(failure_of(runner, root, &invocation, unreadable));
     }
-    let text = invocation.stdout_text();
-    let fields: Vec<&str> = text.split_terminator('\0').collect();
-    let mut commits = fields.chunks_exact(FIELDS);
-    if let Some(cursor) = after
-        && commits.next().map(|commit| commit[0]) != Some(cursor.last.as_str())
-    {
-        return Err(Failure::LogChanged);
-    }
-    let commits: Vec<&[&str]> = commits.collect();
-    let mut lanes = Lanes(after.map_or_else(Vec::new, |cursor| cursor.lanes.clone()));
-    let rows: Vec<LogRow> = commits
-        .iter()
-        .take(count)
-        .map(|commit| row_of(commit, &mut lanes))
-        .collect();
-    let next = rows
-        .last()
-        .filter(|_| commits.len() > count)
-        .map(|last| LogCursor {
-            seen: seen + rows.len(),
-            last: last.hash.clone(),
-            lanes: lanes.0,
-        });
-    Ok(LogPage {
-        repository: repository.clone(),
-        rows,
-        next,
-    })
+    Ok(invocation)
 }
 
 fn row_of(fields: &[&str], lanes: &mut Lanes) -> LogRow {
@@ -153,6 +180,8 @@ fn row_of(fields: &[&str], lanes: &mut Lanes) -> LogRow {
 
 /// The lanes of the graph at some row, each with the commit it runs down to. The layout goes from
 /// the newest commit down, so this is all it has to remember between one row and the next.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 struct Lanes(Vec<Option<String>>);
 
 impl Lanes {
@@ -166,7 +195,7 @@ impl Lanes {
         }
         let mut below = self.straight_lines();
         for (index, parent) in parents.iter().enumerate() {
-            let to = self.lane_for_parent(parent, index == 0, column, &mut below);
+            let to = self.route_parent(parent, index == 0, column, &mut below);
             below.push(GraphLine { from: column, to });
         }
         below.sort_unstable();
@@ -180,10 +209,10 @@ impl Lanes {
         }
     }
 
-    /// The lane `parent` of the commit in `column` runs in. A first parent keeps to the column of
-    /// its commit, even when a lane further right was already waiting for it, whose line in `below`
-    /// turns to that column. So the first-parent line of a branch stays straight.
-    fn lane_for_parent(
+    /// Gives `parent` of the commit in `column` its lane, and returns it. A first parent keeps to
+    /// the column of its commit, even when a lane further right was already waiting for it, whose
+    /// line in `below` turns to that column. So the first-parent line of a branch stays straight.
+    fn route_parent(
         &mut self,
         parent: &str,
         first: bool,
