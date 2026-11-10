@@ -436,6 +436,24 @@ fn commit_files(
 }
 
 #[tauri::command(async)]
+fn amend_last_commit(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+    message: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.amend_last_commit(&repository, &paths, &message)
+}
+
+#[tauri::command(async)]
+fn last_commit_message(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<Option<String>, Failure> {
+    gikli.last_commit_message(&repository)
+}
+
+#[tauri::command(async)]
 fn set_commit_identity(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -552,6 +570,8 @@ fn main() {
             prefilled_commit_message,
             commit_warning,
             commit_files,
+            amend_last_commit,
+            last_commit_message,
             set_commit_identity,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,

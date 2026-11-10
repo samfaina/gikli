@@ -1,9 +1,11 @@
 // The panel next to the changes where the user commits a Changelist or selected files. It blocks nothing: the changes stay in reach while it is open.
 
 import {
+  amendLastCommit,
   commitFiles,
   commitWarning,
   isFailure,
+  lastCommitMessage,
   prefilledCommitMessage,
   previousCommitMessages,
   setCommitIdentity,
@@ -52,6 +54,13 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   const files = document.createElement("div");
   files.className = "commit-files";
 
+  const amend = document.createElement("input");
+  amend.type = "checkbox";
+  amend.dataset.testid = "commit-amend";
+  const amendLabel = document.createElement("label");
+  amendLabel.className = "changelist-form-check";
+  amendLabel.append(amend, document.createTextNode(t("commitAmend")));
+
   const message = document.createElement("textarea");
   message.dataset.testid = "commit-message";
   message.rows = 4;
@@ -70,11 +79,10 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.dataset.testid = "commit-submit";
-  submit.textContent = t("commitSubmit");
 
   const identity = identityForm(host.repository, host.errorView, () => void commit());
   const warning = warningForm(() => void commit());
-  view.append(title, files, messageLabel, previousMessages, identity.view, warning.view, result, submit);
+  view.append(title, files, amendLabel, messageLabel, previousMessages, identity.view, warning.view, result, submit);
 
   let ticked = new Set<string>();
   /** The files of the Active changelist the last time, so that one the user unticked is told from one that just came in. */
@@ -91,7 +99,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   let prefillRequests = 0;
 
   const updateSubmit = (): void => {
-    submit.disabled = committing || ticked.size === 0 || message.value.trim() === "";
+    // An amend needs no files: it can change only the message.
+    submit.disabled = committing || (ticked.size === 0 && !amend.checked) || message.value.trim() === "";
+    submit.textContent = t(amend.checked ? "commitSubmitAmend" : "commitSubmit");
   };
   message.addEventListener("input", () => {
     if (message.value === "") {
@@ -118,20 +128,25 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     }
   }
 
-  /** Starts the message from what the ticked files call for, unless the user has written one. */
+  amend.addEventListener("change", () => {
+    updateSubmit();
+    void prefillMessage();
+  });
+
+  /** Starts the message from the last commit when amending, or else from what the ticked files call for, unless the user has written one. */
   async function prefillMessage(): Promise<void> {
     if (shownChanges === null || message.value !== prefilled) {
       return;
     }
     const paths = [...ticked].sort();
-    const askedFor = JSON.stringify([paths, shownChanges.changelists.map((list) => [list.id, list.comment])]);
+    const askedFor = JSON.stringify([amend.checked, paths, shownChanges.changelists.map((list) => [list.id, list.comment])]);
     if (askedFor === prefilledFor) {
       return;
     }
     prefilledFor = askedFor;
     const request = ++prefillRequests;
     try {
-      const text = await prefilledCommitMessage(host.repository, paths);
+      const text = await (amend.checked ? lastCommitMessage(host.repository) : prefilledCommitMessage(host.repository, paths));
       if (request === prefillRequests && message.value === prefilled) {
         message.value = text ?? "";
         // Read back, as the box gives its line ends its own way.
@@ -258,7 +273,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       return;
     }
     try {
-      await commitFiles(host.repository, [...ticked], message.value);
+      await (amend.checked ? amendLastCommit : commitFiles)(host.repository, [...ticked], message.value);
+      // The next commit is a new one unless the user says otherwise.
+      amend.checked = false;
       if ((await settings()).clearCommitMessageAfterCommit) {
         message.value = "";
         prefilled = "";

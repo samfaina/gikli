@@ -633,6 +633,47 @@ describe("gikli", () => {
       assert.equal(await message.getValue(), "Add the feature");
       await setting.click();
     });
+
+    it("amends the last commit from the panel, starting from its message", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      const message = $('[data-testid="commit-message"]');
+      const amend = $('[data-testid="commit-amend"]');
+      const commitNew = async (file) => {
+        fs.writeFileSync(inRepository(file), "new\n");
+        runGit(repository, gitconfig, "add", "--", file);
+        await (await idleRefresh()).click();
+        await expectChangeIn("Moved", file);
+      };
+
+      const first = "committed before the amend.txt";
+      await commitNew(first);
+      await message.setValue("To be amended");
+      await $('[data-testid="commit-submit"]').click();
+      await $(`[data-testid="change"][data-path="${first}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
+      const commits = runGit(repository, gitconfig, "rev-list", "--count", "HEAD");
+
+      const second = "amended from the panel.txt";
+      await commitNew(second);
+      await browser.waitUntil(async () => (await message.getValue()) === "Add the feature", {
+        timeout: 30000,
+        timeoutMsg: "the message was not pre-filled from the comment of the Changelist",
+      });
+      await amend.click();
+      await browser.waitUntil(async () => (await message.getValue()) === "To be amended", {
+        timeout: 30000,
+        timeoutMsg: "the message was not pre-filled from the last commit",
+      });
+
+      await message.setValue("Amended from the panel");
+      await $('[data-testid="commit-submit"]').click();
+
+      await $(`[data-testid="change"][data-path="${second}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.equal(runGit(repository, gitconfig, "rev-list", "--count", "HEAD"), commits, "the last commit is replaced");
+      assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s"), "Amended from the panel\n");
+      assert.deepEqual(runGit(repository, gitconfig, "show", "--format=", "--name-only", "HEAD").trim().split("\n").sort(), [first, second].sort());
+      assert.equal(await amend.isSelected(), false, "the next commit is a new one");
+    });
   });
 
   // In a window of a clone: closing the main window would end the WebDriver session.
