@@ -206,6 +206,28 @@ fn a_folder_outside_any_repository_under_a_wsl_share_is_not_opened() {
     assert!(!repository.is_inside_repository_by_git(&repository.linux_path_beside("notes")));
 }
 
+/// The path in `commit.template` means something only inside the distribution.
+#[test]
+fn a_commit_template_at_a_linux_path_prefills_the_message() {
+    let Some(repository) = WslRepository::create() else {
+        eprintln!("skipped: no WSL with git on this machine");
+        return;
+    };
+    let template = repository.linux_path_beside("template.txt");
+    std::fs::write(repository.windows_path_beside("template.txt"), "From WSL\n")
+        .expect("write the template");
+    repository.git(&["config", "commit.template", &template]);
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli_in(host_with_stand_in_git_and_real_wsl(&sandbox));
+    let project = gikli
+        .open_project(&repository.root())
+        .expect("open project");
+
+    let message = gikli.prefilled_commit_message(&project.repositories[0], &[]);
+
+    assert_eq!(message, Ok(Some("From WSL\n".to_owned())));
+}
+
 /// An environment whose PATH holds the stand-in git, then the real `wsl.exe`.
 fn host_with_stand_in_git_and_real_wsl(sandbox: &Sandbox) -> HostEnvironment {
     let (mut host, _native) = sandbox.host_with_fake_git(fake_git!(), "2.45.2");

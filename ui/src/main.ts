@@ -31,6 +31,7 @@ import {
   setActiveChangelist,
   setChangelistComment,
   setChangeGrouping,
+  setClearCommitMessageAfterCommit,
   setCloneSubmodulesRecursively,
   setDiffLocalSideEditable,
   setGitPath,
@@ -38,6 +39,7 @@ import {
   setOperationLogSoftWrap,
   setShowIgnoredFiles,
   setUseCredentialHelper,
+  setWarnOnUnusualCommitState,
   settings,
   startupFolder,
   takeFailureAction,
@@ -107,6 +109,8 @@ const useCredentialHelperInput = element<HTMLInputElement>("use-credential-helpe
 const cloneSubmodulesInput = element<HTMLInputElement>("clone-submodules-recursively");
 const diffLocalSideEditableInput = element<HTMLInputElement>("diff-local-side-editable");
 const goToNextFileInput = element<HTMLInputElement>("go-to-next-file-after-last-change");
+const warnOnUnusualCommitStateInput = element<HTMLInputElement>("warn-on-unusual-commit-state");
+const clearCommitMessageInput = element<HTMLInputElement>("clear-commit-message-after-commit");
 
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
@@ -143,6 +147,8 @@ element<HTMLElement>("use-credential-helper-hint").textContent = t("useCredentia
 element<HTMLElement>("clone-submodules-recursively-label").textContent = t("cloneSubmodulesRecursively");
 element<HTMLElement>("diff-local-side-editable-label").textContent = t("diffLocalSideEditable");
 element<HTMLElement>("go-to-next-file-after-last-change-label").textContent = t("goToNextFileAfterLastChange");
+element<HTMLElement>("warn-on-unusual-commit-state-label").textContent = t("warnOnUnusualCommitState");
+element<HTMLElement>("clear-commit-message-after-commit-label").textContent = t("clearCommitMessageAfterCommit");
 
 const diffView = createDiffView({
   errorView,
@@ -175,6 +181,8 @@ saveOnChange(goToNextFileInput, async (checked) => {
   void diffView.refresh();
   return saved.goToNextFileAfterLastChange;
 });
+saveOnChange(warnOnUnusualCommitStateInput, async (checked) => (await setWarnOnUnusualCommitState(checked)).warnOnUnusualCommitState);
+saveOnChange(clearCommitMessageInput, async (checked) => (await setClearCommitMessageAfterCommit(checked)).clearCommitMessageAfterCommit);
 
 operationLogButton.addEventListener("click", () => {
   const opening = operationLogPanel.hidden;
@@ -209,6 +217,8 @@ settingsButton.addEventListener("click", async () => {
     cloneSubmodulesInput.checked = current.cloneSubmodulesRecursively;
     diffLocalSideEditableInput.checked = current.diffLocalSideEditable;
     goToNextFileInput.checked = current.goToNextFileAfterLastChange;
+    warnOnUnusualCommitStateInput.checked = current.warnOnUnusualCommitState;
+    clearCommitMessageInput.checked = current.clearCommitMessageAfterCommit;
     gitTestResult.textContent = "";
   }
   settingsPanel.hidden = !opening;
@@ -1706,6 +1716,8 @@ function describeFailure(failure: Failure): string {
       return t("failureCommitFailed", { folder: failure.folder });
     case "commitInputNotWritten":
       return t("failureCommitInputNotWritten", { folder: failure.folder, message: failure.message });
+    case "commitMessagesUnreadable":
+      return t("failureCommitMessagesUnreadable", { folder: failure.folder });
     case "commitIdentityMissing":
       return t("failureCommitIdentityMissing");
     case "commitIdentityEmpty":

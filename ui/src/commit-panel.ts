@@ -1,6 +1,18 @@
 // The panel next to the changes where the user commits a Changelist or selected files. It blocks nothing: the changes stay in reach while it is open.
 
-import { commitFiles, isFailure, setCommitIdentity, type Change, type ChangeSet, type Repository } from "./core";
+import {
+  commitFiles,
+  commitWarning,
+  isFailure,
+  prefilledCommitMessage,
+  previousCommitMessages,
+  setCommitIdentity,
+  settings,
+  type Change,
+  type ChangeSet,
+  type CommitWarning,
+  type Repository,
+} from "./core";
 import { t } from "./strings";
 
 /** What the panel needs from the view of the Repository around it. */
@@ -47,6 +59,11 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   const messageLabel = document.createElement("label");
   messageLabel.append(document.createTextNode(t("commitMessage")), message);
 
+  const previousMessages = document.createElement("select");
+  previousMessages.dataset.testid = "commit-previous-messages";
+  previousMessages.setAttribute("aria-label", t("commitPreviousMessages"));
+  previousMessages.hidden = true;
+
   const result = document.createElement("div");
   result.dataset.testid = "commit-result";
   result.setAttribute("role", "status");
@@ -56,7 +73,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   submit.textContent = t("commitSubmit");
 
   const identity = identityForm(host.repository, host.errorView, () => void commit());
-  view.append(title, files, messageLabel, identity.view, result, submit);
+  const warning = warningForm(() => void commit());
+  view.append(title, files, messageLabel, previousMessages, identity.view, warning.view, result, submit);
 
   let ticked = new Set<string>();
   /** The files of the Active changelist the last time, so that one the user unticked is told from one that just came in. */
@@ -65,11 +83,67 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   let activeId: string | null = null;
   let shownChanges: ChangeSet | null = null;
   let committing = false;
+  /** What gikli last put in the message: while the message is still this, the user has not written over it. Null when what is there has to stay. */
+  let prefilled: string | null = "";
+  /** The ticked files and comments the message was last pre-filled for, so that reading the changes again asks for nothing new. */
+  let prefilledFor = "";
+  /** Tells the last request for a pre-filled message from those it replaced. */
+  let prefillRequests = 0;
 
   const updateSubmit = (): void => {
     submit.disabled = committing || ticked.size === 0 || message.value.trim() === "";
   };
-  message.addEventListener("input", updateSubmit);
+  message.addEventListener("input", () => {
+    if (message.value === "") {
+      prefilled = "";
+    }
+    updateSubmit();
+  });
+
+  previousMessages.addEventListener("change", () => {
+    message.value = previousMessages.value;
+    previousMessages.selectedIndex = 0;
+    updateSubmit();
+  });
+
+  /** Offers the messages of the user's last commits, when there are any. */
+  async function loadPreviousMessages(): Promise<void> {
+    try {
+      const messages = await previousCommitMessages(host.repository);
+      const firstLine = (text: string): string => text.split("\n", 1)[0] ?? text;
+      previousMessages.replaceChildren(new Option(t("commitPreviousMessages"), ""), ...messages.map((text) => new Option(firstLine(text), text)));
+      previousMessages.hidden = messages.length === 0;
+    } catch (error) {
+      result.replaceChildren(host.errorView(error));
+    }
+  }
+
+  /** Starts the message from what the ticked files call for, unless the user has written one. */
+  async function prefillMessage(): Promise<void> {
+    if (shownChanges === null || message.value !== prefilled) {
+      return;
+    }
+    const paths = [...ticked].sort();
+    const askedFor = JSON.stringify([paths, shownChanges.changelists.map((list) => [list.id, list.comment])]);
+    if (askedFor === prefilledFor) {
+      return;
+    }
+    prefilledFor = askedFor;
+    const request = ++prefillRequests;
+    try {
+      const text = await prefilledCommitMessage(host.repository, paths);
+      if (request === prefillRequests && message.value === prefilled) {
+        message.value = text ?? "";
+        // Read back, as the box gives its line ends its own way.
+        prefilled = message.value;
+        updateSubmit();
+      }
+    } catch (error) {
+      if (request === prefillRequests) {
+        result.replaceChildren(host.errorView(error));
+      }
+    }
+  }
 
   const tickBox = (key: string, checked: boolean, toggled: (checked: boolean) => void): HTMLInputElement => {
     const box = document.createElement("input");
@@ -143,19 +217,57 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       [...files.querySelectorAll<HTMLElement>("input")].find((box) => box.dataset.tick === focused)?.focus();
     }
     updateSubmit();
+    void prefillMessage();
   }
 
-  async function commit(): Promise<void> {
+  /** Starts a step of committing and clears what the last one showed. False while one is going on. */
+  function startCommitting(): boolean {
     if (committing) {
-      return;
+      return false;
     }
     committing = true;
     updateSubmit();
     result.replaceChildren();
+    warning.close();
+    return true;
+  }
+
+  /** Commits, unless the Repository is somewhere the user should hear about first. */
+  async function commitUnlessWarned(): Promise<void> {
+    if (!startCommitting()) {
+      return;
+    }
+    try {
+      const found = await commitWarning(host.repository);
+      if (found !== null) {
+        warning.ask(found);
+        return;
+      }
+    } catch (error) {
+      result.replaceChildren(host.errorView(error, () => void commitUnlessWarned()));
+      return;
+    } finally {
+      committing = false;
+      updateSubmit();
+    }
+    await commit();
+  }
+
+  async function commit(): Promise<void> {
+    if (!startCommitting()) {
+      return;
+    }
     try {
       await commitFiles(host.repository, [...ticked], message.value);
-      message.value = "";
+      if ((await settings()).clearCommitMessageAfterCommit) {
+        message.value = "";
+        prefilled = "";
+        prefilledFor = "";
+      } else {
+        prefilled = null;
+      }
       identity.close();
+      void loadPreviousMessages();
       host.committed();
     } catch (error) {
       if (isFailure(error) && error.kind === "commitIdentityMissing") {
@@ -171,10 +283,11 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
 
   view.addEventListener("submit", (event) => {
     event.preventDefault();
-    void commit();
+    void commitUnlessWarned();
   });
 
   updateSubmit();
+  void loadPreviousMessages();
   return {
     view,
     drawn: (changeSet) => {
@@ -195,6 +308,39 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       shownActivePaths = activePaths;
       shownChanges = changeSet;
       draw();
+    },
+  };
+}
+
+/** Says where a commit would go and lets the user go on with it or leave it. */
+function warningForm(proceed: () => void): { view: HTMLElement; ask: (found: CommitWarning) => void; close: () => void } {
+  const view = document.createElement("div");
+  view.className = "changelist-form";
+  view.dataset.testid = "commit-warning";
+  view.setAttribute("role", "alert");
+  view.hidden = true;
+  const text = document.createElement("p");
+  text.dataset.testid = "commit-warning-text";
+
+  const close = (): void => {
+    view.hidden = true;
+  };
+  const button = (testId: string, label: string, clicked: () => void): HTMLButtonElement => {
+    const element = document.createElement("button");
+    element.type = "button";
+    element.dataset.testid = testId;
+    element.textContent = label;
+    element.addEventListener("click", clicked);
+    return element;
+  };
+  view.append(text, button("commit-warning-proceed", t("commitWarningProceed"), proceed), button("commit-warning-cancel", t("commitWarningCancel"), close));
+
+  return {
+    view,
+    close,
+    ask: (found) => {
+      text.textContent = t(found === "rebase" ? "commitWarningRebase" : "commitWarningDetachedHead");
+      view.hidden = false;
     },
   };
 }

@@ -4,9 +4,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::git::GitRunner;
-use crate::status::{Change, ChangeStatus, Status};
-use crate::{Failure, git_failed_to_start, trace};
+use crate::status::{Change, ChangeSet, ChangeStatus, Status};
+use crate::{Failure, failure_of, git_failed_to_start, trace};
+
+/// How many previous commit messages the user can choose from.
+const PREVIOUS_MESSAGES_OFFERED: usize = 20;
 
 /// What a commit of a selection of changes works on.
 pub(crate) struct Selection {
@@ -182,6 +187,129 @@ pub(crate) fn ensure_identity(runner: &GitRunner, root: &Path) -> Result<(), Fai
         });
     }
     Ok(())
+}
+
+/// The messages of the user's last commits in the Repository at `root`, on any local branch, newest
+/// first and each one once. A commit is theirs when it has the `user.email` git has now, so without
+/// one none is. Merges are left out, as git wrote their messages.
+pub(crate) fn previous_messages(runner: &GitRunner, root: &Path) -> Result<Vec<String>, Failure> {
+    let email = runner
+        .run(root, &["config", "--get", "user.email"])
+        .map_err(git_failed_to_start)?;
+    let email = email.stdout_text();
+    let email = email.trim();
+    let has_commits = runner
+        .run(root, &["rev-parse", "--verify", "--quiet", "HEAD"])
+        .map_err(git_failed_to_start)?
+        .success;
+    if email.is_empty() || !has_commits {
+        return Ok(Vec::new());
+    }
+    let author = format!("--author=<{email}>");
+    let max_count = format!("--max-count={PREVIOUS_MESSAGES_OFFERED}");
+    let invocation = runner
+        .run(
+            root,
+            &[
+                "log",
+                "--no-mailmap",
+                "--no-merges",
+                "--fixed-strings",
+                &author,
+                &max_count,
+                "--encoding=UTF-8",
+                "-z",
+                "--format=%B",
+                "HEAD",
+                "--branches",
+            ],
+        )
+        .map_err(git_failed_to_start)?;
+    if !invocation.success {
+        return Err(failure_of(
+            runner,
+            root,
+            &invocation,
+            Failure::CommitMessagesUnreadable {
+                folder: root.to_path_buf(),
+            },
+        ));
+    }
+    let mut messages: Vec<String> = Vec::new();
+    for message in invocation.stdout_text().split('\0') {
+        let message = message.trim_end_matches('\n');
+        if !message.is_empty() && !messages.iter().any(|seen| seen == message) {
+            messages.push(message.to_owned());
+        }
+    }
+    Ok(messages)
+}
+
+/// The comment of the Changelist the changes at `paths` are in, when there is exactly one such
+/// Changelist. Unversioned Files are in none, so they do not count.
+pub(crate) fn comment_of_selection(changes: &ChangeSet, paths: &[String]) -> Option<String> {
+    let mut lists = changes.changelists.iter().filter(|list| {
+        list.group
+            .changes
+            .iter()
+            .any(|change| paths.iter().any(|path| Path::new(path) == change.path))
+    });
+    match (lists.next(), lists.next()) {
+        (Some(list), None) => list.comment.clone(),
+        _ => None,
+    }
+}
+
+/// An alias that prints the file `commit.template` names. Git reads it, as the path can be one only
+/// the git inside WSL understands. Its shell starts at the top of the working tree, where git
+/// resolves a relative template too.
+const PRINT_TEMPLATE: &str = "alias.gikli-print-template=!template=$(git config --path --get commit.template) || exit 0; cat -- \"$template\"";
+
+/// The text of the file `commit.template` names for the Repository at `root`. None when there is
+/// no such setting, its file cannot be read or it holds no text: a commit does not depend on it.
+pub(crate) fn template(runner: &GitRunner, root: &Path) -> Result<Option<String>, Failure> {
+    let invocation = runner
+        .run(root, &["-c", PRINT_TEMPLATE, "gikli-print-template"])
+        .map_err(git_failed_to_start)?;
+    let text = invocation.stdout_text();
+    Ok((invocation.success && !text.trim().is_empty()).then_some(text))
+}
+
+/// Where a commit may not be meant to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitWarning {
+    /// HEAD is on no branch, so the commit will be on none either.
+    DetachedHead,
+    /// A rebase is in progress, so the commit goes into the history being rewritten.
+    Rebase,
+}
+
+/// What to warn of before a commit in the Repository at `root`.
+pub(crate) fn warning(runner: &GitRunner, root: &Path) -> Result<Option<CommitWarning>, Failure> {
+    let git_dir = runner
+        .git_dir(root)
+        .map_err(git_failed_to_start)?
+        .ok_or_else(|| Failure::ChangesUnreadable {
+            folder: root.to_path_buf(),
+        })?;
+    // HEAD is detached during a rebase too, so the rebase is looked for first.
+    if is_rebasing(&git_dir) {
+        return Ok(Some(CommitWarning::Rebase));
+    }
+    let on_a_branch = runner
+        .run(root, &["symbolic-ref", "--quiet", "HEAD"])
+        .map_err(git_failed_to_start)?
+        .success;
+    Ok((!on_a_branch).then_some(CommitWarning::DetachedHead))
+}
+
+/// Whether the git directory `git_dir` holds a rebase in progress. `git am` keeps its state in
+/// `rebase-apply` too, and marks it with a file of its own.
+fn is_rebasing(git_dir: &Path) -> bool {
+    let applying_patches = git_dir.join("rebase-apply");
+    git_dir.join("rebase-merge").is_dir()
+        || (applying_patches.is_dir() && !applying_patches.join("applying").exists())
 }
 
 fn text_of(path: &Path) -> String {

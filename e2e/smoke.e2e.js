@@ -585,6 +585,10 @@ describe("gikli", () => {
         timeoutMsg: "the file of the Active changelist was not ticked",
       });
       assert.equal(await tick(STAGED_FILE).isSelected(), false);
+      await browser.waitUntil(async () => (await $('[data-testid="commit-message"]').getValue()) === "Add the feature", {
+        timeout: 30000,
+        timeoutMsg: "the message was not pre-filled from the comment of the Changelist",
+      });
 
       await $('[data-testid="commit-message"]').setValue("Commit from the panel");
       await $('[data-testid="commit-submit"]').click();
@@ -598,6 +602,36 @@ describe("gikli", () => {
       await $(`[data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
       assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s|%an"), "Commit from the panel|Smoke\n");
       assert.equal(await $('[data-testid="commit-message"]').getValue(), "");
+    });
+
+    it("keeps the message after a commit when the option to clear it is off", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      const setting = $('[data-testid="clear-commit-message-after-commit"]');
+      if (!(await setting.isDisplayed())) {
+        await $('[data-testid="toggle-settings"]').click();
+      }
+      await setting.waitForDisplayed({ timeout: 30000 });
+      assert.equal(await setting.isSelected(), true);
+      await setting.click();
+
+      const file = "committed with the message kept.txt";
+      fs.writeFileSync(inRepository(file), "new\n");
+      runGit(repository, gitconfig, "add", "--", file);
+      await (await idleRefresh()).click();
+      await expectChangeIn("Moved", file);
+      const message = $('[data-testid="commit-message"]');
+      await browser.waitUntil(async () => (await message.getValue()) === "Add the feature", {
+        timeout: 30000,
+        timeoutMsg: "the message was not pre-filled from the comment of the Changelist",
+      });
+
+      await $('[data-testid="commit-submit"]').click();
+
+      await $(`[data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s"), "Add the feature\n");
+      assert.equal(await message.getValue(), "Add the feature");
+      await setting.click();
     });
   });
 
