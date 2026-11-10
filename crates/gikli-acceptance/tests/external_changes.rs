@@ -80,10 +80,10 @@ fn a_file_edited_outside_gikli_is_announced_shortly_after() {
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);
 }
 
-/// A pause of the machine between these writes, or in delivering their events, rightly makes more
-/// than one burst, so this test cannot ask for one announcement. That a burst without a pause is
-/// announced once is proved in `crates/gikli-core/src/watch.rs`, where nothing depends on the
-/// machine.
+/// A pause of the machine between these writes or in delivering their events, or writes that
+/// outlast the watcher's longest wait, rightly make more than one burst, so this test cannot ask
+/// for one announcement. That a burst without a pause is announced once is proved in
+/// `crates/gikli-core/src/watch.rs`, with no files involved.
 #[test]
 fn a_burst_of_changes_outside_gikli_is_not_announced_change_by_change() {
     let sandbox = Sandbox::new();
