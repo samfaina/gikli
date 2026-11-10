@@ -437,6 +437,16 @@ fn rollback_plan(
 }
 
 #[tauri::command(async)]
+fn staging_rollback_plan(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    paths: Vec<String>,
+    side: StagingSide,
+) -> Result<RollbackPlan, Failure> {
+    gikli.staging_rollback_plan(&repository, &paths, side)
+}
+
+#[tauri::command(async)]
 fn rollback_files(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -644,6 +654,7 @@ fn main() {
             stage_tracked,
             unstage_files,
             rollback_plan,
+            staging_rollback_plan,
             rollback_files,
             previous_commit_messages,
             prefilled_commit_message,

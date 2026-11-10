@@ -744,6 +744,32 @@ describe("gikli", () => {
       await chooseFromMenu("staged-changes", kept, "unstage-files");
       await expectRow("unstaged-changes", kept);
 
+      const rolledBack = "rolled back in staging mode.txt";
+      const onDisk = () => fs.readFileSync(inRepository(rolledBack), "utf8");
+      const rollBack = async (group) => {
+        await chooseFromMenu(group, rolledBack, "rollback-changes");
+        await $(`[data-testid="rollback-file"][data-path="${rolledBack}"]`).waitForDisplayed({ timeout: 30000 });
+        await $('[data-testid="rollback-confirm"]').click();
+      };
+      fs.writeFileSync(inRepository(rolledBack), "committed\n");
+      runGit(repository, gitconfig, "add", "--", rolledBack);
+      runGit(repository, gitconfig, "commit", "--quiet", "--message=To roll back", "--", rolledBack);
+      fs.writeFileSync(inRepository(rolledBack), "staged\n");
+      runGit(repository, gitconfig, "add", "--", rolledBack);
+      fs.writeFileSync(inRepository(rolledBack), "on disk\n");
+      await (await idleRefresh()).click();
+      await expectRow("unstaged-changes", rolledBack);
+      await expectRow("staged-changes", rolledBack);
+
+      await rollBack("unstaged-changes");
+      await $(row("unstaged-changes", rolledBack)).waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.equal(onDisk(), "staged\n", "the file on disk goes back to what is staged");
+      await expectRow("staged-changes", rolledBack);
+
+      await rollBack("staged-changes");
+      await $(row("staged-changes", rolledBack)).waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.equal(onDisk(), "committed\n", "a file on one side goes back to the last commit");
+
       const committed = "committed in staging mode.txt";
       fs.writeFileSync(inRepository(committed), "new\n");
       await (await idleRefresh()).click();
