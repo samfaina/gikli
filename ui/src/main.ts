@@ -1712,6 +1712,8 @@ function describeFailure(failure: Failure): string {
       return t("failureCommitMessageEmpty");
     case "nothingToCommit":
       return t("failureNothingToCommit");
+    case "nothingToAmend":
+      return t("failureNothingToAmend");
     case "commitFailed":
       return t("failureCommitFailed", { folder: failure.folder });
     case "commitInputNotWritten":

@@ -299,6 +299,8 @@ pub enum Failure {
     CommitMessageEmpty,
     /// Nothing the user selected is a change any more, so nothing was committed.
     NothingToCommit,
+    /// The Repository has no commit yet, so there is nothing to amend.
+    NothingToAmend,
     /// git could not commit in the Repository at `folder`. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     CommitFailed {
@@ -1203,10 +1205,35 @@ impl Gikli {
         paths: &[String],
         message: &str,
     ) -> Result<ChangeSet, Failure> {
+        self.commit_selection(repository, paths, message, commit::CommitKind::New)
+    }
+
+    /// Replaces the last commit of `repository` with one that also holds the changes at `paths`, as
+    /// they are in the working tree, and has `message` as written, and returns the changes after
+    /// that. Everything else works as in [`Self::commit_files`].
+    pub fn amend_last_commit(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+        message: &str,
+    ) -> Result<ChangeSet, Failure> {
+        self.commit_selection(repository, paths, message, commit::CommitKind::Amend)
+    }
+
+    fn commit_selection(
+        &self,
+        repository: &Repository,
+        paths: &[String],
+        message: &str,
+        kind: commit::CommitKind,
+    ) -> Result<ChangeSet, Failure> {
         if message.trim().is_empty() {
             return Err(Failure::CommitMessageEmpty);
         }
         let runner = self.runner(&repository.root)?;
+        if kind == commit::CommitKind::Amend && !commit::has_commits(&runner, &repository.root)? {
+            return Err(Failure::NothingToAmend);
+        }
         let status = read_status(&runner, repository, true)?;
         let selection = commit::Selection::of(&status, paths);
         if selection.committed.is_empty() {
@@ -1240,7 +1267,7 @@ impl Gikli {
                         return Ok(Some(added));
                     }
                 }
-                let committed = git(&input.commit_command())?;
+                let committed = git(&input.commit_command(kind))?;
                 if committed.success {
                     return Ok(None);
                 }
@@ -1271,6 +1298,12 @@ impl Gikli {
         repository: &Repository,
     ) -> Result<Vec<String>, Failure> {
         commit::previous_messages(&self.runner(&repository.root)?, &repository.root)
+    }
+
+    /// The message of the last commit of `repository`, which an amend starts from. None when it has
+    /// no commit yet.
+    pub fn last_commit_message(&self, repository: &Repository) -> Result<Option<String>, Failure> {
+        commit::last_message(&self.runner(&repository.root)?, &repository.root)
     }
 
     /// What the message of a commit of the changes at `paths`, relative to the root of `repository`,

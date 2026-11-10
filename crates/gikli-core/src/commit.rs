@@ -69,6 +69,13 @@ fn is_taken_by_a_new_file(status: &Status, path: &Path) -> bool {
     })
 }
 
+/// Whether a commit is a new one or replaces the last one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitKind {
+    New,
+    Amend,
+}
+
 /// What git reads for one commit: the message and the paths, which do not fit on a command line
 /// when a Changelist is large. The files are in gikli's folder of the git directory, the one place
 /// git inside WSL and gikli on Windows both reach by a path of their own. They go when this is
@@ -131,11 +138,14 @@ impl CommitInput {
 
     /// The arguments after `git` that commit the selection. The message goes in as written: the
     /// cleanup is not left to `commit.cleanup`, and `commit.verbose` would cut it at a scissors line.
-    pub fn commit_command(&self) -> Vec<String> {
+    pub fn commit_command(&self, kind: CommitKind) -> Vec<String> {
         let mut command = self.command_on(
             PATHS,
             &["commit", "--only", "--cleanup=verbatim", "--no-verbose"],
         );
+        if kind == CommitKind::Amend {
+            command.push("--amend".to_owned());
+        }
         command.push(format!("--file={}/{MESSAGE}", self.folder_for_git));
         command
     }
@@ -189,6 +199,14 @@ pub(crate) fn ensure_identity(runner: &GitRunner, root: &Path) -> Result<(), Fai
     Ok(())
 }
 
+/// Whether the Repository at `root` has a commit for HEAD to be on.
+pub(crate) fn has_commits(runner: &GitRunner, root: &Path) -> Result<bool, Failure> {
+    Ok(runner
+        .run(root, &["rev-parse", "--verify", "--quiet", "HEAD"])
+        .map_err(git_failed_to_start)?
+        .success)
+}
+
 /// The messages of the user's last commits in the Repository at `root`, on any local branch, newest
 /// first and each one once. A commit is theirs when it has the `user.email` git has now, so without
 /// one none is. Merges are left out, as git wrote their messages.
@@ -198,11 +216,7 @@ pub(crate) fn previous_messages(runner: &GitRunner, root: &Path) -> Result<Vec<S
         .map_err(git_failed_to_start)?;
     let email = email.stdout_text();
     let email = email.trim();
-    let has_commits = runner
-        .run(root, &["rev-parse", "--verify", "--quiet", "HEAD"])
-        .map_err(git_failed_to_start)?
-        .success;
-    if email.is_empty() || !has_commits {
+    if email.is_empty() || !has_commits(runner, root)? {
         return Ok(Vec::new());
     }
     let author = format!("--author=<{email}>");
@@ -243,6 +257,41 @@ pub(crate) fn previous_messages(runner: &GitRunner, root: &Path) -> Result<Vec<S
         }
     }
     Ok(messages)
+}
+
+/// The message of the last commit in the Repository at `root`. `log.showSignature` would put the
+/// output of the signature check in front of it.
+pub(crate) fn last_message(runner: &GitRunner, root: &Path) -> Result<Option<String>, Failure> {
+    if !has_commits(runner, root)? {
+        return Ok(None);
+    }
+    let invocation = runner
+        .run(
+            root,
+            &[
+                "log",
+                "--no-show-signature",
+                "--max-count=1",
+                "--encoding=UTF-8",
+                "--format=%B",
+                "HEAD",
+                "--",
+            ],
+        )
+        .map_err(git_failed_to_start)?;
+    if !invocation.success {
+        return Err(failure_of(
+            runner,
+            root,
+            &invocation,
+            Failure::CommitMessagesUnreadable {
+                folder: root.to_path_buf(),
+            },
+        ));
+    }
+    Ok(Some(
+        invocation.stdout_text().trim_end_matches('\n').to_owned(),
+    ))
 }
 
 /// The comment of the Changelist the changes at `paths` are in, when there is exactly one such

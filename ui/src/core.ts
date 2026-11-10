@@ -286,6 +286,8 @@ export type Failure =
   | { kind: "commitMessageEmpty" }
   /** Nothing the user selected is a change any more. */
   | { kind: "nothingToCommit" }
+  /** The Repository has no commit yet. */
+  | { kind: "nothingToAmend" }
   | { kind: "commitFailed"; folder: string }
   | { kind: "commitInputNotWritten"; folder: string; message: string }
   | { kind: "commitMessagesUnreadable"; folder: string }
@@ -686,6 +688,19 @@ export function rollbackFiles(repository: Repository, plan: RollbackPlan, delete
  */
 export function commitFiles(repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
   return invoke("commit_files", { repository, paths, message });
+}
+
+/**
+ * Replaces the last commit with one that also holds the changes at `paths`, as they are in the
+ * working tree, and has `message` as written. Rejects with a {@link Failure}.
+ */
+export function amendLastCommit(repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
+  return invoke("amend_last_commit", { repository, paths, message });
+}
+
+/** The message of the last commit, or null when there is no commit yet. Rejects with a {@link Failure}. */
+export function lastCommitMessage(repository: Repository): Promise<string | null> {
+  return invoke("last_commit_message", { repository });
 }
 
 /** Where a commit may not be meant to go. */
