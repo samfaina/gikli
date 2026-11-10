@@ -24,6 +24,8 @@ pub enum LongOperation {
     AddFiles { repository: Repository },
     /// Rolling back files of `repository`, where a filter can take as long as a hook.
     RollbackFiles { repository: Repository },
+    /// Committing files of `repository`, where a hook can take as long as it likes.
+    CommitFiles { repository: Repository },
 }
 
 /// How far one phase of a long operation has come, as git reports it.

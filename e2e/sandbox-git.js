@@ -8,7 +8,7 @@ export function sandboxGitconfig(sandbox) {
   return path.join(sandbox, ".gitconfig");
 }
 
-/** Runs git in `cwd`, isolated from the developer's git configuration. */
+/** Runs git in `cwd`, isolated from the developer's git configuration, and returns what it wrote. */
 export function runGit(cwd, gitconfig, ...args) {
   const git = spawnSync("git", args, {
     cwd,
@@ -17,6 +17,7 @@ export function runGit(cwd, gitconfig, ...args) {
   if (git.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${git.stderr}`);
   }
+  return String(git.stdout);
 }
 
 /** Commits what is staged in `cwd`. */

@@ -436,6 +436,44 @@ button:disabled {
   display: none;
 }
 
+/* The changes, and beside them the panel that commits them. In a narrow window the panel goes below. */
+.repository-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.changes-column {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.commit-panel {
+  position: sticky;
+  top: 8px;
+  flex: 0 1 320px;
+  min-width: 240px;
+}
+
+.commit-files {
+  max-height: 40vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.changelist-form label.commit-group {
+  font-weight: 600;
+}
+
+.changelist-form label.commit-file {
+  padding-left: 1.2em;
+}
+
+.commit-panel .changelist-form {
+  margin: 0;
+}
+
 .rollback-files {
   margin: 0;
   padding-left: 1.2em;

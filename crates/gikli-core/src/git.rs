@@ -398,7 +398,15 @@ impl GitRunner {
     /// The git directory of the repository `folder` is in, or None when git cannot say. Inside
     /// the working tree for most repositories; elsewhere for a linked worktree or a submodule.
     pub fn git_dir(&self, folder: &Path) -> std::io::Result<Option<PathBuf>> {
-        // A path relative to `folder` needs no translation from WSL's Linux paths.
+        Ok(self
+            .relative_git_dir(folder)?
+            .map(|git_dir| folder.join(git_dir)))
+    }
+
+    /// The git directory of the repository `folder` is in, relative to `folder` as git writes it, or
+    /// None when git cannot say. Such a path needs no translation from WSL's Linux paths, so git
+    /// inside WSL can also be given one.
+    pub fn relative_git_dir(&self, folder: &Path) -> std::io::Result<Option<String>> {
         let invocation = self.run(
             folder,
             &["rev-parse", "--path-format=relative", "--git-dir"],
@@ -409,7 +417,7 @@ impl GitRunner {
             .unwrap_or(&invocation.stdout);
         Ok(invocation
             .success
-            .then(|| folder.join(path_from_bytes(output))))
+            .then(|| path_from_bytes(output).to_string_lossy().into_owned()))
     }
 
     /// The root of the repository `folder` is in, as Windows sees it, or the run of git that could

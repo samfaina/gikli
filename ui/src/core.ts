@@ -279,6 +279,14 @@ export type Failure =
   | { kind: "filesNotAdded"; folder: string }
   | { kind: "filesNotRolledBack"; folder: string }
   | { kind: "rollbackListOutdated" }
+  | { kind: "commitMessageEmpty" }
+  /** Nothing the user selected is a change any more. */
+  | { kind: "nothingToCommit" }
+  | { kind: "commitFailed"; folder: string }
+  | { kind: "commitInputNotWritten"; folder: string; message: string }
+  /** The user has to say who they are: see {@link setCommitIdentity}. */
+  | { kind: "commitIdentityMissing"; nameMissing: boolean; emailMissing: boolean }
+  | { kind: "commitIdentityNotSaved"; folder: string }
   | { kind: "indexLockNotRemoved"; lock: string; message: string }
   | { kind: "folderNotTrusted"; folder: string }
   | { kind: "changesUnreadable"; folder: string }
@@ -357,7 +365,8 @@ export interface CloneUrlForms {
 export type LongOperation =
   | { kind: "clone"; url: string; folder: string }
   | { kind: "addFiles"; repository: Repository }
-  | { kind: "rollbackFiles"; repository: Repository };
+  | { kind: "rollbackFiles"; repository: Repository }
+  | { kind: "commitFiles"; repository: Repository };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -651,6 +660,20 @@ export function rollbackPlan(repository: Repository, paths: string[]): Promise<R
  */
 export function rollbackFiles(repository: Repository, plan: RollbackPlan, deleteAddedFiles: boolean): Promise<ChangeSet> {
   return invoke("rollback_files", { repository, plan, deleteAddedFiles });
+}
+
+/**
+ * Commits the changes at `paths`, relative to the Repository root, as they are in the working tree,
+ * with `message` as written. Unversioned Files among them are added in the same step, and what is
+ * staged at any other path stays staged. Rejects with a {@link Failure}.
+ */
+export function commitFiles(repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
+  return invoke("commit_files", { repository, paths, message });
+}
+
+/** Saves the name and email git writes in commits, for every Repository if `everywhere`. A null value stays as it is. Rejects with a {@link Failure}. */
+export function setCommitIdentity(repository: Repository, name: string | null, email: string | null, everywhere: boolean): Promise<void> {
+  return invoke("set_commit_identity", { repository, name, email, everywhere });
 }
 
 /**
