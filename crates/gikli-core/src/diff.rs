@@ -739,13 +739,13 @@ fn region_of(start: SameLine, context: usize, hidden: usize) -> Option<Unchanged
 /// became or stopped being a symbolic link comes as a deletion and an addition, both from the top,
 /// and that is one difference.
 fn parse_differences(output: &[u8]) -> Vec<Difference> {
-    let mut files = 0;
+    let mut file_header: Option<&[u8]> = None;
     let hunks = output
         .split(|byte| *byte == b'\n')
-        // The file comes first: what follows is in a folder with its name, which git matches too.
+        // The file comes first, in two parts when it changed type. Another header is a file in a
+        // folder with its name, which git matches too.
         .take_while(|line| {
-            files += usize::from(line.starts_with(b"diff --git "));
-            files <= 1
+            !line.starts_with(b"diff --git ") || *file_header.get_or_insert(line) == *line
         })
         .filter_map(|line| line.strip_prefix(b"@@ -"))
         .filter_map(parse_hunk_header);
