@@ -19,6 +19,9 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   credentials use a local HTTP server that requires them, in front of git's own `git http-backend`.
   A test cannot count on an SSH server, so tests of ssh prompts and host keys use a stand-in for
   ssh that asks and reports in OpenSSH's words; the signing test runs the real `ssh-keygen`.
+  One test lives in `crates/gikli-core/src/watch.rs` instead and runs no git: that a burst without
+  a pause is announced once, since real files cannot make a burst whose timing does not depend on
+  the machine.
 - `src-tauri`: the Tauri 2 shell. Each core command is a Tauri command that forwards to `Gikli`,
   and core events reach the UI as `gikli://event`. The shell adds only `startup_folder`, the
   folder to open at launch. The app is also its own askpass program: when git or ssh start it to
@@ -43,7 +46,7 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
 npm install
 npm run dev             # run the app with the UI hot-reloading
 npm run build           # build the app for this platform
-cargo test --workspace  # core tests through the application interface
+cargo test --workspace  # core tests, all but one through the application interface
 npm run typecheck       # typecheck the UI
 npm run test:e2e-helpers # tests of how the smoke test attaches on Windows CI and double-clicks
 npm run test:e2e        # smoke test: builds the app, launches it, opens a Project

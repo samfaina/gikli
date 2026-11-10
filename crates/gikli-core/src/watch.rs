@@ -104,3 +104,45 @@ fn announce_bursts(changes: &Receiver<()>, repository: &Repository, events: &Eve
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How long the announcement may take before the test fails. Only a broken watcher gets there.
+    const ANNOUNCEMENT_DEADLINE: Duration = Duration::from_secs(60);
+
+    /// The signals are all waiting before the announcer starts, so no pause of the machine can fall
+    /// between them. Real files cannot show this: how fast they are written and how fast their
+    /// events arrive is up to the machine, and a pause rightly makes two bursts. Only a stall longer
+    /// than [`LONGEST_WAIT`] while the announcer takes the signals could still split this burst.
+    #[test]
+    fn a_burst_without_a_pause_is_announced_once() {
+        let repository = Repository {
+            root: PathBuf::from("app"),
+        };
+        let events = EventBus::default();
+        let announcements = events.subscribe();
+        let (sender, changes) = mpsc::channel();
+        for _ in 0..10 {
+            sender.send(()).expect("signal a change");
+        }
+        let announcer = {
+            let repository = repository.clone();
+            std::thread::spawn(move || announce_bursts(&changes, &repository, &events))
+        };
+
+        let first = announcements
+            .recv_timeout(ANNOUNCEMENT_DEADLINE)
+            .expect("the burst is announced");
+        // This wait gives a second announcement time to come: a watcher dropped halfway through a
+        // burst announces nothing, so the sender must outlive it. It cannot make the test flaky: no
+        // more signals are coming, so a slow machine can only miss a bug, never fail correct code.
+        std::thread::sleep(3 * QUIET_PERIOD);
+        drop(sender);
+        announcer.join().expect("the announcer stops");
+
+        assert_eq!(first, Event::FilesChanged { repository });
+        assert_eq!(announcements.try_iter().count(), 0);
+    }
+}
