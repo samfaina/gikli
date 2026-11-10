@@ -34,6 +34,9 @@ pub struct Settings {
     pub warn_on_unusual_commit_state: bool,
     /// Whether the commit message is emptied once the commit went through.
     pub clear_commit_message_after_commit: bool,
+    /// Whether the changes view shows the git index as Staged and Unstaged changes instead of
+    /// Changelists.
+    pub staging_mode: bool,
 }
 
 impl Default for Settings {
@@ -49,6 +52,7 @@ impl Default for Settings {
             go_to_next_file_after_last_change: true,
             warn_on_unusual_commit_state: true,
             clear_commit_message_after_commit: true,
+            staging_mode: false,
         }
     }
 }

@@ -54,7 +54,7 @@ pub use rollback::RollbackPlan;
 pub use settings::Settings;
 pub use status::{
     Change, ChangeGroup, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, Changelist,
-    ConflictKind, SubmoduleState,
+    ConflictKind, StagingArea, StagingSide, SubmoduleState,
 };
 pub use version::GitVersion;
 pub use window::ProjectWindow;
@@ -284,6 +284,12 @@ pub enum Failure {
     /// output.
     #[serde(rename_all = "camelCase")]
     FilesNotAdded {
+        folder: PathBuf,
+    },
+    /// git could not unstage the files in the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    FilesNotUnstaged {
         folder: PathBuf,
     },
     /// git could not roll back the files in the Repository at `folder`. The operation log holds
@@ -570,6 +576,11 @@ impl Gikli {
     /// Makes the commit message empty once a commit went through, or keeps it.
     pub fn set_clear_commit_message_after_commit(&self, clear: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.clear_commit_message_after_commit = clear)
+    }
+
+    /// Switches between Changelist mode and Staging mode. The Changelists stay as they are.
+    pub fn set_staging_mode(&self, enabled: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.staging_mode = enabled)
     }
 
     /// The application settings.
@@ -1032,12 +1043,64 @@ impl Gikli {
         if paths.is_empty() {
             return Ok(());
         }
-        let runner = self.runner(&repository.root)?;
         let mut args = vec!["--literal-pathspecs"];
         args.extend(command);
         args.push("--");
         args.extend(paths.iter().map(String::as_str));
+        self.run_add(repository, &args)
+    }
+
+    /// Stages every change of `repository`, new files included.
+    pub fn stage_all(&self, repository: &Repository) -> Result<(), Failure> {
+        self.run_add(repository, &["add", "--all"])
+    }
+
+    /// Stages every change to a file git tracks in `repository`, leaving new files out.
+    pub fn stage_tracked(&self, repository: &Repository) -> Result<(), Failure> {
+        self.run_add(repository, &["add", "--update"])
+    }
+
+    /// Runs `args`, the arguments after `git` of a command that adds to the index of `repository`.
+    fn run_add(&self, repository: &Repository, args: &[&str]) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
         let operation = LongOperation::AddFiles {
+            repository: repository.clone(),
+        };
+        let invocation = self.run_operation(&runner, operation, &repository.root, args)?;
+        if !invocation.success {
+            return Err(failure_of(
+                &runner,
+                &repository.root,
+                &invocation,
+                Failure::FilesNotAdded {
+                    folder: repository.root.clone(),
+                },
+            ));
+        }
+        Ok(())
+    }
+
+    /// Takes what is staged at `paths`, relative to the root of `repository`, out of the index. The
+    /// working tree stays as it is. A path with nothing staged is left alone, and unstaging a move
+    /// unstages both of its paths.
+    pub fn unstage_files(&self, repository: &Repository, paths: &[String]) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        let status = read_status(&runner, repository, false)?;
+        let staged = commit::staged_paths(&status, paths);
+        if staged.is_empty() {
+            return Ok(());
+        }
+        // `git restore` needs a commit to restore from.
+        let command: &[&str] = if commit::has_commits(&runner, &repository.root)? {
+            &["restore", "--staged"]
+        } else {
+            &["rm", "--quiet", "--force", "--cached"]
+        };
+        let mut args = vec!["--literal-pathspecs"];
+        args.extend(command);
+        args.push("--");
+        args.extend(staged.iter().map(String::as_str));
+        let operation = LongOperation::UnstageFiles {
             repository: repository.clone(),
         };
         let invocation = self.run_operation(&runner, operation, &repository.root, &args)?;
@@ -1046,7 +1109,7 @@ impl Gikli {
                 &runner,
                 &repository.root,
                 &invocation,
-                Failure::FilesNotAdded {
+                Failure::FilesNotUnstaged {
                     folder: repository.root.clone(),
                 },
             ));
@@ -1220,6 +1283,30 @@ impl Gikli {
         self.commit_selection(repository, paths, message, commit::CommitKind::Amend)
     }
 
+    /// Commits what is staged in `repository`, with `message` as written, and returns the changes
+    /// after that. What is not staged stays as it is, even in a file with another version staged.
+    /// Hooks run as the user configured them. With nothing staged this returns
+    /// [`Failure::NothingToCommit`], and without a `user.name` and a `user.email`
+    /// [`Failure::CommitIdentityMissing`].
+    pub fn commit_staged(
+        &self,
+        repository: &Repository,
+        message: &str,
+    ) -> Result<ChangeSet, Failure> {
+        self.commit_index(repository, message, commit::CommitKind::New)
+    }
+
+    /// Replaces the last commit of `repository` with one that also holds what is staged, and has
+    /// `message` as written, and returns the changes after that. Everything else works as in
+    /// [`Self::commit_staged`].
+    pub fn amend_with_staged(
+        &self,
+        repository: &Repository,
+        message: &str,
+    ) -> Result<ChangeSet, Failure> {
+        self.commit_index(repository, message, commit::CommitKind::Amend)
+    }
+
     fn commit_selection(
         &self,
         repository: &Repository,
@@ -1227,6 +1314,39 @@ impl Gikli {
         message: &str,
         kind: commit::CommitKind,
     ) -> Result<ChangeSet, Failure> {
+        let runner = self.commit_runner(repository, message, kind)?;
+        let status = read_status(&runner, repository, true)?;
+        let selection = commit::Selection::of(&status, paths);
+        if selection.committed.is_empty() {
+            return Err(Failure::NothingToCommit);
+        }
+        let scope = commit::CommitScope::Selection;
+        self.run_commit(&runner, repository, &selection, message, scope, kind)
+    }
+
+    fn commit_index(
+        &self,
+        repository: &Repository,
+        message: &str,
+        kind: commit::CommitKind,
+    ) -> Result<ChangeSet, Failure> {
+        let runner = self.commit_runner(repository, message, kind)?;
+        if read_status(&runner, repository, false)?.staged.is_empty() {
+            return Err(Failure::NothingToCommit);
+        }
+        let selection = commit::Selection::default();
+        let scope = commit::CommitScope::Index;
+        self.run_commit(&runner, repository, &selection, message, scope, kind)
+    }
+
+    /// The runner for a commit in `repository` with `message`, once what can be told before reading
+    /// the changes says it can go ahead.
+    fn commit_runner(
+        &self,
+        repository: &Repository,
+        message: &str,
+        kind: commit::CommitKind,
+    ) -> Result<GitRunner, Failure> {
         if message.trim().is_empty() {
             return Err(Failure::CommitMessageEmpty);
         }
@@ -1234,12 +1354,20 @@ impl Gikli {
         if kind == commit::CommitKind::Amend && !commit::has_commits(&runner, &repository.root)? {
             return Err(Failure::NothingToAmend);
         }
-        let status = read_status(&runner, repository, true)?;
-        let selection = commit::Selection::of(&status, paths);
-        if selection.committed.is_empty() {
-            return Err(Failure::NothingToCommit);
-        }
-        commit::ensure_identity(&runner, &repository.root)?;
+        Ok(runner)
+    }
+
+    /// Makes the commit of `scope`, once it is known to have something to record.
+    fn run_commit(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        selection: &commit::Selection,
+        message: &str,
+        scope: commit::CommitScope,
+        kind: commit::CommitKind,
+    ) -> Result<ChangeSet, Failure> {
+        commit::ensure_identity(runner, &repository.root)?;
         let operation = LongOperation::CommitFiles {
             repository: repository.clone(),
         };
@@ -1251,7 +1379,7 @@ impl Gikli {
                 folder: root.clone(),
             })?;
         let input =
-            commit::CommitInput::write(root, &git_dir, &selection, message).map_err(|error| {
+            commit::CommitInput::write(root, &git_dir, selection, message).map_err(|error| {
                 Failure::CommitInputNotWritten {
                     folder: root.clone(),
                     message: error.to_string(),
@@ -1267,7 +1395,7 @@ impl Gikli {
                         return Ok(Some(added));
                     }
                 }
-                let committed = git(&input.commit_command(kind))?;
+                let committed = git(&input.commit_command(scope, kind))?;
                 if committed.success {
                     return Ok(None);
                 }
@@ -1281,7 +1409,7 @@ impl Gikli {
             .map_err(git_failed_to_start)?;
         if let Some(invocation) = failed {
             return Err(failure_of(
-                &runner,
+                runner,
                 root,
                 &invocation,
                 Failure::CommitFailed {
@@ -1403,10 +1531,14 @@ impl Gikli {
             }
             chosen
         };
+        let staging = settings
+            .staging_mode
+            .then(|| StagingArea::new(status.staged, status.unstaged, settings.change_grouping));
         Ok(ChangeSet::new(
             repository.clone(),
             status.changes,
             &lists,
+            staging,
             settings.change_grouping,
         ))
     }
@@ -1420,6 +1552,39 @@ impl Gikli {
             path,
             &self.settings(),
         )
+    }
+
+    /// The diff of the file at `path`, relative to the root of `repository`, on `side` of the index:
+    /// the index against HEAD for [`StagingSide::Staged`], and the file on disk against the index
+    /// for [`StagingSide::Unstaged`].
+    pub fn read_staging_diff(
+        &self,
+        repository: &Repository,
+        path: &str,
+        side: StagingSide,
+    ) -> Result<FileDiff, Failure> {
+        let changes = self.read_changes(repository)?;
+        diff::read_side(
+            &self.runner(&repository.root)?,
+            &changes,
+            path,
+            side,
+            &self.settings(),
+        )
+    }
+
+    /// Saves `text` as the file at `path`, as [`Self::save_local_file`] does, and returns its diff
+    /// against the index after that. The index stays as it is.
+    pub fn save_unstaged_file(
+        &self,
+        repository: &Repository,
+        path: &str,
+        text: &str,
+        version: &str,
+    ) -> Result<FileDiff, Failure> {
+        let editable = self.settings().diff_local_side_editable;
+        diff::save(&repository.root, path, text, version, editable)?;
+        self.read_staging_diff(repository, path, StagingSide::Unstaged)
     }
 
     /// Saves `text`, with `\n` between lines, as the local side of the diff of the file at `path`,

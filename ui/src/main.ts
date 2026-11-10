@@ -38,9 +38,12 @@ import {
   setGoToNextFileAfterLastChange,
   setOperationLogSoftWrap,
   setShowIgnoredFiles,
+  setStagingMode,
   setUseCredentialHelper,
   setWarnOnUnusualCommitState,
   settings,
+  stageAll,
+  stageTracked,
   startupFolder,
   takeFailureAction,
   testGit,
@@ -71,6 +74,7 @@ import {
   type PromptKind,
   type Repository,
   type RunningOperation,
+  type StagingSide,
 } from "./core";
 import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
@@ -111,6 +115,7 @@ const diffLocalSideEditableInput = element<HTMLInputElement>("diff-local-side-ed
 const goToNextFileInput = element<HTMLInputElement>("go-to-next-file-after-last-change");
 const warnOnUnusualCommitStateInput = element<HTMLInputElement>("warn-on-unusual-commit-state");
 const clearCommitMessageInput = element<HTMLInputElement>("clear-commit-message-after-commit");
+const stagingModeInput = element<HTMLInputElement>("staging-mode");
 
 document.title = t("appTitle");
 openButton.textContent = t("openFolder");
@@ -149,6 +154,8 @@ element<HTMLElement>("diff-local-side-editable-label").textContent = t("diffLoca
 element<HTMLElement>("go-to-next-file-after-last-change-label").textContent = t("goToNextFileAfterLastChange");
 element<HTMLElement>("warn-on-unusual-commit-state-label").textContent = t("warnOnUnusualCommitState");
 element<HTMLElement>("clear-commit-message-after-commit-label").textContent = t("clearCommitMessageAfterCommit");
+element<HTMLElement>("staging-mode-label").textContent = t("stagingMode");
+element<HTMLElement>("staging-mode-hint").textContent = t("stagingModeHint");
 
 const diffView = createDiffView({
   errorView,
@@ -183,6 +190,13 @@ saveOnChange(goToNextFileInput, async (checked) => {
 });
 saveOnChange(warnOnUnusualCommitStateInput, async (checked) => (await setWarnOnUnusualCommitState(checked)).warnOnUnusualCommitState);
 saveOnChange(clearCommitMessageInput, async (checked) => (await setClearCommitMessageAfterCommit(checked)).clearCommitMessageAfterCommit);
+saveOnChange(stagingModeInput, async (checked) => {
+  const saved = await setStagingMode(checked);
+  for (const { refresh } of shownRepositories.values()) {
+    refresh();
+  }
+  return saved.stagingMode;
+});
 
 operationLogButton.addEventListener("click", () => {
   const opening = operationLogPanel.hidden;
@@ -219,6 +233,7 @@ settingsButton.addEventListener("click", async () => {
     goToNextFileInput.checked = current.goToNextFileAfterLastChange;
     warnOnUnusualCommitStateInput.checked = current.warnOnUnusualCommitState;
     clearCommitMessageInput.checked = current.clearCommitMessageAfterCommit;
+    stagingModeInput.checked = current.stagingMode;
     gitTestResult.textContent = "";
   }
   settingsPanel.hidden = !opening;
@@ -763,6 +778,8 @@ function repositoryView(repository: Repository): HTMLElement {
         comment: list.comment ?? "",
         save: ({ comment }) => setChangelistComment(repository, list.id, comment),
       }),
+    stageAll: () => void runChangelistAction(() => stageAll(repository)),
+    stageTracked: () => void runChangelistAction(() => stageTracked(repository)),
   };
   // One read at a time: a request while one runs reads once more when it ends, so requests from
   // the watcher and the button never pile up.
@@ -785,6 +802,8 @@ function repositoryView(repository: Repository): HTMLElement {
             // The row the user was on stays theirs when the rows are drawn again.
             const focused = changes.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
             changes.replaceChildren(changeList(changeSet, actions));
+            // Changelists are not what Staging mode shows, so there is nothing to add one to.
+            newChangelist.hidden = changeSet.staging !== null;
             selection.drawn(changeSet);
             commitPanel.drawn(changeSet);
             drawnChanges = found;
@@ -857,18 +876,42 @@ function focusChangeRow(container: HTMLElement, path: string): void {
   }
 }
 
-/** The Changelists of a Repository, each with its changes, then Unversioned Files and the ignored files when there are any. */
+/** The Changelists of a Repository with their changes, or its Staged and Unstaged changes in Staging mode, then Unversioned Files and the ignored files when there are any. */
 function changeList(changeSet: ChangeSet, actions: ChangelistActions): HTMLElement {
   const view = document.createElement("div");
-  const { repository, unversionedFiles, ignoredFiles } = changeSet;
-  for (const list of changeSet.changelists) {
-    view.append(changelistView(repository, list, actions));
+  const { repository, unversionedFiles, ignoredFiles, staging } = changeSet;
+  if (staging !== null) {
+    const stageButton = (testId: string, text: StringKey, enabled: boolean, act: () => void): HTMLButtonElement => {
+      const button = changelistButton(testId, t(text), act);
+      button.disabled = !enabled;
+      return button;
+    };
+    const hasTrackedChanges = staging.unstaged.changes.length > 0;
+    view.append(
+      changeGroupView(repository, "staged-changes", [groupName(t("stagedChanges"))], staging.staged.nodes, "staged"),
+      changeGroupView(
+        repository,
+        "unstaged-changes",
+        [
+          groupName(t("unstagedChanges")),
+          stageButton("stage-all", "stageAll", hasTrackedChanges || unversionedFiles.changes.length > 0, actions.stageAll),
+          stageButton("stage-tracked", "stageTracked", hasTrackedChanges, actions.stageTracked),
+        ],
+        staging.unstaged.nodes,
+        "unstaged",
+      ),
+    );
+  } else {
+    for (const list of changeSet.changelists) {
+      view.append(changelistView(repository, list, actions));
+    }
   }
   if (changeSet.changes.length === 0) {
     view.append(line("message", t("noChanges")));
   }
   if (unversionedFiles.nodes.length > 0) {
-    view.append(changeGroupView(repository, "unversioned-files", [groupName(t("unversionedFiles"))], unversionedFiles.nodes));
+    // Against the index, which does not have them, in Staging mode, like the Unstaged changes above.
+    view.append(changeGroupView(repository, "unversioned-files", [groupName(t("unversionedFiles"))], unversionedFiles.nodes, staging !== null ? "unstaged" : null));
   }
   if (ignoredFiles.nodes.length > 0) {
     view.append(changeGroupView(repository, "ignored-files", [groupName(t("ignoredFiles"))], ignoredFiles.nodes));
@@ -882,6 +925,8 @@ interface ChangelistActions {
   rename: (list: Changelist) => void;
   comment: (list: Changelist) => void;
   delete: (list: Changelist) => void;
+  stageAll: () => void;
+  stageTracked: () => void;
 }
 
 /** A button that manages Changelists. */
@@ -1036,30 +1081,30 @@ function groupName(text: string): HTMLSpanElement {
   return name;
 }
 
-/** Changes the view shows together, under a `header`. */
-function changeGroupView(repository: Repository, testId: string, header: HTMLElement[], nodes: ChangeNode[]): HTMLElement {
+/** Changes the view shows together, under a `header`. Their diffs show `side` of the index, or compare with HEAD when it is null. */
+function changeGroupView(repository: Repository, testId: string, header: HTMLElement[], nodes: ChangeNode[], side: StagingSide | null = null): HTMLElement {
   const view = document.createElement("section");
   view.className = "change-group";
   view.dataset.testid = testId;
   const title = document.createElement("div");
   title.className = "change-group-header";
   title.append(...header);
-  view.append(title, nodeList(repository, nodes, ""));
+  view.append(title, nodeList(repository, nodes, "", side));
   return view;
 }
 
 /** The rows of one folder of `repository`, whose path is `folder`, or of a whole group when `folder` is "". */
-function nodeList(repository: Repository, nodes: ChangeNode[], folder: string): HTMLUListElement {
+function nodeList(repository: Repository, nodes: ChangeNode[], folder: string, side: StagingSide | null): HTMLUListElement {
   const list = document.createElement("ul");
   list.className = "changes";
   for (const node of nodes) {
-    list.append(node.kind === "folder" ? folderItem(repository, node) : changeItem(repository, node, folder));
+    list.append(node.kind === "folder" ? folderItem(repository, node, side) : changeItem(repository, node, folder, side));
   }
   return list;
 }
 
 /** A folder and its rows. A folder that holds changes, not only ignored files, is highlighted. */
-function folderItem(repository: Repository, folder: Extract<ChangeNode, { kind: "folder" }>): HTMLLIElement {
+function folderItem(repository: Repository, folder: Extract<ChangeNode, { kind: "folder" }>, side: StagingSide | null): HTMLLIElement {
   const item = document.createElement("li");
   item.className = "change-folder";
   item.dataset.testid = "change-folder";
@@ -1067,27 +1112,31 @@ function folderItem(repository: Repository, folder: Extract<ChangeNode, { kind: 
   const name = document.createElement("span");
   name.className = "folder-name";
   name.textContent = folder.path.slice(folder.path.lastIndexOf("/") + 1);
-  item.append(name, nodeList(repository, folder.children, folder.path));
+  item.append(name, nodeList(repository, folder.children, folder.path, side));
   return item;
 }
 
 /**
  * A changed file of `repository`, shown by its path relative to `folder`. A double-click opens its
- * diff, as do Enter and Ctrl+D, or Cmd+D on a Mac, on the row. An ignored file is no change to review.
+ * diff on `side` of the index, as do Enter and Ctrl+D, or Cmd+D on a Mac, on the row. An ignored file
+ * is no change to review.
  */
-function changeItem(repository: Repository, change: Change, folder: string): HTMLLIElement {
+function changeItem(repository: Repository, change: Change, folder: string, side: StagingSide | null): HTMLLIElement {
   const item = document.createElement("li");
   item.className = "change";
   item.dataset.testid = "change";
   item.dataset.status = change.status;
   item.dataset.path = change.path;
+  if (side !== null) {
+    item.dataset.side = side;
+  }
   if (change.status !== "ignored") {
     item.tabIndex = 0;
-    item.addEventListener("dblclick", () => void diffView.open(repository, change.path));
+    item.addEventListener("dblclick", () => void diffView.open(repository, change.path, side));
     item.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || (hasShortcutKey(event) && event.key.toLowerCase() === "d")) {
         event.preventDefault();
-        void diffView.open(repository, change.path);
+        void diffView.open(repository, change.path, side);
       }
     });
   }
@@ -1494,6 +1543,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationClone", { url: operation.url });
     case "addFiles":
       return t("operationAddFiles", { root: operation.repository.root });
+    case "unstageFiles":
+      return t("operationUnstageFiles", { root: operation.repository.root });
     case "rollbackFiles":
       return t("operationRollbackFiles", { root: operation.repository.root });
     case "commitFiles":
@@ -1704,6 +1755,8 @@ function describeFailure(failure: Failure): string {
       return t("failureCloneFailed", { url: failure.url, folder: failure.folder });
     case "filesNotAdded":
       return t("failureFilesNotAdded", { folder: failure.folder });
+    case "filesNotUnstaged":
+      return t("failureFilesNotUnstaged", { folder: failure.folder });
     case "filesNotRolledBack":
       return t("failureFilesNotRolledBack", { folder: failure.folder });
     case "rollbackListOutdated":

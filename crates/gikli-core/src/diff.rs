@@ -11,7 +11,9 @@ use std::path::{Component, Path, PathBuf};
 use serde::Serialize;
 
 use crate::git::{GitRunner, Invocation};
-use crate::{ChangeSet, Failure, Repository, Settings, failure_of, git_failed_to_start};
+use crate::{
+    ChangeSet, Failure, Repository, Settings, StagingSide, failure_of, git_failed_to_start,
+};
 
 /// A changed file, compared with its version in HEAD.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -23,6 +25,10 @@ pub struct FileDiff {
     /// The path in HEAD the file was moved or copied from, for a renamed or copied file: the head
     /// side is the file at this path.
     pub original_path: Option<PathBuf>,
+    /// Which comparison of Staging mode this is, or None when it compares HEAD with the file on
+    /// disk. On [`StagingSide::Staged`] the head side is HEAD and the local side the index, and on
+    /// [`StagingSide::Unstaged`] the head side is the index and the local side the file on disk.
+    pub side: Option<StagingSide>,
     /// The file before this one in the changes view, as the user arranged it.
     pub previous_file: Option<PathBuf>,
     /// The file after this one in the changes view, as the user arranged it.
@@ -75,6 +81,8 @@ pub enum LocalReadOnly {
     NotUtf8,
     /// The file is a symbolic link, and the view shows where it points.
     SymbolicLink,
+    /// This side is the git index, and a diff writes only to the file on disk.
+    Index,
 }
 
 /// Unchanged lines, the same on both sides, and in the same number.
@@ -116,42 +124,89 @@ pub(crate) fn read(
     path: &str,
     settings: &Settings,
 ) -> Result<FileDiff, Failure> {
-    let repository = &changes.repository;
     let original_path = changes.original_path_of(Path::new(path));
-    let head_path = match &original_path {
+    let head_path = head_path_of(path, original_path.as_deref());
+    let file = ComparedFile::new(runner, changes, path, &head_path);
+    let content = file.working_tree_against_head(settings)?;
+    let neighbors = changes.neighbors_of(Path::new(path), settings.change_grouping);
+    Ok(file_diff(
+        changes,
+        path,
+        original_path,
+        None,
+        content,
+        neighbors,
+        settings,
+    ))
+}
+
+/// Reads the diff of the file at `path` in `changes` on `side` of the index. A conflicted file is
+/// compared with HEAD, as the index holds no one version of it to compare with.
+pub(crate) fn read_side(
+    runner: &GitRunner,
+    changes: &ChangeSet,
+    path: &str,
+    side: StagingSide,
+    settings: &Settings,
+) -> Result<FileDiff, Failure> {
+    let neighbors = changes.neighbors_on_side(Path::new(path), side, settings.change_grouping);
+    if side == StagingSide::Unstaged && changes.is_conflicted(Path::new(path)) {
+        let file = ComparedFile::new(runner, changes, path, path);
+        let content = file.working_tree_against_head(settings)?;
+        return Ok(file_diff(
+            changes, path, None, None, content, neighbors, settings,
+        ));
+    }
+    let original_path = match side {
+        StagingSide::Staged => changes.staged_original_path_of(Path::new(path)),
+        StagingSide::Unstaged => None,
+    };
+    let head_path = head_path_of(path, original_path.as_deref());
+    let file = ComparedFile::new(runner, changes, path, &head_path);
+    let content = match side {
+        StagingSide::Staged => file.index_against_head()?,
+        StagingSide::Unstaged => file.working_tree_against_index(settings)?,
+    };
+    Ok(file_diff(
+        changes,
+        path,
+        original_path,
+        Some(side),
+        content,
+        neighbors,
+        settings,
+    ))
+}
+
+/// Where HEAD has the file at `path`, which was moved from `original_path` if it was.
+fn head_path_of(path: &str, original_path: Option<&Path>) -> String {
+    match original_path {
         Some(original) => original.to_string_lossy().into_owned(),
         None => path.to_owned(),
-    };
-    let file = ComparedFile {
-        runner,
-        root: &repository.root,
-        path,
-        head_path: &head_path,
-    };
-    let head = file.head_entry()?;
-    let local = LocalFile::read(&repository.root, path)?;
-    let content = if local.is_folder() || head.as_ref().is_some_and(HeadEntry::is_folder) {
-        DiffContent::Folder
-    } else {
-        file.content(
-            head.as_ref(),
-            &local,
-            local.read_only(settings.diff_local_side_editable),
-        )?
-    };
-    let (previous_file, next_file) =
-        changes.neighbors_of(Path::new(path), settings.change_grouping);
-    Ok(FileDiff {
-        repository: repository.clone(),
+    }
+}
+
+fn file_diff(
+    changes: &ChangeSet,
+    path: &str,
+    original_path: Option<PathBuf>,
+    side: Option<StagingSide>,
+    content: DiffContent,
+    (previous_file, next_file): (Option<PathBuf>, Option<PathBuf>),
+    settings: &Settings,
+) -> FileDiff {
+    FileDiff {
+        repository: changes.repository.clone(),
         path: PathBuf::from(path),
         original_path,
+        side,
         after_last_difference: next_file
             .clone()
             .filter(|_| settings.go_to_next_file_after_last_change),
         previous_file,
         next_file,
         content,
-    })
+    }
 }
 
 /// Writes `text`, which has `\n` between lines, as the file at `path` in `root`, when what is there
@@ -321,7 +376,18 @@ struct Comparison {
     differences: Vec<Difference>,
 }
 
-/// A file to compare: its place on disk, and its place in HEAD, which differs for a moved file.
+impl Comparison {
+    /// What there is to say of a file that is on neither side.
+    fn of_nothing() -> Self {
+        Self {
+            binary: false,
+            differences: Vec::new(),
+        }
+    }
+}
+
+/// A file to compare: its place on disk and in the index, and its place in HEAD, which differs for
+/// a moved file.
 struct ComparedFile<'a> {
     runner: &'a GitRunner,
     root: &'a Path,
@@ -329,33 +395,107 @@ struct ComparedFile<'a> {
     head_path: &'a str,
 }
 
-impl ComparedFile<'_> {
-    /// What the view shows of this file, with `head` what HEAD has of it, `local` what is on disk,
-    /// and `local_read_only` why that cannot be edited.
-    fn content(
-        &self,
-        head: Option<&HeadEntry>,
-        local: &LocalFile,
-        local_read_only: Option<LocalReadOnly>,
-    ) -> Result<DiffContent, Failure> {
-        let comparison = self.compare(head.is_some(), local.bytes().is_some())?;
-        if comparison.binary {
-            return Ok(DiffContent::Binary);
+impl<'a> ComparedFile<'a> {
+    fn new(
+        runner: &'a GitRunner,
+        changes: &'a ChangeSet,
+        path: &'a str,
+        head_path: &'a str,
+    ) -> Self {
+        Self {
+            runner,
+            root: &changes.repository.root,
+            path,
+            head_path,
         }
-        let head_bytes = match head {
+    }
+
+    /// What the view shows of the file on disk against HEAD.
+    fn working_tree_against_head(&self, settings: &Settings) -> Result<DiffContent, Failure> {
+        let head = self.head_entry()?;
+        let local = LocalFile::read(self.root, self.path)?;
+        if local.is_folder() || head.as_ref().is_some_and(StoredEntry::is_folder) {
+            return Ok(DiffContent::Folder);
+        }
+        let comparison = self.compare(head.is_some(), local.bytes().is_some())?;
+        self.content(
+            &comparison,
+            head.as_ref(),
+            local.bytes(),
+            local.version(),
+            local.read_only(settings.diff_local_side_editable),
+        )
+    }
+
+    /// What the view shows of the index against HEAD. The index is read-only here.
+    fn index_against_head(&self) -> Result<DiffContent, Failure> {
+        let head = self.head_entry()?;
+        let index = self.index_entry()?;
+        if [&head, &index]
+            .into_iter()
+            .flatten()
+            .any(StoredEntry::is_folder)
+        {
+            return Ok(DiffContent::Folder);
+        }
+        let comparison = self.compare_staged(head.is_some(), index.is_some())?;
+        let index_bytes = match &index {
             Some(entry) => Some(self.read_blob(&entry.id)?),
             None => None,
         };
-        if [head_bytes.as_deref(), local.bytes()]
+        self.content(
+            &comparison,
+            head.as_ref(),
+            index_bytes.as_deref(),
+            String::new(),
+            Some(LocalReadOnly::Index),
+        )
+    }
+
+    /// What the view shows of the file on disk against the index.
+    fn working_tree_against_index(&self, settings: &Settings) -> Result<DiffContent, Failure> {
+        let index = self.index_entry()?;
+        let local = LocalFile::read(self.root, self.path)?;
+        if local.is_folder() || index.as_ref().is_some_and(StoredEntry::is_folder) {
+            return Ok(DiffContent::Folder);
+        }
+        let comparison = self.compare_unstaged(index.is_some(), local.bytes().is_some())?;
+        self.content(
+            &comparison,
+            index.as_ref(),
+            local.bytes(),
+            local.version(),
+            local.read_only(settings.diff_local_side_editable),
+        )
+    }
+
+    /// What the view shows of this file, from what `comparison` says, with `older` what the older
+    /// side has of it, `newer` what the newer side holds, `local_version` what identifies that, and
+    /// `local_read_only` why it cannot be edited.
+    fn content(
+        &self,
+        comparison: &Comparison,
+        older: Option<&StoredEntry>,
+        newer: Option<&[u8]>,
+        local_version: String,
+        local_read_only: Option<LocalReadOnly>,
+    ) -> Result<DiffContent, Failure> {
+        if comparison.binary {
+            return Ok(DiffContent::Binary);
+        }
+        let older_bytes = match older {
+            Some(entry) => Some(self.read_blob(&entry.id)?),
+            None => None,
+        };
+        if [older_bytes.as_deref(), newer]
             .into_iter()
             .flatten()
             .any(|bytes| bytes.contains(&0))
         {
             return Ok(DiffContent::Binary);
         }
-        let head = head_bytes.as_deref().map(shown_text);
-        let local_version = local.version();
-        let local = local.bytes().map(shown_text);
+        let head = older_bytes.as_deref().map(shown_text);
+        let local = newer.map(shown_text);
         let collapsed = collapsed_regions(
             &comparison.differences,
             line_count(head.as_deref()),
@@ -366,7 +506,7 @@ impl ComparedFile<'_> {
             local,
             local_version,
             local_read_only,
-            differences: comparison.differences,
+            differences: comparison.differences.clone(),
             collapsed,
         }))
     }
@@ -381,13 +521,39 @@ impl ComparedFile<'_> {
             (true, false) => &["HEAD", "--", self.head_path],
             // HEAD has no such file, and may have nothing at all.
             (false, true) => &["--no-index", "--", "/dev/null", self.path],
-            (false, false) => {
-                return Ok(Comparison {
-                    binary: false,
-                    differences: Vec::new(),
-                });
-            }
+            (false, false) => return Ok(Comparison::of_nothing()),
         };
+        self.compare_targets(targets)
+    }
+
+    /// Has git compare the file in HEAD, when `in_head`, with the one in the index, when `in_index`.
+    fn compare_staged(&self, in_head: bool, in_index: bool) -> Result<Comparison, Failure> {
+        if !in_head && !in_index {
+            return Ok(Comparison::of_nothing());
+        }
+        let head_blob = format!("HEAD:{}", self.head_path);
+        let index_blob = format!(":0:{}", self.path);
+        let targets: &[&str] = if in_head && in_index && self.head_path != self.path {
+            // Two blobs, as `--cached -- path` would not find a moved file.
+            &[&head_blob, &index_blob]
+        } else {
+            // Without naming HEAD, which a Repository with no commits does not have.
+            &["--cached", "--", self.path]
+        };
+        self.compare_targets(targets)
+    }
+
+    /// Has git compare the file in the index, when `in_index`, with the one on disk, when `on_disk`.
+    fn compare_unstaged(&self, in_index: bool, on_disk: bool) -> Result<Comparison, Failure> {
+        let targets: &[&str] = match (in_index, on_disk) {
+            (true, _) => &["--", self.path],
+            (false, true) => &["--no-index", "--", "/dev/null", self.path],
+            (false, false) => return Ok(Comparison::of_nothing()),
+        };
+        self.compare_targets(targets)
+    }
+
+    fn compare_targets(&self, targets: &[&str]) -> Result<Comparison, Failure> {
         let mut args = DIFF_ARGS.to_vec();
         args.extend(targets);
         let invocation = self.run(&args)?;
@@ -402,8 +568,33 @@ impl ComparedFile<'_> {
         })
     }
 
+    /// What the index has of this file, if anything.
+    fn index_entry(&self) -> Result<Option<StoredEntry>, Failure> {
+        let invocation = self.run(&[
+            "--literal-pathspecs",
+            "ls-files",
+            "--stage",
+            "-z",
+            "--",
+            self.path,
+        ])?;
+        if !invocation.success {
+            return Err(self.unreadable(&invocation));
+        }
+        // `mode id stage`, a tab, and the path.
+        let entry = invocation.stdout.split(|byte| *byte == b'\t').next();
+        let mut fields = entry.unwrap_or_default().split(|byte| *byte == b' ');
+        let (Some(mode), Some(id)) = (fields.next(), fields.next()) else {
+            return Ok(None);
+        };
+        Ok(Some(StoredEntry {
+            mode: mode.to_vec(),
+            id: String::from_utf8_lossy(id).into_owned(),
+        }))
+    }
+
     /// What HEAD has of this file, if anything. A Repository with no commits has nothing.
-    fn head_entry(&self) -> Result<Option<HeadEntry>, Failure> {
+    fn head_entry(&self) -> Result<Option<StoredEntry>, Failure> {
         if !self
             .run(&["rev-parse", "--verify", "--quiet", "HEAD"])?
             .success
@@ -428,7 +619,7 @@ impl ComparedFile<'_> {
         let (Some(mode), Some(id)) = (fields.next(), fields.nth(1)) else {
             return Ok(None);
         };
-        Ok(Some(HeadEntry {
+        Ok(Some(StoredEntry {
             mode: mode.to_vec(),
             id: String::from_utf8_lossy(id).into_owned(),
         }))
@@ -460,13 +651,13 @@ impl ComparedFile<'_> {
     }
 }
 
-/// A file or folder in HEAD.
-struct HeadEntry {
+/// A file or folder that git stores, in HEAD or in the index.
+struct StoredEntry {
     mode: Vec<u8>,
     id: String,
 }
 
-impl HeadEntry {
+impl StoredEntry {
     /// Whether this is a submodule or a folder, not a file.
     fn is_folder(&self) -> bool {
         self.mode == b"160000" || self.mode == b"040000"

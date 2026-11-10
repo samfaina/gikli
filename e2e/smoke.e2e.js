@@ -686,6 +686,71 @@ describe("gikli", () => {
       assert.deepEqual(runGit(repository, gitconfig, "show", "--format=", "--name-only", "HEAD").trim().split("\n").sort(), [first, second].sort());
       assert.equal(await amend.isSelected(), false, "the next commit is a new one");
     });
+
+    it("works with the index in Staging mode, and brings the Changelists back", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      const setting = $('[data-testid="staging-mode"]');
+      if (!(await setting.isDisplayed())) {
+        await $('[data-testid="toggle-settings"]').click();
+      }
+      await setting.waitForDisplayed({ timeout: 30000 });
+      assert.equal(await setting.isSelected(), false, "Changelist mode is the default");
+
+      const kept = "kept in its changelist.txt";
+      fs.writeFileSync(inRepository(kept), "committed\n");
+      runGit(repository, gitconfig, "add", "--", kept);
+      runGit(repository, gitconfig, "commit", "--quiet", "--message=Tracked", "--", kept);
+      fs.writeFileSync(inRepository(kept), "changed\n");
+      await (await idleRefresh()).click();
+      await expectChangeIn("Moved", kept);
+
+      const row = (group, file) => `[data-testid="${group}"] [data-testid="change"][data-path="${file}"]`;
+      const expectRow = (group, file) => $(row(group, file)).waitForDisplayed({ timeout: 30000 });
+      const chooseFromMenu = async (group, file, item) => {
+        await idleRefresh();
+        await openContextMenu(row(group, file));
+        await $(`[data-testid="${item}"]`).click();
+      };
+
+      await setting.click();
+      await expectRow("unstaged-changes", kept);
+      await browser.waitUntil(async () => !(await $('[data-testid="new-changelist"]').isDisplayed()), {
+        timeout: 30000,
+        timeoutMsg: "Staging mode still offers to create a Changelist",
+      });
+
+      await chooseFromMenu("unstaged-changes", kept, "stage-files");
+      await expectRow("staged-changes", kept);
+      assert.equal(await $(row("staged-changes", kept)).getAttribute("data-side"), "staged");
+
+      await doubleClickUntilDisplayed(browser, row("staged-changes", kept), '[data-testid="diff"]');
+      await expectDiffOf(kept);
+      await $(".cm-merge-b .cm-content").waitForDisplayed({ timeout: 30000 });
+      assert.equal(await $('[data-testid="diff-local-label"]').getText(), "Index (read-only)");
+      await closeDiff();
+
+      await chooseFromMenu("staged-changes", kept, "unstage-files");
+      await expectRow("unstaged-changes", kept);
+
+      const committed = "committed in staging mode.txt";
+      fs.writeFileSync(inRepository(committed), "new\n");
+      await (await idleRefresh()).click();
+      await expectRow("unversioned-files", committed);
+      await chooseFromMenu("unversioned-files", committed, "add-to-git");
+      await expectRow("staged-changes", committed);
+      await $('[data-testid="commit-message"]').setValue("From the index");
+      await $('[data-testid="commit-submit"]').click();
+      await $(row("staged-changes", committed)).waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s"), "From the index\n");
+      const inCommit = runGit(repository, gitconfig, "show", "--format=", "--name-only", "HEAD").trim().split("\n");
+      assert.ok(inCommit.includes(committed), "the commit holds what was staged");
+      assert.ok(!inCommit.includes(kept), "the commit leaves out what was not staged");
+
+      await idleRefresh();
+      await setting.click();
+      await expectChangeIn("Moved", kept);
+    });
   });
 
   // In a window of a clone: closing the main window would end the WebDriver session.

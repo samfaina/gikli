@@ -14,6 +14,7 @@ use crate::{Failure, failure_of, git_failed_to_start, trace};
 const PREVIOUS_MESSAGES_OFFERED: usize = 20;
 
 /// What a commit of a selection of changes works on.
+#[derive(Default)]
 pub(crate) struct Selection {
     /// The selected Unversioned Files, which git has to know before it can commit them.
     pub unversioned: Vec<String>,
@@ -61,6 +62,19 @@ impl Selection {
     }
 }
 
+/// The paths among `paths` that have something staged in `status`, each staged move with the path
+/// it came from, as it is two changes to git.
+pub(crate) fn staged_paths(status: &Status, paths: &[String]) -> Vec<String> {
+    let mut staged = Vec::new();
+    for change in &status.staged {
+        if paths.iter().any(|path| Path::new(path) == change.path) {
+            staged.push(text_of(&change.path));
+            staged.extend(change.renamed_from().map(text_of));
+        }
+    }
+    staged
+}
+
 /// Whether a file git does not track is at `path`, or a folder of them, or a file in the way of it.
 fn is_taken_by_a_new_file(status: &Status, path: &Path) -> bool {
     status.changes.iter().any(|file| {
@@ -74,6 +88,15 @@ fn is_taken_by_a_new_file(status: &Status, path: &Path) -> bool {
 pub(crate) enum CommitKind {
     New,
     Amend,
+}
+
+/// What a commit records.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitScope {
+    /// The working tree content of the selected paths, as in Changelist mode.
+    Selection,
+    /// The git index as it is, as in Staging mode.
+    Index,
 }
 
 /// What git reads for one commit: the message and the paths, which do not fit on a command line
@@ -136,13 +159,18 @@ impl CommitInput {
             .then(|| self.command_on(UNVERSIONED_PATHS, &["rm", "--quiet", "--force", "--cached"]))
     }
 
-    /// The arguments after `git` that commit the selection. The message goes in as written: the
-    /// cleanup is not left to `commit.cleanup`, and `commit.verbose` would cut it at a scissors line.
-    pub fn commit_command(&self, kind: CommitKind) -> Vec<String> {
-        let mut command = self.command_on(
-            PATHS,
-            &["commit", "--only", "--cleanup=verbatim", "--no-verbose"],
-        );
+    /// The arguments after `git` that commit `scope`. The message goes in as written: the cleanup
+    /// is not left to `commit.cleanup`, and `commit.verbose` would cut it at a scissors line.
+    pub fn commit_command(&self, scope: CommitScope, kind: CommitKind) -> Vec<String> {
+        let mut command = match scope {
+            CommitScope::Selection => self.command_on(
+                PATHS,
+                &["commit", "--only", "--cleanup=verbatim", "--no-verbose"],
+            ),
+            CommitScope::Index => ["commit", "--cleanup=verbatim", "--no-verbose"]
+                .map(str::to_owned)
+                .to_vec(),
+        };
         if kind == CommitKind::Amend {
             command.push("--amend".to_owned());
         }

@@ -40,6 +40,8 @@ export interface Settings {
   warnOnUnusualCommitState: boolean;
   /** Whether the commit message is emptied once the commit went through. */
   clearCommitMessageAfterCommit: boolean;
+  /** Whether the changes view shows the git index as Staged and Unstaged changes instead of Changelists. */
+  stagingMode: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -160,7 +162,20 @@ export interface ChangeSet {
   unversionedFiles: ChangeGroup;
   /** The files git ignores, when the user turned ignored files on. */
   ignoredFiles: ChangeGroup;
+  /** The git index as Staged and Unstaged changes, in Staging mode. */
+  staging: StagingArea | null;
 }
+
+/** The uncommitted changes as the git index divides them. A file with one version staged and another on disk is on both sides. */
+export interface StagingArea {
+  /** How the index differs from the last commit. */
+  staged: ChangeGroup;
+  /** How the working tree differs from the index, without the files git does not track yet. */
+  unstaged: ChangeGroup;
+}
+
+/** One of the two comparisons of Staging mode: the index against HEAD, or the working tree against the index. */
+export type StagingSide = "staged" | "unstaged";
 
 /** The lines from `start` up to, and not including, `end`, counted from 0. */
 export interface LineRange {
@@ -181,7 +196,7 @@ export interface UnchangedRegion {
 }
 
 /** Why the local side of a diff cannot be edited. */
-export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink";
+export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink" | "index";
 
 /** The two versions of a text file and where they differ, with `\n` between lines. */
 export interface TextDiff {
@@ -208,6 +223,8 @@ export interface FileDiff {
   path: string;
   /** The path in HEAD it was moved or copied from, which the head side shows. */
   originalPath: string | null;
+  /** Which comparison of Staging mode this is, or null when it compares HEAD with the file on disk. */
+  side: StagingSide | null;
   /** The file before this one in the changes view. */
   previousFile: string | null;
   /** The file after this one in the changes view. */
@@ -281,6 +298,7 @@ export type Failure =
   | { kind: "notAWorkingTree"; folder: string }
   | { kind: "projectNotOpened"; folder: string }
   | { kind: "filesNotAdded"; folder: string }
+  | { kind: "filesNotUnstaged"; folder: string }
   | { kind: "filesNotRolledBack"; folder: string }
   | { kind: "rollbackListOutdated" }
   | { kind: "commitMessageEmpty" }
@@ -374,6 +392,7 @@ export interface CloneUrlForms {
 export type LongOperation =
   | { kind: "clone"; url: string; folder: string }
   | { kind: "addFiles"; repository: Repository }
+  | { kind: "unstageFiles"; repository: Repository }
   | { kind: "rollbackFiles"; repository: Repository }
   | { kind: "commitFiles"; repository: Repository };
 
@@ -480,6 +499,11 @@ export function setWarnOnUnusualCommitState(warn: boolean): Promise<Settings> {
 /** Makes the commit message empty once a commit went through, or keeps it. Rejects with a {@link Failure}. */
 export function setClearCommitMessageAfterCommit(clear: boolean): Promise<Settings> {
   return invoke("set_clear_commit_message_after_commit", { clear });
+}
+
+/** Switches between Changelist mode and Staging mode. Rejects with a {@link Failure}. */
+export function setStagingMode(enabled: boolean): Promise<Settings> {
+  return invoke("set_staging_mode", { enabled });
 }
 
 /** Makes moving on from the last difference of a file go to the next file, or stay. Rejects with a {@link Failure}. */
@@ -640,6 +664,16 @@ export function readDiff(repository: Repository, path: string): Promise<FileDiff
   return invoke("read_diff", { repository, path });
 }
 
+/** The diff of the file at `path` on `side` of the index. Rejects with a {@link Failure}. */
+export function readStagingDiff(repository: Repository, path: string, side: StagingSide): Promise<FileDiff> {
+  return invoke("read_staging_diff", { repository, path, side });
+}
+
+/** Saves `text` as the file at `path`, as {@link saveLocalFile} does, and returns its diff against the index. Rejects with a {@link Failure}. */
+export function saveUnstagedFile(repository: Repository, path: string, text: string, version: string): Promise<FileDiff> {
+  return invoke("save_unstaged_file", { repository, path, text, version });
+}
+
 /**
  * Saves `text`, with `\n` between lines, as the local side of the diff of the file at `path`; the lines
  * keep the line endings they have in the file. `version` is the {@link TextDiff.localVersion} of the diff
@@ -657,6 +691,21 @@ export function addFiles(repository: Repository, paths: string[]): Promise<void>
 /** Adds `paths`, relative to the Repository root and taken literally, to the git index, even when git ignores them. Rejects with a {@link Failure}. */
 export function forceAddFiles(repository: Repository, paths: string[]): Promise<void> {
   return invoke("force_add_files", { repository, paths });
+}
+
+/** Stages every change, new files included. Rejects with a {@link Failure}. */
+export function stageAll(repository: Repository): Promise<void> {
+  return invoke("stage_all", { repository });
+}
+
+/** Stages every change to a file git tracks, leaving new files out. Rejects with a {@link Failure}. */
+export function stageTracked(repository: Repository): Promise<void> {
+  return invoke("stage_tracked", { repository });
+}
+
+/** Takes what is staged at `paths`, relative to the Repository root, out of the index. Rejects with a {@link Failure}. */
+export function unstageFiles(repository: Repository, paths: string[]): Promise<void> {
+  return invoke("unstage_files", { repository, paths });
 }
 
 /** What rolling back some changes would discard, for the user to confirm first. */
@@ -696,6 +745,16 @@ export function commitFiles(repository: Repository, paths: string[], message: st
  */
 export function amendLastCommit(repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
   return invoke("amend_last_commit", { repository, paths, message });
+}
+
+/** Commits what is staged, with `message` as written. Rejects with a {@link Failure}. */
+export function commitStaged(repository: Repository, message: string): Promise<ChangeSet> {
+  return invoke("commit_staged", { repository, message });
+}
+
+/** Replaces the last commit with one that also holds what is staged, and has `message` as written. Rejects with a {@link Failure}. */
+export function amendWithStaged(repository: Repository, message: string): Promise<ChangeSet> {
+  return invoke("amend_with_staged", { repository, message });
 }
 
 /** The message of the last commit, or null when there is no commit yet. Rejects with a {@link Failure}. */

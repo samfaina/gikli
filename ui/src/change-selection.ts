@@ -1,20 +1,24 @@
 // The selection of changes in the changes view, and the menu, the forms and the dragging that act on it.
 
-import { addFiles, forceAddFiles, moveChanges, type Change, type ChangeSet, type MoveTarget, type Repository } from "./core";
+import { addFiles, forceAddFiles, moveChanges, unstageFiles, type Change, type ChangeSet, type MoveTarget, type Repository } from "./core";
 import { hasShortcutKey } from "./dom";
 import { createRollbackForm } from "./rollback-form";
 import { t } from "./strings";
 
 const CHANGE = '[data-testid="change"]';
 const CHANGELIST = '[data-testid="changelist"]';
+const STAGED_CHANGES = '[data-testid="staged-changes"]';
+const UNSTAGED_CHANGES = '[data-testid="unstaged-changes"]';
 const UNVERSIONED_FILES = '[data-testid="unversioned-files"]';
 const IGNORED_FILES = '[data-testid="ignored-files"]';
 
 /** The groups of rows the user can select in: rows of different groups have different actions, so they are never selected together. */
-type RowGroup = "changelist" | "unversioned" | "ignored";
+type RowGroup = "changelist" | "staged" | "unstaged" | "unversioned" | "ignored";
 
 const ROWS_OF: Record<RowGroup, string> = {
   changelist: `${CHANGELIST} ${CHANGE}`,
+  staged: `${STAGED_CHANGES} ${CHANGE}`,
+  unstaged: `${UNSTAGED_CHANGES} ${CHANGE}`,
   unversioned: `${UNVERSIONED_FILES} ${CHANGE}`,
   ignored: `${IGNORED_FILES} ${CHANGE}`,
 };
@@ -73,7 +77,16 @@ export function createChangeSelection(host: ChangeSelectionHost): ChangeSelectio
   let anchor: string | null = null;
 
   const rowAt = (target: EventTarget | null): HTMLElement | null => (target instanceof Element ? target.closest<HTMLElement>(CHANGE) : null);
-  const groupOf = (row: HTMLElement): RowGroup => (row.closest(CHANGELIST) ? "changelist" : row.closest(UNVERSIONED_FILES) ? "unversioned" : "ignored");
+  const groupOf = (row: HTMLElement): RowGroup =>
+    row.closest(CHANGELIST)
+      ? "changelist"
+      : row.closest(STAGED_CHANGES)
+        ? "staged"
+        : row.closest(UNSTAGED_CHANGES)
+          ? "unstaged"
+          : row.closest(UNVERSIONED_FILES)
+            ? "unversioned"
+            : "ignored";
   const rowsOf = (group: RowGroup): HTMLElement[] => [...changes.querySelectorAll<HTMLElement>(ROWS_OF[group])];
   const pathOf = (row: HTMLElement): string => row.dataset.path as string;
 
@@ -184,6 +197,14 @@ export function createChangeSelection(host: ChangeSelectionHost): ChangeSelectio
           form.open(changeSet, paths);
         }
       }),
+      menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths)),
+    ],
+    staged: [
+      menuItem("unstage-files", t("unstageFiles"), (paths) => host.run(() => unstageFiles(repository, paths))),
+      menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths)),
+    ],
+    unstaged: [
+      menuItem("stage-files", t("stageFiles"), (paths) => host.run(() => addFiles(repository, paths))),
       menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths)),
     ],
     unversioned: [menuItem("add-to-git", t("addToGit"), (paths) => host.run(() => addFiles(repository, paths)))],
