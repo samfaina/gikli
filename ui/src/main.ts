@@ -80,6 +80,7 @@ import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
 import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
+import { createLogView } from "./log-view";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -165,6 +166,16 @@ const diffView = createDiffView({
   closed: (path) => {
     projectView.hidden = false;
     focusChangeRow(projectView, path);
+  },
+});
+
+const logView = createLogView({
+  errorView,
+  opened: () => {
+    projectView.hidden = true;
+  },
+  closed: () => {
+    projectView.hidden = false;
   },
 });
 
@@ -560,6 +571,7 @@ function showProject(project: Project): void {
   // The file of another Project is no longer in view: its edits are saved, as when the user closes it.
   if (project.folder !== shownFolder) {
     void diffView.close();
+    logView.close();
   }
   shownFolder = project.folder;
   showNotifications();
@@ -704,6 +716,11 @@ function repositoryView(repository: Repository): HTMLElement {
   refresh.type = "button";
   refresh.dataset.testid = "refresh-changes";
   refresh.textContent = t("refreshChanges");
+  const openLog = document.createElement("button");
+  openLog.type = "button";
+  openLog.dataset.testid = "open-log";
+  openLog.textContent = t("logOpen");
+  openLog.addEventListener("click", () => logView.open(repository));
   // Outside the rows, which are drawn again on every read: what the user is typing stays.
   const form = changelistForm(() => void refreshChanges());
   const changes = document.createElement("div");
@@ -745,7 +762,7 @@ function repositoryView(repository: Repository): HTMLElement {
       save: ({ name, description }) => createChangelist(repository, name, description),
     }),
   );
-  header.append(title, refresh, newChangelist);
+  header.append(title, refresh, openLog, newChangelist);
   const watching = document.createElement("div");
   const features = document.createElement("div");
   const changesColumn = document.createElement("div");
@@ -1773,6 +1790,10 @@ function describeFailure(failure: Failure): string {
       return t("failureCommitFailed", { folder: failure.folder });
     case "commitInputNotWritten":
       return t("failureCommitInputNotWritten", { folder: failure.folder, message: failure.message });
+    case "logUnreadable":
+      return t("failureLogUnreadable", { folder: failure.folder });
+    case "logChanged":
+      return t("failureLogChanged");
     case "commitMessagesUnreadable":
       return t("failureCommitMessagesUnreadable", { folder: failure.folder });
     case "commitIdentityMissing":

@@ -687,6 +687,16 @@ describe("gikli", () => {
       assert.equal(await amend.isSelected(), false, "the next commit is a new one");
     });
 
+    it("shows the commits in the log, and goes back to the changes", async () => {
+      await $('[data-testid="open-log"]').click();
+      const row = $('[data-testid="log-row"] .log-subject');
+      await row.waitForDisplayed({ timeout: 30000 });
+      assert.equal(await row.getText(), "Amended from the panel");
+
+      await $('[data-testid="log-close"]').click();
+      await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+    });
+
     it("works with the index in Staging mode, and brings the Changelists back", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);

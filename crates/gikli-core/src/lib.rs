@@ -12,6 +12,7 @@ mod events;
 mod explainer;
 mod git;
 mod host;
+mod log;
 mod notifications;
 mod operation_log;
 mod operations;
@@ -46,6 +47,7 @@ pub use diff::{
 pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use host::HostEnvironment;
+pub use log::{GraphLine, GraphRow, LogCursor, LogPage, LogRow};
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
@@ -340,6 +342,15 @@ pub enum Failure {
     CommitMessagesUnreadable {
         folder: PathBuf,
     },
+    /// git could not read the log of the Repository at `folder`. The operation log holds git's
+    /// output.
+    #[serde(rename_all = "camelCase")]
+    LogUnreadable {
+        folder: PathBuf,
+    },
+    /// The history changed since the page of the log before this one, so this one would not follow
+    /// from it. The log starts over from the first page.
+    LogChanged,
     /// The lock of the index could not be removed.
     #[serde(rename_all = "camelCase")]
     IndexLockNotRemoved {
@@ -1615,6 +1626,22 @@ impl Gikli {
         let editable = self.settings().diff_local_side_editable;
         diff::save(&repository.root, path, text, version, editable)?;
         self.read_diff(repository, path)
+    }
+
+    /// A page of the log of `repository`: its commits on every branch, remote branch and tag and
+    /// on HEAD, newest commit date first, at most `count` to a page, each with its row of the graph.
+    /// The first page comes with no `after`, and each later one with the [`LogPage::next`] of the
+    /// page before it. A Repository with no commits has an empty page.
+    ///
+    /// When the history changed since the page before, this returns [`Failure::LogChanged`], and
+    /// the log has to start over from the first page.
+    pub fn read_log(
+        &self,
+        repository: &Repository,
+        after: Option<&LogCursor>,
+        count: usize,
+    ) -> Result<LogPage, Failure> {
+        log::read(&self.runner(&repository.root)?, repository, after, count)
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes
