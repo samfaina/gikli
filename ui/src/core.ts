@@ -692,8 +692,7 @@ export function commitFiles(repository: Repository, paths: string[], message: st
 
 /**
  * Replaces the last commit with one that also holds the changes at `paths`, as they are in the
- * working tree, and has `message` as written. With no paths only the message changes. Rejects with a
- * {@link Failure}.
+ * working tree, and has `message` as written. Rejects with a {@link Failure}.
  */
 export function amendLastCommit(repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
   return invoke("amend_last_commit", { repository, paths, message });

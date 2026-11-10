@@ -1236,9 +1236,7 @@ impl Gikli {
         }
         let status = read_status(&runner, repository, true)?;
         let selection = commit::Selection::of(&status, paths);
-        // An amend of nothing changes only the message, but not when the selection has gone.
-        let rewords = kind == commit::CommitKind::Amend && paths.is_empty();
-        if selection.committed.is_empty() && !rewords {
+        if selection.committed.is_empty() {
             return Err(Failure::NothingToCommit);
         }
         commit::ensure_identity(&runner, &repository.root)?;

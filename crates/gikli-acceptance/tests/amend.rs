@@ -1,7 +1,9 @@
 //! Amending: the user fixes the last commit from the commit panel.
 
+use std::path::Path;
+
 use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{Failure, Gikli, Repository};
+use gikli_core::{Change, Failure, Gikli, Repository};
 
 /// Opens the repository's folder as a Project and returns its Repository.
 fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
@@ -25,6 +27,10 @@ fn repository_with_a_last_commit(sandbox: &Sandbox) -> TestRepository {
 
 fn paths(paths: &[&str]) -> Vec<String> {
     paths.iter().map(|path| (*path).to_owned()).collect()
+}
+
+fn paths_of(changes: &[Change]) -> Vec<&Path> {
+    changes.iter().map(|change| change.path.as_path()).collect()
 }
 
 /// The message of the last commit, as git stores it.
@@ -69,10 +75,9 @@ fn a_selected_file_goes_into_the_last_commit_and_the_others_stay_changed() {
         vec![" M a.txt", "A  c.txt"],
         "what was not selected stays as it was"
     );
-    let left: Vec<_> = changes.changes.iter().map(|change| &change.path).collect();
     assert_eq!(
-        left,
-        vec![std::path::Path::new("a.txt"), std::path::Path::new("c.txt")]
+        paths_of(&changes.changes),
+        vec![Path::new("a.txt"), Path::new("c.txt")]
     );
 }
 
@@ -138,54 +143,56 @@ fn the_root_commit_can_be_amended() {
 }
 
 #[test]
-fn with_nothing_selected_only_the_message_changes() {
+fn an_amend_needs_selected_changes() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_last_commit(&sandbox);
     repository.write("b.txt", "b changed\n");
+    let before = repository.git(&["rev-parse", "HEAD"]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    gikli
-        .amend_last_commit(&root, &[], "A better message")
-        .expect("amend");
+    let result = gikli.amend_last_commit(&root, &[], "A better message");
 
-    assert_eq!(commit_count(&repository), "2\n");
-    assert_eq!(last_message(&repository), "A better message\n\n");
-    assert_eq!(last_commit_files(&repository), vec!["M a.txt"]);
+    assert_eq!(result, Err(Failure::NothingToCommit));
+    assert_eq!(repository.git(&["rev-parse", "HEAD"]), before);
     assert_eq!(repository.status_by_git(), vec![" M b.txt"]);
 }
 
 #[test]
-fn an_empty_root_commit_can_be_reworded() {
+fn an_empty_root_commit_takes_the_selected_changes() {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("app");
     repository.git(&["commit", "--quiet", "--allow-empty", "--message", "Start"]);
-    let gikli = sandbox.gikli();
-    let root = opened(&gikli, &repository);
-
-    gikli
-        .amend_last_commit(&root, &[], "Start of the project")
-        .expect("amend");
-
-    assert_eq!(commit_count(&repository), "1\n");
-    assert_eq!(last_message(&repository), "Start of the project\n\n");
-}
-
-#[test]
-fn undoing_all_of_the_last_commit_leaves_it_empty_rather_than_failing() {
-    let sandbox = Sandbox::new();
-    let repository = repository_with_a_last_commit(&sandbox);
     repository.write("a.txt", "a\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
     gikli
-        .amend_last_commit(&root, &paths(&["a.txt"]), "Change nothing after all")
+        .amend_last_commit(&root, &paths(&["a.txt"]), "Start of the project")
         .expect("amend");
 
-    assert_eq!(commit_count(&repository), "2\n");
-    assert_eq!(last_commit_files(&repository), Vec::<String>::new());
-    assert_eq!(repository.status_by_git(), Vec::<String>::new());
+    assert_eq!(commit_count(&repository), "1\n");
+    assert_eq!(last_message(&repository), "Start of the project\n\n");
+    assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a\n");
+}
+
+#[test]
+fn a_selection_that_would_leave_the_commit_empty_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_last_commit(&sandbox);
+    repository.write("a.txt", "a\n");
+    let before = repository.git(&["rev-parse", "HEAD"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let result = gikli.amend_last_commit(&root, &paths(&["a.txt"]), "Change nothing after all");
+
+    assert!(
+        matches!(result, Err(Failure::CommitFailed { .. })),
+        "git refuses it: {result:?}"
+    );
+    assert_eq!(repository.git(&["rev-parse", "HEAD"]), before);
+    assert_eq!(repository.status_by_git(), vec![" M a.txt"]);
 }
 
 #[test]
@@ -243,15 +250,11 @@ fn the_files_amended_in_leave_their_changelist_and_the_rest_of_the_last_commit_d
         .amend_last_commit(&root, &paths(&["b.txt"]), "Change a and b")
         .expect("amend");
 
-    let left: Vec<_> = changes.changes.iter().map(|change| &change.path).collect();
-    assert_eq!(left, vec![std::path::Path::new("a.txt")]);
-    let listed: Vec<_> = changes.changelists[0]
-        .group
-        .changes
-        .iter()
-        .map(|change| &change.path)
-        .collect();
-    assert_eq!(listed, vec![std::path::Path::new("a.txt")]);
+    assert_eq!(paths_of(&changes.changes), vec![Path::new("a.txt")]);
+    assert_eq!(
+        paths_of(&changes.changelists[0].group.changes),
+        vec![Path::new("a.txt")]
+    );
 }
 
 #[test]

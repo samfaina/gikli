@@ -99,8 +99,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   let prefillRequests = 0;
 
   const updateSubmit = (): void => {
-    // An amend needs no files: it can change only the message.
-    submit.disabled = committing || (ticked.size === 0 && !amend.checked) || message.value.trim() === "";
+    submit.disabled = committing || ticked.size === 0 || message.value.trim() === "";
     submit.textContent = t(amend.checked ? "commitSubmitAmend" : "commitSubmit");
   };
   message.addEventListener("input", () => {
@@ -140,7 +139,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     }
     const paths = [...ticked].sort();
     const askedFor = JSON.stringify([amend.checked, paths, shownChanges.changelists.map((list) => [list.id, list.comment])]);
-    if (askedFor === prefilledFor) {
+    // The last commit can change whenever the changes are read again, so an amend asks each time.
+    if (askedFor === prefilledFor && !amend.checked) {
       return;
     }
     prefilledFor = askedFor;
@@ -280,6 +280,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
         message.value = "";
         prefilled = "";
         prefilledFor = "";
+        // What a read made during the commit asked for would fill the box that was just cleared.
+        prefillRequests++;
       } else {
         prefilled = null;
       }

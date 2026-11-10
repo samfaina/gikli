@@ -664,8 +664,20 @@ describe("gikli", () => {
         timeout: 30000,
         timeoutMsg: "the message was not pre-filled from the last commit",
       });
+      await amend.click();
+      await browser.waitUntil(async () => (await message.getValue()) === "Add the feature", {
+        timeout: 30000,
+        timeoutMsg: "unticking did not bring back the message from the comment",
+      });
+      await amend.click();
+      await browser.waitUntil(async () => (await message.getValue()) === "To be amended", {
+        timeout: 30000,
+        timeoutMsg: "ticking again did not bring back the message of the last commit",
+      });
 
       await message.setValue("Amended from the panel");
+      await amend.click();
+      await amend.click();
       await $('[data-testid="commit-submit"]').click();
 
       await $(`[data-testid="change"][data-path="${second}"]`).waitForDisplayed({ timeout: 30000, reverse: true });

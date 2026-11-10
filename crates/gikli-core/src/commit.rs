@@ -138,15 +138,13 @@ impl CommitInput {
 
     /// The arguments after `git` that commit the selection. The message goes in as written: the
     /// cleanup is not left to `commit.cleanup`, and `commit.verbose` would cut it at a scissors line.
-    /// An amend may end up empty: git would otherwise refuse to reword an empty commit, or to take
-    /// back all of the last one.
     pub fn commit_command(&self, kind: CommitKind) -> Vec<String> {
         let mut command = self.command_on(
             PATHS,
             &["commit", "--only", "--cleanup=verbatim", "--no-verbose"],
         );
         if kind == CommitKind::Amend {
-            command.extend(["--amend".to_owned(), "--allow-empty".to_owned()]);
+            command.push("--amend".to_owned());
         }
         command.push(format!("--file={}/{MESSAGE}", self.folder_for_git));
         command
