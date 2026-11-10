@@ -10,6 +10,7 @@ Every test builds and checks its repositories with the real git executable. The 
 - Four tests of Repositories under a WSL share, in `crates/gikli-acceptance/tests/wsl.rs`, install it as the native git beside the real `wsl.exe`. They are outside the installation checks. A native git that fails every command proves gikli ran the git inside WSL.
 - One more test outside the installation checks uses it. `what_git_writes_on_its_standard_output_shows_without_the_password` needs a URL in git's standard output. The real git writes none there for any command gikli runs today, and the version text of `fake-git` can hold one.
 - `a_burst_without_a_pause_is_announced_once`, in `crates/gikli-core/src/watch.rs`, runs no git at all. It builds no repository and checks only how the changes watcher groups the signals it is given, which real files and their events cannot show independently of the machine.
+- `a_process_the_cancel_missed_is_ended_too`, in `crates/gikli-core/src/process_tree.rs`, runs no git at all. It plays a process that a cancel missed, which a real git and its hooks only do by chance.
 - Teaching `fake-git` another command, or using it in another kind of test, means changing this ADR first.
 
 ## Considered Options
