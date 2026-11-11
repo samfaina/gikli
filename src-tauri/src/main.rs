@@ -38,15 +38,18 @@ impl StartupFolder {
     }
 }
 
-/// The folder gikli keeps its settings and its Projects in: the one in `GIKLI_CONFIG_FOLDER`
-/// (`variable`), or else the app's config folder. The variable lets the smoke test keep gikli away
-/// from the developer's own settings and Projects.
+/// The folder gikli keeps its settings and its Projects in: the one `GIKLI_CONFIG_FOLDER` holds
+/// (`gikli_config_folder`), or else the app's config folder. The variable lets the smoke test keep
+/// gikli away from the developer's own settings and Projects.
 fn config_folder(
-    variable: Option<OsString>,
+    gikli_config_folder: Option<OsString>,
     app_config_dir: impl FnOnce() -> tauri::Result<PathBuf>,
 ) -> tauri::Result<PathBuf> {
-    match variable.filter(|folder| !folder.is_empty()) {
-        Some(folder) => Ok(std::path::absolute(&folder)?),
+    match gikli_config_folder.filter(|folder| !folder.is_empty()) {
+        Some(folder) => {
+            let folder = PathBuf::from(folder);
+            Ok(std::path::absolute(&folder).unwrap_or(folder))
+        }
         None => app_config_dir(),
     }
 }
@@ -726,8 +729,8 @@ mod tests {
 
     #[test]
     fn without_gikli_config_folder_the_config_folder_is_the_app_config_dir() {
-        for variable in [None, Some(OsString::new())] {
-            let chosen = config_folder(variable, app_config_dir).expect("config folder");
+        for gikli_config_folder in [None, Some(OsString::new())] {
+            let chosen = config_folder(gikli_config_folder, app_config_dir).expect("config folder");
 
             assert_eq!(chosen, PathBuf::from("app config dir"));
         }
