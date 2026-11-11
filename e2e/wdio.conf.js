@@ -16,6 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SevereServiceError } from "webdriverio";
 
+import { appEnvironment } from "./app-environment.js";
 import { attachPort, respondsBefore, waitForDevTools } from "./attach.js";
 import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
 
@@ -200,17 +201,6 @@ async function stop(child) {
 const application = path.join(targetDirectory(), "debug", `gikli${exe}`);
 /** Where the WebDriver the session talks to listens: tauri-driver, or msedgedriver in attach mode. */
 const driverPort = 4444;
-/**
- * The environment gikli runs in: it opens the smoke test's repository on startup, and the git it
- * runs reads the sandbox's global configuration.
- */
-function appEnvironment() {
-  return {
-    ...process.env,
-    GIKLI_PROJECT_FOLDER: process.env.GIKLI_E2E_REPOSITORY,
-    GIT_CONFIG_GLOBAL: sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX),
-  };
-}
 
 // The mode, chosen by GIKLI_E2E_WEBVIEW2_DEBUG_PORT alone. Without it, the smoke test goes through
 // tauri-driver, as a developer runs it on Windows and Linux. With it, the config launches gikli
@@ -237,7 +227,7 @@ async function launchAttached() {
   }
   try {
     const driver = await edgeDriver();
-    attached.app = await start(application, [], { env: appEnvironment() });
+    attached.app = await start(application, [], { env: appEnvironment(process.env) });
     await waitForDevTools(debugPort);
     attached.driver = await start(driver, [`--port=${driverPort}`]);
     if (!(await respondsBefore(`http://127.0.0.1:${driverPort}/status`, Date.now() + 30000))) {
@@ -311,7 +301,7 @@ export const config = {
     const driver = path.join(os.homedir(), ".cargo", "bin", `tauri-driver${exe}`);
     tauriDriver = spawn(fs.existsSync(driver) ? driver : "tauri-driver", args, {
       ...inheritOutput,
-      env: appEnvironment(),
+      env: appEnvironment(process.env),
     });
     await new Promise((resolve) => setTimeout(resolve, 1000));
   },

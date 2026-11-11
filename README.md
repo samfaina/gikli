@@ -69,3 +69,9 @@ and attaches the Edge WebDriver to that port. Without the variable it goes throu
 
 To open a folder at startup, pass it as the first argument (`gikli <folder>`) or set
 `GIKLI_PROJECT_FOLDER`.
+
+gikli keeps its settings (`settings.json`) and its Projects (`projects.json`) in the app's config
+folder (on Windows, `%APPDATA%\dev.gikli.app`). To keep them somewhere else, set
+`GIKLI_CONFIG_FOLDER`; a relative path resolves against the current directory, and the folder is
+created on the first save. The smoke test sets it to a folder inside its sandbox, so a run starts
+from default settings and no Projects and leaves the developer's own untouched.
