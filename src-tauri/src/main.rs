@@ -7,6 +7,7 @@
 // No console window next to the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use gikli_core::{
@@ -34,6 +35,19 @@ impl StartupFolder {
             .map(PathBuf::from)
             .map(|folder| std::path::absolute(&folder).unwrap_or(folder));
         Self(folder)
+    }
+}
+
+/// The folder gikli keeps its settings and its Projects in: the one in `GIKLI_CONFIG_FOLDER`
+/// (`variable`), or else the app's config folder. The variable lets the smoke test keep gikli away
+/// from the developer's own settings and Projects.
+fn config_folder(
+    variable: Option<OsString>,
+    app_config_dir: impl FnOnce() -> tauri::Result<PathBuf>,
+) -> tauri::Result<PathBuf> {
+    match variable.filter(|folder| !folder.is_empty()) {
+        Some(folder) => Ok(std::path::absolute(&folder)?),
+        None => app_config_dir(),
     }
 }
 
@@ -582,7 +596,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(StartupFolder::from_process())
         .setup(|app| {
-            let mut gikli = Gikli::new(HostEnvironment::current(), &app.path().app_config_dir()?);
+            let config_folder = config_folder(std::env::var_os("GIKLI_CONFIG_FOLDER"), || {
+                app.path().app_config_dir()
+            })?;
+            let mut gikli = Gikli::new(HostEnvironment::current(), &config_folder);
             // Without prompts gikli still runs, and what needs an answer fails with a message.
             if let Err(error) =
                 std::env::current_exe().and_then(|askpass| gikli.bring_prompts_through(askpass))
@@ -675,4 +692,44 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("gikli failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use super::config_folder;
+
+    fn app_config_dir() -> tauri::Result<PathBuf> {
+        Ok(PathBuf::from("app config dir"))
+    }
+
+    #[test]
+    fn the_config_folder_is_the_one_in_gikli_config_folder() {
+        let folder = std::env::temp_dir().join("gikli settings");
+
+        let chosen =
+            config_folder(Some(folder.clone().into()), app_config_dir).expect("config folder");
+
+        assert_eq!(chosen, folder);
+    }
+
+    #[test]
+    fn a_relative_config_folder_resolves_against_the_current_directory() {
+        let chosen = config_folder(Some(OsString::from("gikli settings")), app_config_dir)
+            .expect("config folder");
+
+        let current = std::env::current_dir().expect("current directory");
+        assert_eq!(chosen, current.join("gikli settings"));
+    }
+
+    #[test]
+    fn without_gikli_config_folder_the_config_folder_is_the_app_config_dir() {
+        for variable in [None, Some(OsString::new())] {
+            let chosen = config_folder(variable, app_config_dir).expect("config folder");
+
+            assert_eq!(chosen, PathBuf::from("app config dir"));
+        }
+    }
 }

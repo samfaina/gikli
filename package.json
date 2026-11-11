@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "test": "cargo test --workspace && npm run typecheck && npm run test:e2e-helpers && npm run test:e2e",
-    "test:e2e-helpers": "node --test e2e/attach.test.js e2e/double-click.test.js",
+    "test:e2e-helpers": "node --test e2e/app-environment.test.js e2e/attach.test.js e2e/double-click.test.js",
     "test:e2e": "wdio run e2e/wdio.conf.js"
   },
   "dependencies": {
