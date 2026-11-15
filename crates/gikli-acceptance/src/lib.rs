@@ -8,6 +8,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
@@ -657,6 +658,29 @@ impl TestRepository {
         env.push(("GIT_COMMITTER_DATE".into(), date.into()));
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         run_git(&self.root, &env, &args)
+    }
+
+    /// Writes the history `stream` describes with `git fast-import`, which writes many commits
+    /// far faster than one `git commit` at a time. Panics if git fails.
+    pub fn fast_import(&self, stream: &[u8]) {
+        let mut git = Command::new("git")
+            .args(["fast-import", "--quiet"])
+            .current_dir(&self.root)
+            .envs(self.env.iter().map(|(name, value)| (name, value)))
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start git fast-import");
+        let mut input = git.stdin.take().expect("stdin is piped");
+        input.write_all(stream).expect("write the history");
+        drop(input);
+        let output = git.wait_with_output().expect("run git fast-import");
+        assert!(
+            output.status.success(),
+            "git fast-import failed in {}:\n{}",
+            self.root.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// Commits nothing new, with plain git, at `minute` as in [`Self::git_at`].

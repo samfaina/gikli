@@ -15,11 +15,12 @@
 //! the user's `safe.bareRepository` refuses the one it found.
 
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStdout, Command, Output, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::host::HostEnvironment;
@@ -253,14 +254,14 @@ impl GitRunner {
 
     /// Runs git with `args` in `folder`, for a command nobody needs to see or stop.
     pub fn run(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
-        let (command, entry, trace) = self.command(folder, args);
+        let (command, entry, trace) = self.command(folder, args, true);
         self.run_to_the_end(command, entry, trace)
     }
 
     /// Runs git with `args` in `folder` as [`Self::run`] does, with git writing its messages in its
     /// own language whatever the user's is, for a failure no fixed part of the output tells apart.
     fn run_untranslated(&self, folder: &Path, args: &[&str]) -> std::io::Result<Invocation> {
-        let (mut command, entry, trace) = self.command(folder, args);
+        let (mut command, entry, trace) = self.command(folder, args, true);
         command.env("LC_ALL", "C");
         if matches!(self.program, GitProgram::Wsl { .. }) {
             let mut shared = self.host.get("WSLENV").unwrap_or_default().to_owned();
@@ -299,7 +300,7 @@ impl GitRunner {
         args: &[&str],
         operation: &OperationRun,
     ) -> std::io::Result<Invocation> {
-        let (mut command, entry, mut trace) = self.command(folder, args);
+        let (mut command, entry, mut trace) = self.command(folder, args, true);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let cancellation = operation.cancellation();
         let started = if self.runs_natively() {
@@ -311,9 +312,55 @@ impl GitRunner {
         self.finish(entry, output, trace, cancellation)
     }
 
+    /// Starts git with `args` in `folder`, for a command whose output gikli reads as it comes,
+    /// such as one too long to wait for whole. It runs no hook, so it runs without a trace.
+    pub fn stream(&self, folder: &Path, args: &[&str]) -> std::io::Result<GitStream> {
+        let (mut command, entry, trace) = self.command(folder, args, false);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let cancellation = Cancellation::default();
+        let started = if self.runs_natively() {
+            process_tree::spawn_contained(&mut command, &cancellation)
+        } else {
+            command.spawn()
+        };
+        let mut child = match started {
+            Ok(child) => child,
+            Err(error) => {
+                let mut entry = entry;
+                entry.error = Some(error.to_string());
+                self.log.record(entry);
+                return Err(error);
+            }
+        };
+        let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        let stderr = std::thread::spawn(move || {
+            let mut read = Vec::new();
+            let _ = stderr.read_to_end(&mut read);
+            read
+        });
+        Ok(GitStream {
+            run: Some(StreamedRun {
+                child,
+                stdout,
+                stderr,
+                entry,
+                trace,
+                cancellation,
+                read: Vec::new(),
+            }),
+            log: self.log.clone(),
+        })
+    }
+
     /// The command that runs git with `args` in `folder`, its operation log entry so far, and
-    /// where git traces the run.
-    fn command(&self, folder: &Path, args: &[&str]) -> (Command, OperationLogEntry, RunTrace) {
+    /// where git traces the run, when it is `traced`.
+    fn command(
+        &self,
+        folder: &Path,
+        args: &[&str],
+        traced: bool,
+    ) -> (Command, OperationLogEntry, RunTrace) {
         let mut command_line = vec!["--no-pager"];
         for setting in PINNED_CONFIG {
             command_line.extend(["-c", setting]);
@@ -325,7 +372,7 @@ impl GitRunner {
         command_line.extend(["-c", NOTE_REFUSED_CREDENTIALS]);
         command_line.extend(args);
 
-        let trace = RunTrace::new(&self.program, self.can_read_trace);
+        let trace = RunTrace::new(&self.program, traced && self.can_read_trace);
         let mut command = self.program.command(folder, trace.forwarding_marker());
         command
             .args(&command_line)
@@ -358,41 +405,12 @@ impl GitRunner {
     /// Records the run described by `entry`, which ended with `output`, or could not start.
     fn finish(
         &self,
-        mut entry: OperationLogEntry,
+        entry: OperationLogEntry,
         output: std::io::Result<Output>,
-        mut trace: RunTrace,
+        trace: RunTrace,
         cancellation: &Cancellation,
     ) -> std::io::Result<Invocation> {
-        let Output {
-            status,
-            stdout,
-            stderr,
-        } = match output {
-            Ok(output) => output,
-            Err(error) => {
-                entry.error = Some(error.to_string());
-                self.log.record(entry);
-                return Err(error);
-            }
-        };
-        trace.run_ended();
-        let stderr = hide_url_passwords(&String::from_utf8_lossy(&stderr));
-        let cancelled = cancellation.ended_run_with(status);
-        entry.cancelled = cancelled;
-        entry.exit_code = status.code();
-        entry.stdout = hide_url_passwords(&String::from_utf8_lossy(&stdout));
-        entry.stderr = stderr.clone();
-        self.log.record(entry);
-        Ok(Invocation {
-            success: status.success(),
-            stdout,
-            stderr,
-            failed_hook: trace.failed_hook(),
-            credentials_refused: trace.refused_credentials_file.exists(),
-            cancelled,
-            last_hook: trace.last_hook().filter(|_| cancelled),
-            interrupted_hook: trace.running_hook().filter(|_| cancelled),
-        })
+        finish_run(&self.log, entry, output, trace, cancellation)
     }
 
     /// The git directory of the repository `folder` is in, or None when git cannot say. Inside
@@ -436,6 +454,136 @@ impl GitRunner {
     pub fn is_outside_work_tree(&self, folder: &Path) -> std::io::Result<bool> {
         let invocation = self.run(folder, &["rev-parse", "--is-inside-work-tree"])?;
         Ok(invocation.success && invocation.stdout == b"false\n")
+    }
+}
+
+/// Records in `log` the run described by `entry`, which ended with `output`, or could not start.
+fn finish_run(
+    log: &OperationLog,
+    mut entry: OperationLogEntry,
+    output: std::io::Result<Output>,
+    mut trace: RunTrace,
+    cancellation: &Cancellation,
+) -> std::io::Result<Invocation> {
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = match output {
+        Ok(output) => output,
+        Err(error) => {
+            entry.error = Some(error.to_string());
+            log.record(entry);
+            return Err(error);
+        }
+    };
+    trace.run_ended();
+    let stderr = hide_url_passwords(&String::from_utf8_lossy(&stderr));
+    let cancelled = cancellation.ended_run_with(status);
+    entry.cancelled = cancelled;
+    entry.exit_code = status.code();
+    entry.stdout = hide_url_passwords(&String::from_utf8_lossy(&stdout));
+    entry.stderr = stderr.clone();
+    log.record(entry);
+    Ok(Invocation {
+        success: status.success(),
+        stdout,
+        stderr,
+        failed_hook: trace.failed_hook(),
+        credentials_refused: trace.refused_credentials_file.exists(),
+        cancelled,
+        last_hook: trace.last_hook().filter(|_| cancelled),
+        interrupted_hook: trace.running_hook().filter(|_| cancelled),
+    })
+}
+
+/// A run of git whose output gikli reads as it comes. It ends when gikli has read it all and
+/// finishes it, or when gikli lets go of it before, which ends git.
+pub(crate) struct GitStream {
+    /// None once the run is recorded.
+    run: Option<StreamedRun>,
+    log: Arc<OperationLog>,
+}
+
+struct StreamedRun {
+    child: Child,
+    stdout: BufReader<ChildStdout>,
+    /// Reads git's error output to its end, so git never waits on it.
+    stderr: JoinHandle<Vec<u8>>,
+    entry: OperationLogEntry,
+    trace: RunTrace,
+    cancellation: Cancellation,
+    /// What gikli has read of git's output, for the operation log.
+    read: Vec<u8>,
+}
+
+impl GitStream {
+    /// git's output up to the next `delimiter`, without it, or None once git wrote nothing more.
+    /// Output that ends without `delimiter` ends the last piece.
+    pub fn next_piece(&mut self, delimiter: u8) -> std::io::Result<Option<Vec<u8>>> {
+        let Some(run) = &mut self.run else {
+            return Ok(None);
+        };
+        let mut piece = Vec::new();
+        if run.stdout.read_until(delimiter, &mut piece)? == 0 {
+            return Ok(None);
+        }
+        run.read.extend_from_slice(&piece);
+        if piece.last() == Some(&delimiter) {
+            piece.pop();
+        }
+        Ok(Some(piece))
+    }
+
+    /// Waits for git to end, once gikli has read all its output, and records the run.
+    pub fn finish(mut self) -> std::io::Result<Invocation> {
+        let run = self.run.take().expect("a run is recorded only once");
+        run.end(&self.log, true)
+    }
+}
+
+impl Drop for GitStream {
+    /// Ends git, when gikli lets go of the run before reading it all, and records it.
+    fn drop(&mut self) {
+        if let Some(run) = self.run.take() {
+            let _ = run.end(&self.log, false);
+        }
+    }
+}
+
+impl StreamedRun {
+    /// Ends the run, by waiting for git when gikli read it `to_the_end` and by ending git
+    /// otherwise, and records it in `log`.
+    fn end(self, log: &OperationLog, to_the_end: bool) -> std::io::Result<Invocation> {
+        let Self {
+            mut child,
+            stdout,
+            stderr,
+            entry,
+            mut trace,
+            cancellation,
+            read,
+        } = self;
+        // Closed first, so a git still writing stops at its next write, whatever else ends it.
+        drop(stdout);
+        if !to_the_end {
+            // The request ends the whole run of a git of this machine, and the kill the
+            // process that runs the git inside WSL.
+            cancellation.request();
+            let _ = child.kill();
+        }
+        let output = cancellation.wait_for(&mut child).map(|status| {
+            let written = stderr.join().unwrap_or_default();
+            let mut stderr = trace.take_events_from(&written);
+            stderr.extend(trace.stderr_ended());
+            Output {
+                status,
+                stdout: read,
+                stderr,
+            }
+        });
+        // Nobody cancelled a run gikli no longer needed.
+        finish_run(log, entry, output, trace, &Cancellation::default())
     }
 }
 

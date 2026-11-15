@@ -2,6 +2,7 @@
 // at a time; this draws only the rows in view, and asks for the next page as the user nears the end.
 
 import {
+  endLogRead,
   readLog,
   isFailure,
   settings,
@@ -106,6 +107,7 @@ export function createLogView(host: LogViewHost): LogView {
     }
     repository = null;
     latestRead += 1;
+    endRead();
     rows = [];
     next = null;
     reading = null;
@@ -132,6 +134,7 @@ export function createLogView(host: LogViewHost): LogView {
 
   /** Reads the log again from its newest commit. Resolves to whether it came. */
   function startOver(): Promise<boolean> {
+    endRead();
     rows = [];
     next = null;
     reading = null;
@@ -160,10 +163,11 @@ export function createLogView(host: LogViewHost): LogView {
     try {
       const page = await readLog(shown, after, count);
       if (thisRead !== latestRead) {
+        endReadAt(page.next);
         return false;
       }
       reading = null;
-      rows = rows.concat(page.rows);
+      rows.push(...page.rows);
       next = page.next;
       columns = page.rows.reduce((widest, row) => Math.max(widest, columnsOf(row)), columns);
       message.replaceChildren(rows.length === 0 ? t("logEmpty") : "");
@@ -180,6 +184,12 @@ export function createLogView(host: LogViewHost): LogView {
       message.replaceChildren(host.errorView(error));
       return false;
     }
+  }
+
+  /** Lets the core go of the read of the log shown so far, which the log does not go on with. */
+  function endRead(): void {
+    endReadAt(next);
+    next = null;
   }
 
   /** The place of the commit `hash` in the list, reading pages until it comes; -1 if it does not. */
@@ -277,6 +287,13 @@ export function createLogView(host: LogViewHost): LogView {
   }
 
   return { open, close };
+}
+
+/** Lets the core go of the read that the page at `cursor` goes on with, if any. Nothing depends on it. */
+function endReadAt(cursor: LogCursor | null): void {
+  if (cursor !== null) {
+    endLogRead(cursor).catch(() => undefined);
+  }
 }
 
 /** How many columns of the graph `row` takes. */
