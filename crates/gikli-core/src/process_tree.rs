@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::lock;
 
 /// How long a cancelled run gets to be gone. Processes end within milliseconds of being killed,
-/// so this only runs out when one escaped.
+/// or a few hundred on a busy machine, so this only runs out when one escaped.
 pub(crate) const GRACE: Duration = Duration::from_secs(5);
 
 /// How often a run that ended is checked for what it takes to report it.
@@ -124,9 +124,50 @@ mod platform {
     /// outside it, as it allows no breakaway. Closing it ends nothing: gikli kills only on request.
     pub(crate) struct ProcessTree {
         job: HANDLE,
-        /// The processes the job held when it was ended, with their pids. The job stops counting
-        /// a process it ended before that process has exited, which under load takes a while.
-        ended: Vec<(u32, HANDLE)>,
+        /// The processes that were in the job when it was ended. The job stops counting a process
+        /// it ended before that process has exited, which on a busy machine takes a while.
+        held: Vec<HeldProcess>,
+    }
+
+    /// A process of the job, held open so that its pid goes to no other process meanwhile.
+    struct HeldProcess {
+        pid: u32,
+        handle: HANDLE,
+    }
+
+    impl HeldProcess {
+        /// Opens `pid`, when it is still a process in `job`.
+        fn open(pid: u32, job: HANDLE) -> Option<Self> {
+            // SAFETY: a process that is gone only gives a null handle back.
+            let handle = unsafe {
+                OpenProcess(
+                    PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                    0,
+                    pid,
+                )
+            };
+            if handle.is_null() {
+                return None;
+            }
+            let process = Self { pid, handle };
+            // The pid may have gone to another process since the job listed it.
+            let mut in_job = 0;
+            // SAFETY: both handles are open, and `in_job` is valid for the call.
+            let asked = unsafe { IsProcessInJob(handle, job, &mut in_job) } != 0;
+            (asked && in_job != 0).then_some(process)
+        }
+
+        fn has_exited(&self) -> bool {
+            // SAFETY: the handle is open until this is dropped, and a wait of no time only looks.
+            unsafe { WaitForSingleObject(self.handle, 0) == WAIT_OBJECT_0 }
+        }
+    }
+
+    impl Drop for HeldProcess {
+        fn drop(&mut self) {
+            // SAFETY: the handle is open, and nothing uses it after this.
+            unsafe { CloseHandle(self.handle) };
+        }
     }
 
     // SAFETY: job and process handles are valid from any thread, and every call on them here is
@@ -154,7 +195,7 @@ mod platform {
             }
             let tree = Self {
                 job,
-                ended: Vec::new(),
+                held: Vec::new(),
             };
             // SAFETY: both handles are open: the job right above, and the process in `child`.
             if unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
@@ -188,41 +229,18 @@ mod platform {
                 )
             };
             let none_counted = queried == 0 || info.ActiveProcesses == 0;
-            none_counted
-                && self.ended.iter().all(|&(_, process)| {
-                    // SAFETY: the handle is open until this is dropped, and a wait of no time only
-                    // looks.
-                    unsafe { WaitForSingleObject(process, 0) == WAIT_OBJECT_0 }
-                })
+            none_counted && self.held.iter().all(HeldProcess::has_exited)
         }
 
         /// Opens the processes in the job that are not held yet, so that [`Self::is_gone`] sees
         /// when they have exited.
         fn hold_processes(&mut self) {
             for pid in self.process_ids() {
-                if self.ended.iter().any(|&(held, _)| held == pid) {
+                if self.held.iter().any(|held| held.pid == pid) {
                     continue;
                 }
-                // SAFETY: a process that is gone only gives a null handle back.
-                let process = unsafe {
-                    OpenProcess(
-                        PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                        0,
-                        pid,
-                    )
-                };
-                if process.is_null() {
-                    continue;
-                }
-                // The pid may have gone to another process since the job listed it.
-                let mut in_job = 0;
-                // SAFETY: both handles are open, and `in_job` is valid for the call.
-                let asked = unsafe { IsProcessInJob(process, self.job, &mut in_job) } != 0;
-                if asked && in_job != 0 {
-                    self.ended.push((pid, process));
-                } else {
-                    // SAFETY: the handle was opened above, and nothing uses it after this.
-                    unsafe { CloseHandle(process) };
+                if let Some(process) = HeldProcess::open(pid, self.job) {
+                    self.held.push(process);
                 }
             }
         }
@@ -267,10 +285,6 @@ mod platform {
 
     impl Drop for ProcessTree {
         fn drop(&mut self) {
-            for &(_, process) in &self.ended {
-                // SAFETY: the handle is open, and nothing uses it after this.
-                unsafe { CloseHandle(process) };
-            }
             // SAFETY: the handle is open, and nothing uses it after this.
             unsafe { CloseHandle(self.job) };
         }
@@ -428,6 +442,7 @@ mod tests {
 mod windows_tests {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
+    use std::sync::mpsc;
 
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
@@ -443,7 +458,10 @@ mod windows_tests {
     /// How many slow processes one run starts.
     const SLOW_PROCESSES: usize = 2;
     /// The memory each slow process holds, which Windows takes a while to give back once it ends.
+    /// With less, the processes are often taken down before the cancel looks.
     const HELD: usize = 512 << 20;
+    /// How long a slow process gets to say it is ready.
+    const READY_WITHIN: Duration = Duration::from_secs(60);
 
     fn play(role: &str) -> Command {
         let mut command = Command::new(std::env::current_exe().expect("find the test binary"));
@@ -470,7 +488,7 @@ mod windows_tests {
 
     /// Not a test: the test binary, started again by a test, plays a process of the run there.
     #[test]
-    #[ignore = "a process of the runs the tests start, not a test"]
+    #[ignore = "not a test: it plays a process of a run that another test starts"]
     fn play_a_process_of_the_run() {
         let _held;
         match std::env::var(ROLE).as_deref() {
@@ -502,15 +520,22 @@ mod windows_tests {
             .expect("start the run");
         let _ended = EndOnDrop(&cancellation);
         let output = BufReader::new(run.stdout.take().expect("stdout is piped"));
-        let slow: Vec<_> = output
-            .lines()
-            .map(|line| line.expect("read what the run writes"))
-            // The test harness writes on the same line first.
-            .filter_map(|line| {
-                let (_, pid) = line.rsplit_once(READY)?;
-                Some(pid.trim().parse().expect("a pid"))
+        let (ready, pids) = mpsc::channel();
+        // On a thread of its own, so that a slow process that never gets ready fails the test
+        // rather than hold it up.
+        std::thread::spawn(move || {
+            for line in output.lines().map_while(Result::ok) {
+                // The test harness writes on the same line first.
+                if let Some((_, pid)) = line.rsplit_once(READY) {
+                    let _ = ready.send(pid.trim().parse::<u32>().expect("a pid"));
+                }
+            }
+        });
+        let slow: Vec<_> = (0..SLOW_PROCESSES)
+            .map(|_| {
+                pids.recv_timeout(READY_WITHIN)
+                    .expect("a slow process ready")
             })
-            .take(SLOW_PROCESSES)
             .map(|pid| {
                 // SAFETY: a process that is gone only gives a null handle back.
                 let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
@@ -518,7 +543,6 @@ mod windows_tests {
                 process
             })
             .collect();
-        assert_eq!(slow.len(), SLOW_PROCESSES, "slow processes ready");
 
         cancellation.request();
         cancellation.wait_for(&mut run).expect("wait for the run");
