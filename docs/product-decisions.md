@@ -103,6 +103,14 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 
 - Undo commit works on the root commit: gikli saves a Backup first, and the changes stay in the index. In Changelist mode they appear as added files in the Active changelist.
 
+### Log
+
+- An edge of the graph is long when it spans more than 30 rows. With long edges off, it is drawn as an arrow below the child and an arrow above the parent, and clicking either one goes to the commit at the other end. The edge holds no lane in between, so the branches around it stay narrow.
+- The "long edges" option of the reference's presentation options (Scope 2) ships in Scope 1 as a checkbox on the log's toolbar, off by default, so long edges can still be seen whole.
+- HEAD has its own label on the commit it points at, whether it is on a branch or detached, next to the label of the branch it is on. The current branch is what HEAD reaches, so in detached HEAD the commits under HEAD are highlighted.
+- A commit is the user's own when its author email is the `user.email` git has now, compared without regard to case. Without a `user.email`, no commit is.
+- The right arrow goes to the child whose line of the graph runs straight down to the commit, or to the newest child when no line does.
+
 ### Defaults for settings the reference leaves "not stated"
 
 | Setting | Default |

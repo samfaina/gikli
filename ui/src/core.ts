@@ -42,6 +42,8 @@ export interface Settings {
   clearCommitMessageAfterCommit: boolean;
   /** Whether the changes view shows the git index as Staged and Unstaged changes instead of Changelists. */
   stagingMode: boolean;
+  /** Whether the log draws an edge that spans many rows whole, instead of as two arrows. */
+  showLongEdges: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -476,6 +478,11 @@ export function setChangeGrouping(grouping: ChangeGrouping): Promise<Settings> {
   return invoke("set_change_grouping", { grouping });
 }
 
+/** Draws long edges of the log whole, or as two arrows. Rejects with a {@link Failure}. */
+export function setShowLongEdges(show: boolean): Promise<Settings> {
+  return invoke("set_show_long_edges", { show });
+}
+
 /** Turns soft wrap of the operation log on or off. Rejects with a {@link Failure}. */
 export function setOperationLogSoftWrap(softWrap: boolean): Promise<Settings> {
   return invoke("set_operation_log_soft_wrap", { softWrap });
@@ -780,6 +787,14 @@ export interface GraphLine {
   to: number;
 }
 
+/** The end of an edge too long to draw whole, which leads to the commit at its other end. */
+export interface GraphArrow {
+  /** The column the arrow ends in, at the top or the bottom of the row. */
+  column: number;
+  /** The hash of the commit at the other end of the edge. */
+  target: string;
+}
+
 /** How one row of the graph is drawn. */
 export interface GraphRow {
   /** The column of the commit's node. */
@@ -788,17 +803,42 @@ export interface GraphRow {
   above: GraphLine[];
   /** The lines from the height of the node to the bottom of the row. */
   below: GraphLine[];
+  /** Arrows from the top of the row to the node, each leading to a child far above. */
+  arrowsUp: GraphArrow[];
+  /** Arrows from the node to the bottom of the row, each leading to a parent far below. */
+  arrowsDown: GraphArrow[];
+}
+
+/** What a reference on a commit names. Each kind shows in its own color. */
+export type RefKind = "head" | "local" | "remote" | "tag";
+
+/** A reference shown on the commit it points at. */
+export interface RefLabel {
+  /** Its name as the user knows it: `HEAD`, `main`, `origin/main`, `v1`. */
+  name: string;
+  kind: RefKind;
 }
 
 /** One commit of the log. */
 export interface LogRow {
   hash: string;
+  /** Its parents, the first parent first. The left arrow goes to the first. */
   parents: string[];
+  /** Its children, the one on its line of the graph first. The right arrow goes to the first. */
+  children: string[];
   subject: string;
   author: string;
   /** When it was committed, in seconds since the epoch. */
   committedAt: number;
   graph: GraphRow;
+  /** The references that point at it, in the order they show. */
+  labels: RefLabel[];
+  /** Whether HEAD reaches it. */
+  onCurrentBranch: boolean;
+  /** Whether the user wrote it. */
+  own: boolean;
+  /** Whether its author and its committer are not the same. */
+  committerDiffers: boolean;
 }
 
 /** Where a page of the log starts. Only the core reads it. */
