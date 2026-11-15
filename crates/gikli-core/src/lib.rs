@@ -7,6 +7,7 @@ mod capability;
 mod changelists;
 mod clone_url;
 mod commit;
+mod details;
 mod diff;
 mod events;
 mod explainer;
@@ -21,6 +22,7 @@ mod processes;
 mod project;
 mod prompts;
 mod rollback;
+mod search_history;
 mod settings;
 mod status;
 mod trace;
@@ -41,6 +43,7 @@ pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
 pub use clone_url::CloneUrlForms;
 pub use commit::CommitWarning;
+pub use details::{CommitChanges, CommitDetails, MessagePart};
 pub use diff::{
     DiffContent, Difference, FileDiff, LineRange, LocalReadOnly, TextDiff, UnchangedRegion,
 };
@@ -48,7 +51,8 @@ pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use host::HostEnvironment;
 pub use log::{
-    GraphArrow, GraphLine, GraphRow, LONG_EDGE, LogCursor, LogPage, LogRow, RefKind, RefLabel,
+    GraphArrow, GraphLine, GraphRow, LONG_EDGE, LogCursor, LogFilter, LogPage, LogRow, RefKind,
+    RefLabel, TextSearch,
 };
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
@@ -71,6 +75,7 @@ use operation_log::OperationLog;
 use operations::LongOperations;
 use project::{ProjectRegistry, RememberedProject};
 use prompts::PromptBridge;
+use search_history::SearchHistory;
 use url_passwords::hide_url_passwords;
 use watch::ChangesWatcher;
 use window::ProjectWindows;
@@ -97,6 +102,8 @@ pub struct Gikli {
     watchers: Mutex<HashMap<PathBuf, ChangesWatcher>>,
     /// The reads of the log gikli holds for the pages to come.
     log_reads: log::LogReads,
+    /// The searches of the log the user ran.
+    log_searches: SearchHistory,
     events: Arc<EventBus>,
     log: Arc<OperationLog>,
     notifications: Notifications,
@@ -355,6 +362,18 @@ pub enum Failure {
     /// The history changed since the page of the log before this one, so this one would not follow
     /// from it. The log starts over from the first page.
     LogChanged,
+    /// No commit of the Repository goes by `revision`, as a hash, a branch, a tag or any other
+    /// name git knows.
+    #[serde(rename_all = "camelCase")]
+    RevisionNotFound {
+        revision: String,
+    },
+    /// The text of a search of the log is no regular expression gikli can read, as `message`
+    /// explains.
+    #[serde(rename_all = "camelCase")]
+    SearchPatternInvalid {
+        message: String,
+    },
     /// The lock of the index could not be removed.
     #[serde(rename_all = "camelCase")]
     IndexLockNotRemoved {
@@ -465,6 +484,7 @@ impl Gikli {
             wsl_git: Mutex::default(),
             watchers: Mutex::default(),
             log_reads: log::LogReads::default(),
+            log_searches: SearchHistory::load(&config_folder.join("log-searches.json")),
             log: Arc::new(OperationLog::new(events.clone())),
             notifications: Notifications::new(events.clone()),
             operations: LongOperations::new(events.clone()),
@@ -557,6 +577,14 @@ impl Gikli {
     /// the log.
     pub fn set_show_long_edges(&self, show: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.show_long_edges = show)
+    }
+
+    /// Arranges the files a commit changed, in the log, as a tree of folders or as a flat list.
+    pub fn set_commit_changes_grouping(
+        &self,
+        grouping: ChangeGrouping,
+    ) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.commit_changes_grouping = grouping)
     }
 
     /// Turns soft wrap of the operation log on or off.
@@ -1667,16 +1695,45 @@ impl Gikli {
         after: Option<&LogCursor>,
         count: usize,
     ) -> Result<LogPage, Failure> {
+        self.read_filtered_log(repository, &LogFilter::default(), after, count)
+    }
+
+    /// A page of the log of `repository` as [`Self::read_log`] reads it, with only the commits
+    /// `filter` shows. A later page keeps to the filter of the first. Filtered by branch, the log
+    /// shows the commits those branches hold, with their graph, and a branch that no longer exists
+    /// shows nothing. A search shows the commits whose message, author or hash match its text,
+    /// without their graph, and the first page of one puts it first in
+    /// [`Self::log_search_history`].
+    pub fn read_filtered_log(
+        &self,
+        repository: &Repository,
+        filter: &LogFilter,
+        after: Option<&LogCursor>,
+        count: usize,
+    ) -> Result<LogPage, Failure> {
         let show_long_edges = self.settings().show_long_edges;
         let runner = self.runner(&repository.root)?;
-        log::read(
+        let page = log::read(
             &runner,
             &self.log_reads,
             repository,
+            filter,
             after,
             count,
             show_long_edges,
-        )
+        )?;
+        if after.is_none()
+            && let Some(search) = &filter.text
+        {
+            self.log_searches.remember(&search.text);
+        }
+        Ok(page)
+    }
+
+    /// The searches of the log the user ran, newest first, each once, the last 20 of them. They
+    /// are kept from one start of gikli to the next.
+    pub fn log_search_history(&self) -> Vec<String> {
+        self.log_searches.searches()
     }
 
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer
@@ -1684,6 +1741,71 @@ impl Gikli {
     /// more slowly.
     pub fn end_log_read(&self, cursor: &LogCursor) {
         self.log_reads.end(cursor);
+    }
+
+    /// The details of the commit `revision` names in `repository`: its whole message, hash, author
+    /// with email and dates. A revision that names no commit returns [`Failure::RevisionNotFound`].
+    pub fn commit_details(
+        &self,
+        repository: &Repository,
+        revision: &str,
+    ) -> Result<CommitDetails, Failure> {
+        details::read(&self.runner(&repository.root)?, repository, revision)
+    }
+
+    /// The full hash of the commit the user goes to in the log of `repository`, which `revision`
+    /// names: a hash, whole or abbreviated, of 40 or 64 characters, a branch, a remote branch, a
+    /// tag or any other revision git knows. When it names no commit, this returns
+    /// [`Failure::RevisionNotFound`].
+    pub fn go_to(&self, repository: &Repository, revision: &str) -> Result<String, Failure> {
+        details::resolve(&self.runner(&repository.root)?, repository, revision)
+    }
+
+    /// The local branches, remote branches and tags of `repository` that the user can go to when
+    /// they have typed `text`: those whose name holds it, ignoring case. The names that start with
+    /// it come first, then the others, each local branches first, then remote branches and tags,
+    /// each kind by name.
+    pub fn go_to_suggestions(
+        &self,
+        repository: &Repository,
+        text: &str,
+    ) -> Result<Vec<RefLabel>, Failure> {
+        let text = text.trim().to_lowercase();
+        let references = log::references(&self.runner(&repository.root)?, repository)?;
+        let (mut starting, holding): (Vec<RefLabel>, Vec<RefLabel>) = references
+            .into_iter()
+            .filter(|label| label.name.to_lowercase().contains(&text))
+            .partition(|label| label.name.to_lowercase().starts_with(&text));
+        starting.extend(holding);
+        Ok(starting)
+    }
+
+    /// The local and remote branches of `repository`, local ones first, each kind by name: those
+    /// the user can filter the log by.
+    pub fn log_branches(&self, repository: &Repository) -> Result<Vec<RefLabel>, Failure> {
+        let references = log::references(&self.runner(&repository.root)?, repository)?;
+        Ok(references
+            .into_iter()
+            .filter(|label| matches!(label.kind, RefKind::Local | RefKind::Remote))
+            .collect())
+    }
+
+    /// The files the commit `revision` names in `repository` changed, against each of its parents,
+    /// the first parent first, and against nothing for a commit with none. They are arranged as the
+    /// user chose with [`Self::set_commit_changes_grouping`]. A revision that names no commit
+    /// returns [`Failure::RevisionNotFound`].
+    pub fn commit_changes(
+        &self,
+        repository: &Repository,
+        revision: &str,
+    ) -> Result<Vec<CommitChanges>, Failure> {
+        let grouping = self.settings().commit_changes_grouping;
+        details::changes(
+            &self.runner(&repository.root)?,
+            repository,
+            revision,
+            grouping,
+        )
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes

@@ -17,3 +17,4 @@ getrandom = "0.4"
 notify = "8"
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 tempfile = "3"
+regex = "1"

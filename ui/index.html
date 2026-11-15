@@ -84,9 +84,30 @@
         <button id="log-refresh" type="button" data-testid="log-refresh"></button>
         <button id="log-close" type="button" data-testid="log-close"></button>
       </div>
+      <div class="log-filters">
+        <input id="log-search" class="log-search" type="search" list="log-search-history" data-testid="log-search" />
+        <datalist id="log-search-history"></datalist>
+        <label><input id="log-search-regex" type="checkbox" data-testid="log-search-regex" /><span id="log-search-regex-label"></span></label>
+        <label><input id="log-search-match-case" type="checkbox" data-testid="log-search-match-case" /><span id="log-search-match-case-label"></span></label>
+        <label><span id="log-branch-filter-label"></span><select id="log-branch-filter" data-testid="log-branch-filter"></select></label>
+        <input id="log-go-to" class="log-go-to" type="text" list="log-go-to-suggestions" autocomplete="off" data-testid="log-go-to" />
+        <datalist id="log-go-to-suggestions"></datalist>
+      </div>
       <div id="log-message" class="log-message" data-testid="log-message" role="status"></div>
-      <div id="log-list" class="log-list" data-testid="log-list" tabindex="0">
-        <div id="log-rows" class="log-rows" data-testid="log-rows"></div>
+      <div class="log-body">
+        <div id="log-list" class="log-list" data-testid="log-list" tabindex="0">
+          <div id="log-rows" class="log-rows" data-testid="log-rows"></div>
+        </div>
+        <aside class="log-side">
+          <section class="log-changes" data-testid="log-changes">
+            <div class="log-pane-header">
+              <h3 id="log-changes-title"></h3>
+              <button id="log-changes-grouping" type="button" data-testid="log-changes-grouping"></button>
+            </div>
+            <div id="log-changes-content" class="log-changes-content" data-testid="log-changes-content"></div>
+          </section>
+          <section id="log-details" class="log-details" data-testid="log-details"></section>
+        </aside>
       </div>
     </section>
     <section id="operation-log" class="operation-log" data-testid="operation-log" hidden>

@@ -44,6 +44,8 @@ export interface Settings {
   stagingMode: boolean;
   /** Whether the log draws an edge that spans many rows whole, instead of as two arrows. */
   showLongEdges: boolean;
+  /** How the log arranges the files a commit changed. */
+  commitChangesGrouping: ChangeGrouping;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -316,6 +318,10 @@ export type Failure =
   | { kind: "logUnreadable"; folder: string }
   /** The history changed since the page before: the log starts over from the first page. */
   | { kind: "logChanged" }
+  /** No commit goes by `revision`: no hash, branch, tag or other name git knows. */
+  | { kind: "revisionNotFound"; revision: string }
+  /** The text of a search is no regular expression, as `message` explains. */
+  | { kind: "searchPatternInvalid"; message: string }
   /** The user has to say who they are: see {@link setCommitIdentity}. */
   | { kind: "commitIdentityMissing"; nameMissing: boolean; emailMissing: boolean }
   /** A name or email has to have some text. */
@@ -476,6 +482,11 @@ export function setShowIgnoredFiles(show: boolean): Promise<Settings> {
 /** Groups the changes view by folder or shows a flat list. Rejects with a {@link Failure}. */
 export function setChangeGrouping(grouping: ChangeGrouping): Promise<Settings> {
   return invoke("set_change_grouping", { grouping });
+}
+
+/** Arranges the files a commit changed as a tree of folders or a list. Rejects with a {@link Failure}. */
+export function setCommitChangesGrouping(grouping: ChangeGrouping): Promise<Settings> {
+  return invoke("set_commit_changes_grouping", { grouping });
 }
 
 /** Draws long edges of the log whole, or as two arrows. Rejects with a {@link Failure}. */
@@ -852,9 +863,96 @@ export interface LogPage {
   next: LogCursor | null;
 }
 
-/** A page of the log, at most `count` commits, after `after` or from the newest commit. Rejects with a {@link Failure}. */
-export function readLog(repository: Repository, after: LogCursor | null, count: number): Promise<LogPage> {
-  return invoke("read_log", { repository, after, count });
+/** A search of the log for the commits whose message, author or hash match a text. */
+export interface TextSearch {
+  text: string;
+  /** Whether the text is a regular expression. Otherwise a message or author holds it, or a hash starts with it. */
+  regex: boolean;
+  /** Whether a match must have the same case as the text. */
+  matchCase: boolean;
+}
+
+/** What the log shows of the history. */
+export interface LogFilter {
+  /** The branches whose commits the log shows; every branch, remote branch, tag and HEAD when empty. */
+  branches: RefLabel[];
+  /** The text the commits shown match, if any. A search shows them without their graph. */
+  text: TextSearch | null;
+}
+
+/**
+ * A page of the log, at most `count` of the commits `filter` shows, after `after` or from the newest
+ * commit. A later page keeps to the filter of the first. Rejects with a {@link Failure}.
+ */
+export function readLog(
+  repository: Repository,
+  filter: LogFilter,
+  after: LogCursor | null,
+  count: number,
+): Promise<LogPage> {
+  return invoke("read_log", { repository, filter, after, count });
+}
+
+/** The searches of the log the user ran, newest first. */
+export function logSearchHistory(): Promise<string[]> {
+  return invoke("log_search_history");
+}
+
+/** The local and remote branches the log can be filtered by. Rejects with a {@link Failure}. */
+export function logBranches(repository: Repository): Promise<RefLabel[]> {
+  return invoke("log_branches", { repository });
+}
+
+/** The full hash of the commit `revision` names: a hash of 40 or 64 characters or part of one, a branch or a tag. Rejects with a {@link Failure}. */
+export function goTo(repository: Repository, revision: string): Promise<string> {
+  return invoke("go_to", { repository, revision });
+}
+
+/** The branches and tags whose name holds `text`, those that start with it first. Rejects with a {@link Failure}. */
+export function goToSuggestions(repository: Repository, text: string): Promise<RefLabel[]> {
+  return invoke("go_to_suggestions", { repository, text });
+}
+
+/** A piece of a commit message. */
+export interface MessagePart {
+  text: string;
+  /** The full hash of the commit the text names, when it is the hash of one. */
+  commit: string | null;
+}
+
+/** The details of a commit. */
+export interface CommitDetails {
+  hash: string;
+  parents: string[];
+  /** Its whole message, in parts, so the hashes of commits it names can lead to them. */
+  message: MessagePart[];
+  author: string;
+  authorEmail: string;
+  /** When it was written, in seconds since the epoch. */
+  authoredAt: number;
+  committer: string;
+  committerEmail: string;
+  /** When it was committed, in seconds since the epoch. */
+  committedAt: number;
+  /** The local and remote branches that contain it, local ones first. */
+  branches: RefLabel[];
+}
+
+/** The files a commit changed against one of its parents. */
+export interface CommitChanges {
+  /** The parent, or null for a commit with none. */
+  parent: string | null;
+  group: ChangeGroup;
+}
+
+/** The details of the commit `revision` names. Rejects with a {@link Failure}. */
+export function commitDetails(repository: Repository, revision: string): Promise<CommitDetails> {
+  return invoke("commit_details", { repository, revision });
+}
+
+/** The files the commit `revision` names changed, against each of its parents. Rejects with a {@link Failure}. */
+export function commitChanges(repository: Repository, revision: string): Promise<CommitChanges[]> {
+  return invoke("commit_changes", { repository, revision });
 }
 
 /** Lets go of what the core holds to read the page at `cursor` quickly, once the log no longer needs it. */

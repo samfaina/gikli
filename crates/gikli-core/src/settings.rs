@@ -40,6 +40,8 @@ pub struct Settings {
     /// Whether the log draws an edge that spans many rows whole, instead of as two arrows that
     /// lead to each other.
     pub show_long_edges: bool,
+    /// How the log arranges the files a commit changed.
+    pub commit_changes_grouping: ChangeGrouping,
 }
 
 impl Default for Settings {
@@ -57,6 +59,7 @@ impl Default for Settings {
             clear_commit_message_after_commit: true,
             staging_mode: false,
             show_long_edges: false,
+            commit_changes_grouping: ChangeGrouping::default(),
         }
     }
 }
