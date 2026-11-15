@@ -147,14 +147,18 @@ fn commit_details_list_every_branch_that_contains_the_commit() {
         "--all",
         "--contains",
         &shared,
-        "--format=%(refname:short)",
+        "--format=%(refname)",
     ]);
     assert_eq!(
         by_git
             .lines()
-            .filter(|name| *name != "origin")
+            .filter(|name| *name != "refs/remotes/origin/HEAD")
             .collect::<Vec<_>>(),
-        vec!["feature", "main", "origin/main"],
+        vec![
+            "refs/heads/feature",
+            "refs/heads/main",
+            "refs/remotes/origin/main"
+        ],
         "git agrees, besides origin/HEAD, which only repeats origin/main"
     );
 }
@@ -689,8 +693,16 @@ fn text_search_can_match_case_and_take_a_regular_expression() {
     assert_eq!(subjects(&regex), vec!["fix the build", "Fix issue 12"]);
     assert_eq!(subjects(&regex_same_case), vec!["Fix issue 12"]);
     assert!(not_regex.is_empty());
+    // `\b` is a GNU extension that the regular expressions of macOS lack, so git is asked the
+    // same in plain POSIX.
     assert_eq!(
-        repository.git(&["log", "--format=%s", "-E", "-i", r"--grep=^fix\b"]),
+        repository.git(&[
+            "log",
+            "--format=%s",
+            "-E",
+            "-i",
+            "--grep=^fix([^[:alnum:]_]|$)"
+        ]),
         "fix the build\nFix issue 12\n",
         "git finds the same"
     );
