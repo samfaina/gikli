@@ -95,6 +95,8 @@ pub struct Gikli {
     wsl_git: Mutex<HashMap<WslShare, GitCheck>>,
     /// The watcher of each Repository whose changes gikli watches, by root.
     watchers: Mutex<HashMap<PathBuf, ChangesWatcher>>,
+    /// The reads of the log gikli holds for the pages to come.
+    log_reads: log::LogReads,
     events: Arc<EventBus>,
     log: Arc<OperationLog>,
     notifications: Notifications,
@@ -462,6 +464,7 @@ impl Gikli {
             git: Mutex::default(),
             wsl_git: Mutex::default(),
             watchers: Mutex::default(),
+            log_reads: log::LogReads::default(),
             log: Arc::new(OperationLog::new(events.clone())),
             notifications: Notifications::new(events.clone()),
             operations: LongOperations::new(events.clone()),
@@ -1666,7 +1669,21 @@ impl Gikli {
     ) -> Result<LogPage, Failure> {
         let show_long_edges = self.settings().show_long_edges;
         let runner = self.runner(&repository.root)?;
-        log::read(&runner, repository, after, count, show_long_edges)
+        log::read(
+            &runner,
+            &self.log_reads,
+            repository,
+            after,
+            count,
+            show_long_edges,
+        )
+    }
+
+    /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer
+    /// needs it, as when the user closes it or it starts over. That page can still be read, only
+    /// more slowly.
+    pub fn end_log_read(&self, cursor: &LogCursor) {
+        self.log_reads.end(cursor);
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes

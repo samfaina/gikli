@@ -1,12 +1,14 @@
 //! The log: the history of a Repository as a commit list with a graph, read a page at a time.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::git::{GitRunner, Invocation};
-use crate::{Failure, Repository, commit, failure_of, git_failed_to_start};
+use crate::git::{GitRunner, GitStream, Invocation};
+use crate::{Failure, Repository, commit, failure_of, git_failed_to_start, lock};
 
 /// One page of the log, newest commit first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -117,6 +119,8 @@ pub struct GraphLine {
 pub struct LogCursor {
     /// How many commits came before this point.
     seen: usize,
+    /// The read of the log this page belongs to, which [`LogReads`] may still hold.
+    read: u64,
     /// A digest of where the log started from, which tells whether the history moved since.
     tips: String,
     /// Whether long edges are drawn whole, as when the log started, so the graph goes on as it was.
@@ -228,8 +232,191 @@ impl Walk {
 const FORMAT: &str = "--format=%H%x00%P%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s";
 const FIELDS: usize = 8;
 
+/// One commit as git printed it, a field of [`FORMAT`] each.
+type Commit = [String; FIELDS];
+
+/// The most reads of the log gikli holds at once. Each is a git waiting to list more commits, and
+/// the oldest goes first.
+const HELD_READS: usize = 4;
+
+/// The reads of the log gikli holds between pages. Each is a git that lists the commits after the
+/// page before, so a later page neither starts git again nor waits for it to go through the
+/// history before the page, which on a long history takes far longer than the page itself. A read
+/// gikli let go of starts again from where its last page left off (ADR-0007).
+#[derive(Default)]
+pub(crate) struct LogReads(Mutex<HeldReads>);
+
+#[derive(Default)]
+struct HeldReads {
+    /// The number of the next read held.
+    next: u64,
+    /// The reads held, the oldest first, each with its number.
+    reads: VecDeque<(u64, LogRead)>,
+}
+
+impl LogReads {
+    /// Lets go of the read the page before `cursor` belongs to, which ends its git.
+    pub fn end(&self, cursor: &LogCursor) {
+        let ended = {
+            let mut held = lock(&self.0);
+            let at = held.reads.iter().position(|(read, _)| *read == cursor.read);
+            at.and_then(|at| held.reads.remove(at))
+        };
+        // Ended without holding the other reads back.
+        drop(ended);
+    }
+
+    /// The read that goes on from `cursor` in the Repository at `root`, when gikli holds it. It is
+    /// no longer held: the page that goes on from it holds it again.
+    fn take(&self, cursor: &LogCursor, root: &Path) -> Option<LogRead> {
+        let mut held = lock(&self.0);
+        let at = held
+            .reads
+            .iter()
+            .position(|(number, read)| *number == cursor.read && read.goes_on_from(cursor, root))?;
+        held.reads.remove(at).map(|(_, read)| read)
+    }
+
+    /// Holds `read` for the next page, and returns its number.
+    fn hold(&self, read: LogRead) -> u64 {
+        let (number, dropped) = {
+            let mut held = lock(&self.0);
+            let number = held.next;
+            held.next += 1;
+            held.reads.push_back((number, read));
+            let dropped = (held.reads.len() > HELD_READS)
+                .then(|| held.reads.pop_front())
+                .flatten();
+            (number, dropped)
+        };
+        // Ended without holding the other reads back.
+        drop(dropped);
+        number
+    }
+}
+
+/// One read of the log: a git listing commits in the order the log shows them, and what it listed
+/// beyond the pages laid out so far.
+struct LogRead {
+    root: PathBuf,
+    /// None once git listed every commit.
+    git: Option<GitStream>,
+    /// The commits git listed that no page laid out yet, in its order.
+    ahead: VecDeque<Commit>,
+    /// How many commits came before those ahead.
+    seen: usize,
+    /// The email of the user's Commit identity when the read started, if they had one.
+    user_email: Option<String>,
+}
+
+impl LogRead {
+    /// Starts git listing the commits of `repository` after the first `seen`, from every branch,
+    /// remote branch and tag, and from HEAD when it has a commit.
+    fn start(
+        runner: &GitRunner,
+        repository: &Repository,
+        seen: usize,
+        has_head: bool,
+    ) -> Result<Self, Failure> {
+        let skip = format!("--skip={seen}");
+        let mut args = vec![
+            "log",
+            "--date-order",
+            "--encoding=UTF-8",
+            "-z",
+            FORMAT,
+            &skip,
+            "--branches",
+            "--remotes",
+            "--tags",
+        ];
+        // An unborn HEAD is no revision git can start from.
+        if has_head {
+            args.push("HEAD");
+        }
+        args.push("--");
+        let git = runner
+            .stream(&repository.root, &args)
+            .map_err(git_failed_to_start)?;
+        Ok(Self {
+            root: repository.root.clone(),
+            git: Some(git),
+            ahead: VecDeque::new(),
+            seen,
+            user_email: None,
+        })
+    }
+
+    /// Whether this read goes on from `cursor` in the Repository at `root`: its next commit is the
+    /// one after the page before `cursor`.
+    fn goes_on_from(&self, cursor: &LogCursor, root: &Path) -> bool {
+        self.root == root && self.seen == cursor.seen
+    }
+
+    /// The next `wanted` commits no page laid out yet, or all that are left when fewer are. It reads
+    /// them from git as far as it has not yet.
+    fn next_commits(&mut self, runner: &GitRunner, wanted: usize) -> Result<&[Commit], Failure> {
+        while self.ahead.len() < wanted
+            && let Some(git) = &mut self.git
+        {
+            let next = next_commit(git).map_err(|_| self.unreadable())?;
+            match next {
+                Some(commit) => self.ahead.push_back(commit),
+                None => self.finish(runner)?,
+            }
+        }
+        let ahead = self.ahead.make_contiguous();
+        Ok(&ahead[..wanted.min(ahead.len())])
+    }
+
+    /// Waits for git, which listed every commit, and fails as the read of the log does when git
+    /// failed.
+    fn finish(&mut self, runner: &GitRunner) -> Result<(), Failure> {
+        let Some(git) = self.git.take() else {
+            return Ok(());
+        };
+        let invocation = git.finish().map_err(|_| self.unreadable())?;
+        if !invocation.success {
+            return Err(failure_of(
+                runner,
+                &self.root,
+                &invocation,
+                self.unreadable(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The failure of a read that git could not finish.
+    fn unreadable(&self) -> Failure {
+        Failure::LogUnreadable {
+            folder: self.root.clone(),
+        }
+    }
+
+    /// Takes the next `count` commits as laid out on a page.
+    fn lay_out(&mut self, count: usize) {
+        let count = count.min(self.ahead.len());
+        self.ahead.drain(..count);
+        self.seen += count;
+    }
+}
+
+/// The next commit `git` lists, or None once it listed them all.
+fn next_commit(git: &mut GitStream) -> std::io::Result<Option<Commit>> {
+    let mut fields = Vec::with_capacity(FIELDS);
+    while fields.len() < FIELDS {
+        let Some(field) = git.next_piece(0)? else {
+            return Ok(None);
+        };
+        fields.push(String::from_utf8_lossy(&field).into_owned());
+    }
+    Ok(fields.try_into().ok())
+}
+
 /// A page of the log of `repository`: at most `count` commits, and at least one when there are any,
-/// after `after` or from the newest commit.
+/// after `after` or from the newest commit. It goes on with the read `reads` holds for `after`, or
+/// starts one.
 ///
 /// A later page goes on from the lanes of the page before, which only fit the history they were
 /// laid out for. So it needs the log to start from the same commits as then, and otherwise this
@@ -239,49 +426,41 @@ const FIELDS: usize = 8;
 /// keeps to what the first one did.
 pub(crate) fn read(
     runner: &GitRunner,
+    reads: &LogReads,
     repository: &Repository,
     after: Option<&LogCursor>,
     count: usize,
     show_long_edges: bool,
 ) -> Result<LogPage, Failure> {
     let count = count.max(1);
+    let seen = after.map_or(0, |cursor| cursor.seen);
+    let show_long_edges = after.map_or(show_long_edges, |cursor| cursor.show_long_edges);
+    let held = after.and_then(|cursor| reads.take(cursor, &repository.root));
+    // Read before git starts, so a reference that moves in between makes the next page find the
+    // history changed, instead of letting the read go on with a history the references left.
     let references = References::read(runner, repository)?;
     let tips = references.tips;
     if after.is_some_and(|cursor| cursor.tips != tips) {
         return Err(Failure::LogChanged);
     }
-    let user_email = commit::user_email(runner, &repository.root)?;
-    let seen = after.map_or(0, |cursor| cursor.seen);
-    let show_long_edges = after.map_or(show_long_edges, |cursor| cursor.show_long_edges);
-    let skip = format!("--skip={seen}");
+    let mut log_read = match held {
+        Some(held) => held,
+        None => {
+            let mut started = LogRead::start(runner, repository, seen, references.head.is_some())?;
+            // Read while git goes through the history, which takes longer.
+            started.user_email = commit::user_email(runner, &repository.root)?;
+            started
+        }
+    };
     // One more than the page, to know whether another comes after it, and enough beyond it to know
     // whether the edges from the page are long.
     let lookahead = if show_long_edges { 0 } else { LONG_EDGE };
-    let max_count = format!("--max-count={}", count + 1 + lookahead);
-    let mut args = vec![
-        "log",
-        "--date-order",
-        "--encoding=UTF-8",
-        "-z",
-        FORMAT,
-        &skip,
-        &max_count,
-        "--branches",
-        "--remotes",
-        "--tags",
-    ];
-    // An unborn HEAD is no revision git can start from.
-    if references.head.is_some() {
-        args.push("HEAD");
-    }
-    args.push("--");
-    let text = run_git(runner, repository, &args)?.stdout_text();
-    let fields: Vec<&str> = text.split_terminator('\0').collect();
-    let (commits, _) = fields.as_chunks::<FIELDS>();
+    let user_email = log_read.user_email.clone();
+    let commits = log_read.next_commits(runner, count + 1 + lookahead)?;
     let rows_of: HashMap<&str, usize> = commits
         .iter()
         .enumerate()
-        .map(|(row, commit)| (commit[0], row))
+        .map(|(row, commit)| (commit[0].as_str(), row))
         .collect();
     // An edge is long when its parent is further down than the rows read beyond the page. git
     // lists every parent, so one not read yet is further down, unless the history ends before.
@@ -303,13 +482,17 @@ pub(crate) fn read(
         .enumerate()
         .map(|(row, commit)| {
             let labels = &references.labels;
-            walk.row(commit, labels, user_email.as_deref(), |parent| {
+            let fields = commit.each_ref().map(String::as_str);
+            walk.row(&fields, labels, user_email.as_deref(), |parent| {
                 is_long(row, parent)
             })
         })
         .collect();
-    let next = (commits.len() > count).then(|| LogCursor {
+    let more = commits.len() > count;
+    log_read.lay_out(rows.len());
+    let next = more.then(|| LogCursor {
         seen: seen + rows.len(),
+        read: reads.hold(log_read),
         tips,
         show_long_edges,
         walk,
@@ -346,20 +529,19 @@ const REF_FORMAT: &str = "--format=%(objectname)%00%(*objectname)%00%(symref)%00
 impl References {
     /// The references of `repository` as they are now.
     fn read(runner: &GitRunner, repository: &Repository) -> Result<Self, Failure> {
-        let mut args = vec!["for-each-ref", REF_FORMAT];
-        args.extend(REF_KINDS.iter().map(|(prefix, _)| *prefix));
-        let listed = run_git(runner, repository, &args)?.stdout;
-        // `--verify --quiet` fails quietly for an unborn HEAD.
-        let head = runner
-            .run(
-                &repository.root,
-                &["rev-parse", "--verify", "--quiet", "HEAD"],
+        let (head, listed) = std::thread::scope(|scope| {
+            let listed = scope.spawn(|| list_references(runner, repository));
+            let head = head_commit(runner, repository);
+            (
+                head,
+                listed.join().expect("listing the references panicked"),
             )
-            .map_err(git_failed_to_start)?;
-        let head = head
-            .success
-            .then(|| head.stdout_text().trim_end().to_owned());
+        });
+        Ok(Self::new(head?, &listed?))
+    }
 
+    /// The references with HEAD at `head`, and the others as [`list_references`] `listed` them.
+    fn new(head: Option<String>, listed: &[u8]) -> Self {
         let mut labels: HashMap<String, Vec<RefLabel>> = HashMap::new();
         if let Some(head) = &head {
             labels.entry(head.clone()).or_default().push(RefLabel {
@@ -367,7 +549,7 @@ impl References {
                 kind: RefKind::Head,
             });
         }
-        for line in String::from_utf8_lossy(&listed).lines() {
+        for line in String::from_utf8_lossy(listed).lines() {
             let fields: Vec<&str> = line.split('\0').collect();
             let [object, peeled, symref, name] = fields[..] else {
                 continue;
@@ -395,12 +577,33 @@ impl References {
         let mut digest = DefaultHasher::new();
         listed.hash(&mut digest);
         head.hash(&mut digest);
-        Ok(Self {
+        Self {
             head,
             labels,
             tips: format!("{:x}", digest.finish()),
-        })
+        }
     }
+}
+
+/// The references of `repository` the log shows, as git lists them in [`REF_FORMAT`].
+fn list_references(runner: &GitRunner, repository: &Repository) -> Result<Vec<u8>, Failure> {
+    let mut args = vec!["for-each-ref", REF_FORMAT];
+    args.extend(REF_KINDS.iter().map(|(prefix, _)| *prefix));
+    Ok(run_git(runner, repository, &args)?.stdout)
+}
+
+/// The commit HEAD of `repository` points at, if it has one.
+fn head_commit(runner: &GitRunner, repository: &Repository) -> Result<Option<String>, Failure> {
+    // `--verify --quiet` fails quietly for an unborn HEAD.
+    let head = runner
+        .run(
+            &repository.root,
+            &["rev-parse", "--verify", "--quiet", "HEAD"],
+        )
+        .map_err(git_failed_to_start)?;
+    Ok(head
+        .success
+        .then(|| head.stdout_text().trim_end().to_owned()))
 }
 
 /// Runs git with `args` in `repository`, for a read of its log.

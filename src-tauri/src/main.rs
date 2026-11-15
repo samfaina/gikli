@@ -571,6 +571,11 @@ fn read_log(
 }
 
 #[tauri::command(async)]
+fn end_log_read(gikli: State<'_, Gikli>, cursor: LogCursor) {
+    gikli.end_log_read(&cursor);
+}
+
+#[tauri::command(async)]
 fn watch_changes(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
     gikli.watch_changes(&repository)
 }
@@ -692,6 +697,7 @@ fn main() {
             last_commit_message,
             set_commit_identity,
             read_log,
+            end_log_read,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
             set_staging_mode,

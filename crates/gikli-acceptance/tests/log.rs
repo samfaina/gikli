@@ -1,6 +1,6 @@
 //! The log: the user reads the history of a Repository as a commit list with a graph.
 
-use gikli_acceptance::{Sandbox, TestRepository, minute_as_seconds};
+use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository, minute_as_seconds};
 use gikli_core::{Failure, Gikli, GraphLine, LogPage, LogRow, Repository};
 
 /// Opens the repository's folder as a Project and returns its Repository.
@@ -413,6 +413,89 @@ fn the_log_comes_page_by_page_and_the_graph_goes_on_across_the_pages() {
         ]
     );
     assert_git_lists(&repository, WHOLE_GRAPH, &rows);
+}
+
+/// Commits enough that git lists more of them than the pipe to gikli holds, so a git that lists
+/// them waits until gikli reads on.
+const MORE_THAN_A_PIPE_HOLDS: usize = 5000;
+
+/// A repository with a line of `commits` commits on main, made with `git fast-import`, which is
+/// far faster than one commit at a time.
+fn repository_with_a_long_line(sandbox: &Sandbox, commits: usize) -> TestRepository {
+    let repository = sandbox.repository("app");
+    let mut history = ImportedHistory::default();
+    let mut tip = None;
+    while history.commits() < commits {
+        let parents: Vec<usize> = tip.into_iter().collect();
+        tip = Some(history.commit("main", &parents));
+    }
+    repository.fast_import(&history);
+    repository
+}
+
+#[test]
+fn reading_the_last_page_leaves_no_git_running() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_long_line(&sandbox, MORE_THAN_A_PIPE_HOLDS);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let pages = all_pages(&gikli, &root, 2000);
+
+    let rows: Vec<LogRow> = pages.iter().flat_map(|page| page.rows.clone()).collect();
+    assert_eq!(pages.len(), 3);
+    assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+    assert_git_lists(&repository, WHOLE_GRAPH, &rows);
+}
+
+#[test]
+fn a_page_after_the_log_let_go_of_its_read_still_comes_and_goes_on_from_the_page_before() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_long_line(&sandbox, MORE_THAN_A_PIPE_HOLDS);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let first = gikli.read_log(&root, None, 2).expect("read the log");
+    let cursor = first.next.clone().expect("more commits come");
+
+    gikli.end_log_read(&cursor);
+    let running = sandbox.processes_still_running();
+    let next = gikli
+        .read_log(&root, Some(&cursor), MORE_THAN_A_PIPE_HOLDS)
+        .expect("read a page");
+
+    assert_eq!(running, Vec::<String>::new(), "no git waits for the page");
+    let rows: Vec<LogRow> = first.rows.into_iter().chain(next.rows).collect();
+    assert_eq!(rows.len(), MORE_THAN_A_PIPE_HOLDS);
+    assert_eq!(next.next, None);
+    assert_git_lists(&repository, WHOLE_GRAPH, &rows);
+    let whole = gikli
+        .read_log(&root, None, MORE_THAN_A_PIPE_HOLDS)
+        .expect("read the log");
+    assert_eq!(rows, whole.rows, "the pages show what one page shows");
+}
+
+#[test]
+fn a_read_of_the_log_gikli_let_go_of_shows_as_cancelled_in_the_operation_log_and_not_as_failed() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_long_line(&sandbox, MORE_THAN_A_PIPE_HOLDS);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let first = gikli.read_log(&root, None, 2).expect("read the log");
+
+    gikli.end_log_read(first.next.as_ref().expect("more commits come"));
+
+    let reads: Vec<_> = gikli
+        .operation_log()
+        .into_iter()
+        .filter(|entry| entry.args.iter().any(|arg| arg == "--date-order"))
+        .collect();
+    assert_eq!(reads.len(), 1, "the read shows once it ended: {reads:?}");
+    assert!(reads[0].cancelled, "{:?}", reads[0]);
+    let newest = hash_of(&repository, "HEAD");
+    assert!(
+        reads[0].stdout.starts_with(&newest),
+        "it shows what gikli read"
+    );
 }
 
 #[test]

@@ -22,6 +22,9 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   One test lives in `crates/gikli-core/src/watch.rs` instead and runs no git: that a burst without
   a pause is announced once, since real files cannot make a burst whose timing does not depend on
   the machine.
+  The test of the log's speed, `log_performance.rs`, generates a history of 300,000 commits with
+  `git fast-import` and checks the budget of each page on the development machine. On CI, where
+  the `CI` variable is set, it only reports its timings.
 - `src-tauri`: the Tauri 2 shell. Each core command is a Tauri command that forwards to `Gikli`,
   and core events reach the UI as `gikli://event`. The shell adds only `startup_folder`, the
   folder to open at launch. The app is also its own askpass program: when git or ssh start it to

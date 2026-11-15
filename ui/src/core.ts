@@ -857,6 +857,11 @@ export function readLog(repository: Repository, after: LogCursor | null, count: 
   return invoke("read_log", { repository, after, count });
 }
 
+/** Lets go of what the core holds to read the page at `cursor` quickly, once the log no longer needs it. */
+export function endLogRead(cursor: LogCursor): Promise<void> {
+  return invoke("end_log_read", { cursor });
+}
+
 /** The message of the last commit, or null when there is no commit yet. Rejects with a {@link Failure}. */
 export function lastCommitMessage(repository: Repository): Promise<string | null> {
   return invoke("last_commit_message", { repository });
