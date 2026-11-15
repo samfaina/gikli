@@ -11,11 +11,11 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitWarning, Failure,
-    FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, LogCursor, LogPage, MoveTarget,
-    Notification, NotificationAction, NotificationOutcome, OperationLogEntry, Project,
-    ProjectWindow, Prompt, Repository, RollbackPlan, RunningOperation, Settings, StagingSide,
-    answer_askpass_request,
+    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges, CommitDetails,
+    CommitWarning, Failure, FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, LogCursor,
+    LogFilter, LogPage, MoveTarget, Notification, NotificationAction, NotificationOutcome,
+    OperationLogEntry, Project, ProjectWindow, Prompt, RefLabel, Repository, RollbackPlan,
+    RunningOperation, Settings, StagingSide, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -85,6 +85,14 @@ fn set_change_grouping(
     grouping: ChangeGrouping,
 ) -> Result<Settings, Failure> {
     gikli.set_change_grouping(grouping)
+}
+
+#[tauri::command]
+fn set_commit_changes_grouping(
+    gikli: State<'_, Gikli>,
+    grouping: ChangeGrouping,
+) -> Result<Settings, Failure> {
+    gikli.set_commit_changes_grouping(grouping)
 }
 
 #[tauri::command]
@@ -564,10 +572,58 @@ fn set_commit_identity(
 fn read_log(
     gikli: State<'_, Gikli>,
     repository: Repository,
+    filter: Option<LogFilter>,
     after: Option<LogCursor>,
     count: usize,
 ) -> Result<LogPage, Failure> {
-    gikli.read_log(&repository, after.as_ref(), count)
+    let filter = filter.unwrap_or_default();
+    gikli.read_filtered_log(&repository, &filter, after.as_ref(), count)
+}
+
+#[tauri::command]
+fn log_search_history(gikli: State<'_, Gikli>) -> Vec<String> {
+    gikli.log_search_history()
+}
+
+#[tauri::command(async)]
+fn log_branches(gikli: State<'_, Gikli>, repository: Repository) -> Result<Vec<RefLabel>, Failure> {
+    gikli.log_branches(&repository)
+}
+
+#[tauri::command(async)]
+fn go_to(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    revision: String,
+) -> Result<String, Failure> {
+    gikli.go_to(&repository, &revision)
+}
+
+#[tauri::command(async)]
+fn go_to_suggestions(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    text: String,
+) -> Result<Vec<RefLabel>, Failure> {
+    gikli.go_to_suggestions(&repository, &text)
+}
+
+#[tauri::command(async)]
+fn commit_details(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    revision: String,
+) -> Result<CommitDetails, Failure> {
+    gikli.commit_details(&repository, &revision)
+}
+
+#[tauri::command(async)]
+fn commit_changes(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    revision: String,
+) -> Result<Vec<CommitChanges>, Failure> {
+    gikli.commit_changes(&repository, &revision)
 }
 
 #[tauri::command(async)]
@@ -644,6 +700,7 @@ fn main() {
             set_change_grouping,
             set_operation_log_soft_wrap,
             set_show_long_edges,
+            set_commit_changes_grouping,
             set_use_credential_helper,
             set_clone_submodules_recursively,
             set_diff_local_side_editable,
@@ -698,6 +755,12 @@ fn main() {
             set_commit_identity,
             read_log,
             end_log_read,
+            log_search_history,
+            log_branches,
+            go_to,
+            go_to_suggestions,
+            commit_details,
+            commit_changes,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
             set_staging_mode,

@@ -1,8 +1,15 @@
-// The log: the commit list with its graph. The core reads the commits and lays out the graph a page
-// at a time; this draws only the rows in view, and asks for the next page as the user nears the end.
+// The log: the commit list with its graph, the search, filter and go-to above it, and what the
+// selected commit changed and its details beside it. The core reads the commits and lays out the
+// graph a page at a time; this draws only the rows in view, and asks for the next page as the user
+// nears the end.
 
+import { createCommitMenu } from "./commit-menu";
 import {
   endLogRead,
+  goTo,
+  goToSuggestions,
+  logBranches,
+  logSearchHistory,
   readLog,
   isFailure,
   settings,
@@ -10,10 +17,13 @@ import {
   type GraphArrow,
   type GraphLine,
   type LogCursor,
+  type LogFilter,
   type LogRow,
+  type RefLabel,
   type Repository,
 } from "./core";
 import { element } from "./dom";
+import { createCommitPanes, SHORT_HASH_LENGTH } from "./log-details";
 import { t } from "./strings";
 
 /** What the log view needs from the window around it. */
@@ -49,7 +59,8 @@ const LANE_COLORS = 8;
 const ARROW_GAP = 4;
 /** The length of the sides of an arrowhead, in pixels. */
 const ARROWHEAD = 4;
-const SHORT_HASH_LENGTH = 8;
+/** How long the user stops typing a revision before the names that match are looked up, in milliseconds. */
+const SUGGESTION_DELAY = 150;
 const SVG = "http://www.w3.org/2000/svg";
 
 const dates = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
@@ -63,6 +74,13 @@ export function createLogView(host: LogViewHost): LogView {
   const longEdgesInput = element<HTMLInputElement>("log-long-edges");
   const refreshButton = element<HTMLButtonElement>("log-refresh");
   const closeButton = element<HTMLButtonElement>("log-close");
+  const searchInput = element<HTMLInputElement>("log-search");
+  const searchHistory = element<HTMLDataListElement>("log-search-history");
+  const regexInput = element<HTMLInputElement>("log-search-regex");
+  const matchCaseInput = element<HTMLInputElement>("log-search-match-case");
+  const branchSelect = element<HTMLSelectElement>("log-branch-filter");
+  const goToInput = element<HTMLInputElement>("log-go-to");
+  const goToList = element<HTMLDataListElement>("log-go-to-suggestions");
 
   let repository: Repository | null = null;
   let rows: LogRow[] = [];
@@ -75,21 +93,64 @@ export function createLogView(host: LogViewHost): LogView {
   let drawScheduled = false;
   /** The hash of the selected commit, if any. */
   let selected: string | null = null;
+  /** What the log shows, as the search and the branch filter set it. */
+  let filter: LogFilter = { branches: [], text: null };
+  /** The branches the log can be filtered by, as the branch filter lists them. */
+  let branches: RefLabel[] = [];
+  let suggestionTimer: number | undefined;
+
+  const panes = createCommitPanes({
+    errorView: (error) => host.errorView(error),
+    goToCommit: (hash) => void goToCommit(hash, hash.slice(0, SHORT_HASH_LENGTH)),
+  });
+  const menu = createCommitMenu(view, (error) => message.replaceChildren(host.errorView(error)));
 
   element<HTMLElement>("log-long-edges-label").textContent = t("logLongEdges");
+  element<HTMLElement>("log-search-regex-label").textContent = t("logSearchRegex");
+  element<HTMLElement>("log-search-match-case-label").textContent = t("logSearchMatchCase");
+  element<HTMLElement>("log-branch-filter-label").textContent = t("logBranchFilter");
+  searchInput.placeholder = t("logSearch");
+  searchInput.setAttribute("aria-label", t("logSearch"));
+  goToInput.placeholder = t("logGoTo");
+  goToInput.setAttribute("aria-label", t("logGoTo"));
   refreshButton.textContent = t("logRefresh");
   closeButton.textContent = t("logClose");
-  refreshButton.addEventListener("click", () => void startOver());
+  refreshButton.addEventListener("click", refresh);
   closeButton.addEventListener("click", close);
   longEdgesInput.addEventListener("change", () => void changeLongEdges());
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      applyFilter();
+    }
+  });
+  // Clearing the search shows every commit again.
+  searchInput.addEventListener("input", () => {
+    if (searchInput.value === "" && filter.text !== null) {
+      applyFilter();
+    }
+  });
+  regexInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
+  matchCaseInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
+  branchSelect.addEventListener("change", applyFilter);
+  goToInput.addEventListener("input", scheduleSuggestions);
+  goToInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && goToInput.value.trim() !== "") {
+      void goToRevision(goToInput.value);
+    }
+  });
   list.addEventListener("scroll", scheduleDraw);
   list.addEventListener("keydown", onKey);
   rowsView.addEventListener("click", onClick);
+  rowsView.addEventListener("contextmenu", onContextMenu);
   window.addEventListener("resize", scheduleDraw);
 
   function open(toShow: Repository): void {
     repository = toShow;
     selected = null;
+    panes.show(null, null);
+    filter = { branches: [], text: null };
+    searchInput.value = "";
+    goToInput.value = "";
     title.textContent = t("logTitle", { root: toShow.root });
     view.hidden = false;
     host.opened();
@@ -97,8 +158,96 @@ export function createLogView(host: LogViewHost): LogView {
     void settings().then((current) => {
       longEdgesInput.checked = current.showLongEdges;
     });
+    void listBranches(toShow);
+    void listSearches();
     void startOver();
     list.focus();
+  }
+
+  /** Reads the log again, and the branches it can be filtered by, which may have changed. */
+  function refresh(): void {
+    if (repository !== null) {
+      void listBranches(repository);
+    }
+    void startOver();
+  }
+
+  /** Lists the branches of `shown` in the branch filter, with every branch first, keeping the one chosen. */
+  async function listBranches(shown: Repository): Promise<void> {
+    const chosen = branchSelect.value === "" ? undefined : branches[Number(branchSelect.value)];
+    let listed: RefLabel[] = [];
+    try {
+      listed = await logBranches(shown);
+    } catch {
+      // The filter then offers every branch only; the log says why it cannot be read.
+    }
+    if (repository !== shown) {
+      return;
+    }
+    branches = listed;
+    const every = new Option(t("logAllBranches"), "");
+    branchSelect.replaceChildren(every, ...branches.map((branch, index) => new Option(branch.name, String(index))));
+    const still = branches.findIndex((branch) => branch.name === chosen?.name && branch.kind === chosen.kind);
+    branchSelect.value = still < 0 ? "" : String(still);
+  }
+
+  /** Offers the searches the user ran, newest first, under the search field. */
+  async function listSearches(): Promise<void> {
+    const searches = await logSearchHistory().catch(() => [] as string[]);
+    searchHistory.replaceChildren(...searches.map((search) => new Option(search)));
+  }
+
+  /** Reads the log again with the search and the branch filter as the user set them. */
+  function applyFilter(): void {
+    const branch = branchSelect.value === "" ? undefined : branches[Number(branchSelect.value)];
+    const text = searchInput.value;
+    filter = {
+      branches: branch === undefined ? [] : [branch],
+      text: text === "" ? null : { text, regex: regexInput.checked, matchCase: matchCaseInput.checked },
+    };
+    list.scrollTop = 0;
+    void startOver().then(() => listSearches());
+  }
+
+  function scheduleSuggestions(): void {
+    window.clearTimeout(suggestionTimer);
+    suggestionTimer = window.setTimeout(() => void suggest(), SUGGESTION_DELAY);
+  }
+
+  /** Offers the branches and tags whose name holds what the user typed to go to. */
+  async function suggest(): Promise<void> {
+    const shown = repository;
+    if (shown === null) {
+      return;
+    }
+    const text = goToInput.value;
+    const suggestions = await goToSuggestions(shown, text).catch(() => [] as RefLabel[]);
+    if (repository === shown && goToInput.value === text) {
+      goToList.replaceChildren(...suggestions.map((label) => new Option(label.name)));
+    }
+  }
+
+  /** Selects the commit `revision` names: a hash, a branch or a tag. */
+  async function goToRevision(revision: string): Promise<void> {
+    const shown = repository;
+    if (shown === null) {
+      return;
+    }
+    try {
+      const hash = await goTo(shown, revision);
+      if (repository === shown) {
+        await goToCommit(hash, revision.trim());
+      }
+    } catch (error) {
+      message.replaceChildren(host.errorView(error));
+    }
+  }
+
+  /** Selects the commit `hash`, which the user knows as `revision`, or says the log does not show it. */
+  async function goToCommit(hash: string, revision: string): Promise<void> {
+    if (!(await select(hash))) {
+      message.replaceChildren(t("logNotShown", { revision }));
+    }
   }
 
   function close(): void {
@@ -112,6 +261,7 @@ export function createLogView(host: LogViewHost): LogView {
     next = null;
     reading = null;
     selected = null;
+    panes.show(null, null);
     rowsView.replaceChildren();
     view.hidden = true;
     host.closed();
@@ -151,17 +301,22 @@ export function createLogView(host: LogViewHost): LogView {
     if (repository === null) {
       return Promise.resolve(false);
     }
-    const read = readPageOf(repository, after, count);
+    const read = readPageOf(repository, filter, after, count);
     reading = read;
     return read;
   }
 
-  /** Reads a page of the log of `shown` for {@link readPage}, and draws it. */
-  async function readPageOf(shown: Repository, after: LogCursor | null, count: number): Promise<boolean> {
+  /** Reads a page of the log of `shown` with `shownFilter` for {@link readPage}, and draws it. */
+  async function readPageOf(
+    shown: Repository,
+    shownFilter: LogFilter,
+    after: LogCursor | null,
+    count: number,
+  ): Promise<boolean> {
     latestRead += 1;
     const thisRead = latestRead;
     try {
-      const page = await readLog(shown, after, count);
+      const page = await readLog(shown, shownFilter, after, count);
       if (thisRead !== latestRead) {
         endReadOf(page.next);
         return false;
@@ -170,7 +325,10 @@ export function createLogView(host: LogViewHost): LogView {
       rows.push(...page.rows);
       next = page.next;
       columns = page.rows.reduce((widest, row) => Math.max(widest, columnsOf(row)), columns);
-      message.replaceChildren(rows.length === 0 ? t("logEmpty") : "");
+      const filtered = shownFilter.text !== null || shownFilter.branches.length > 0;
+      // A page of a search can find nothing while the search goes on through the history.
+      const emptyMessage = next !== null ? t("logSearching") : t(filtered ? "logNoMatches" : "logEmpty");
+      message.replaceChildren(rows.length === 0 ? emptyMessage : "");
       draw();
       return true;
     } catch (error) {
@@ -201,13 +359,16 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  /** Selects the commit `hash`, and scrolls it into view. */
-  async function select(hash: string): Promise<void> {
+  /** Selects the commit `hash`, and scrolls it into view. Resolves to whether the log shows it. */
+  async function select(hash: string): Promise<boolean> {
     const index = await placeOf(hash);
     if (index < 0) {
-      return;
+      return false;
     }
-    selected = hash;
+    if (selected !== hash) {
+      selected = hash;
+      panes.show(repository, hash);
+    }
     const top = index * ROW_HEIGHT;
     if (top < list.scrollTop) {
       list.scrollTop = top;
@@ -215,12 +376,25 @@ export function createLogView(host: LogViewHost): LogView {
       list.scrollTop = top + ROW_HEIGHT - list.clientHeight;
     }
     draw();
+    return true;
   }
 
-  /** The left and right arrows go to the parent and the child, the up and down arrows along the list. */
+  /**
+   * The left and right arrows go to the parent and the child, the up and down arrows along the list,
+   * and the menu key or Shift+F10 opens the commit menu of the selected commit.
+   */
   function onKey(event: KeyboardEvent): void {
     const index = rows.findIndex((row) => row.hash === selected);
     const current = rows[index];
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      event.preventDefault();
+      const row = rowsView.querySelector<HTMLElement>(".log-row.selected");
+      if (current !== undefined && row !== null) {
+        const box = row.getBoundingClientRect();
+        menu.open(current.hash, box.left + 16, box.bottom, list);
+      }
+      return;
+    }
     let target: string | undefined;
     if (event.key === "ArrowLeft") {
       target = current?.parents[0];
@@ -248,6 +422,18 @@ export function createLogView(host: LogViewHost): LogView {
     if (hash !== undefined) {
       void select(hash);
     }
+  }
+
+  /** A right click on a row selects it and opens the commit menu. */
+  function onContextMenu(event: MouseEvent): void {
+    const target = event.target instanceof Element ? event.target : null;
+    const hash = target?.closest<HTMLElement>(".log-row")?.dataset.hash;
+    if (hash === undefined) {
+      return;
+    }
+    event.preventDefault();
+    void select(hash);
+    menu.open(hash, event.clientX, event.clientY, list);
   }
 
   function scheduleDraw(): void {

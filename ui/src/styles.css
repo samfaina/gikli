@@ -844,6 +844,144 @@ button:disabled {
   white-space: nowrap;
 }
 
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-filters label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.log-search {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.log-go-to {
+  flex: 0 1 220px;
+  min-width: 0;
+}
+
+/* The commit list, and beside it what the selected commit changed and its details. */
+.log-body {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.log-side {
+  display: flex;
+  flex: 0 0 360px;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+}
+
+.log-changes,
+.log-details {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 8px 12px;
+  overflow: auto;
+}
+
+.log-details {
+  border-top: 1px solid var(--border);
+}
+
+.log-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-pane-header h3 {
+  flex: 1;
+  margin: 0;
+  font-size: 1em;
+}
+
+.log-side-note {
+  color: var(--muted);
+}
+
+.log-parent-title {
+  margin: 8px 0 4px;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.log-changes-content ul {
+  margin: 0;
+  padding-left: 16px;
+  list-style: none;
+}
+
+.log-changes-content > div > ul {
+  padding-left: 0;
+}
+
+.log-changes-content li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-changes-content .folder-name {
+  color: var(--muted);
+}
+
+.log-message-text {
+  margin: 0 0 8px;
+  font-family: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-details dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 0;
+}
+
+.log-details dt {
+  color: var(--muted);
+}
+
+.log-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.log-details .log-hash-value {
+  font-family: monospace;
+}
+
+/* A hash in a message, or a parent, that leads to its commit. */
+.log-commit-link {
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.log-branch-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .log-message:not(:empty) {
   padding: 8px 16px;
   color: var(--muted);

@@ -125,7 +125,7 @@ pub enum ChangeNode {
 
 impl ChangeGroup {
     /// The `changes`, with their rows arranged by `grouping`.
-    fn new(changes: Vec<Change>, grouping: ChangeGrouping) -> Self {
+    pub(crate) fn new(changes: Vec<Change>, grouping: ChangeGrouping) -> Self {
         let nodes = match grouping {
             ChangeGrouping::Flat => changes.iter().cloned().map(ChangeNode::File).collect(),
             ChangeGrouping::Folder => {

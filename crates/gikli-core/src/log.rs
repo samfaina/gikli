@@ -5,6 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, GitStream, Invocation};
@@ -47,7 +48,7 @@ pub struct LogRow {
 }
 
 /// A reference shown on the commit it points at.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefLabel {
     /// Its name as the user knows it: `HEAD`, `main`, `origin/main`, `v1`.
@@ -56,7 +57,7 @@ pub struct RefLabel {
 }
 
 /// What a [`RefLabel`] names. Each kind shows in its own color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RefKind {
     /// HEAD itself, on the commit it points at.
@@ -67,6 +68,129 @@ pub enum RefKind {
     Remote,
     /// A tag, lightweight or annotated.
     Tag,
+}
+
+impl RefKind {
+    /// Whether it is a local or a remote branch.
+    pub(crate) fn is_branch(self) -> bool {
+        matches!(self, Self::Local | Self::Remote)
+    }
+}
+
+/// What the log shows of the history.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LogFilter {
+    /// The branches whose commits the log shows. When there are none, it shows the commits of
+    /// every branch, remote branch and tag, and of HEAD.
+    pub branches: Vec<RefLabel>,
+    /// The text the commits shown match, if any. A search shows them without their graph.
+    pub text: Option<TextSearch>,
+}
+
+/// A search of the log for the commits whose message, author or hash match a text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TextSearch {
+    /// What the user typed.
+    pub text: String,
+    /// Whether the text is a regular expression. Otherwise a commit matches when its message or
+    /// author holds the text, or its hash starts with it.
+    pub regex: bool,
+    /// Whether a match must have the same case as the text.
+    pub match_case: bool,
+}
+
+/// What tells the commits a [`TextSearch`] finds.
+struct Matcher {
+    pattern: Regex,
+    /// The text in lowercase, which a hash starts with, for a search that is no regular expression.
+    hash_prefix: Option<String>,
+}
+
+impl Matcher {
+    /// The matcher of `search`, or None when it has no text, so it finds every commit. A regular
+    /// expression gikli cannot read returns [`Failure::SearchPatternInvalid`].
+    fn new(search: &TextSearch) -> Result<Option<Self>, Failure> {
+        if search.text.is_empty() {
+            return Ok(None);
+        }
+        let pattern = if search.regex {
+            search.text.clone()
+        } else {
+            regex::escape(&search.text)
+        };
+        // `^` and `$` match at the start and end of each line, as in git's own search.
+        let pattern = RegexBuilder::new(&pattern)
+            .case_insensitive(!search.match_case)
+            .multi_line(true)
+            .build()
+            .map_err(|error| Failure::SearchPatternInvalid {
+                message: error.to_string(),
+            })?;
+        Ok(Some(Self {
+            pattern,
+            hash_prefix: (!search.regex).then(|| search.text.trim().to_lowercase()),
+        }))
+    }
+
+    /// Whether the commit git printed as `commit` matches.
+    fn matches(&self, commit: &Commit) -> bool {
+        let [hash, _, _, author, _, _, _, _, message] = commit;
+        let hash_matches = match &self.hash_prefix {
+            Some(prefix) => !prefix.is_empty() && hash.starts_with(prefix.as_str()),
+            None => self.pattern.is_match(hash),
+        };
+        hash_matches || self.pattern.is_match(author) || self.pattern.is_match(message)
+    }
+}
+
+impl LogFilter {
+    /// The revisions git lists the log from with this filter, given the references there are now:
+    /// None when it names only branches that are gone, so the log shows nothing.
+    fn revisions(&self, references: &References) -> Option<Vec<String>> {
+        if self.branches.is_empty() {
+            let mut whole = vec!["--branches", "--remotes", "--tags"];
+            // An unborn HEAD is no revision git can start from.
+            if references.head.is_some() {
+                whole.push("HEAD");
+            }
+            return Some(whole.into_iter().map(str::to_owned).collect());
+        }
+        let existing: Vec<String> = self
+            .branches
+            .iter()
+            .filter(|branch| references.commit_of(branch).is_some())
+            .map(RefLabel::full_name)
+            .collect();
+        (!existing.is_empty()).then_some(existing)
+    }
+
+    /// The commits from which the log marks those of the current branch, which HEAD at `head`
+    /// reaches. Without a branch filter it is HEAD alone. With one, HEAD may be no commit the log
+    /// shows, so they are where the history of each branch shown meets HEAD's.
+    fn current_branch_tips(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        references: &References,
+    ) -> Result<Vec<String>, Failure> {
+        let Some(head) = &references.head else {
+            return Ok(Vec::new());
+        };
+        let mut tips = vec![head.clone()];
+        for branch in &self.branches {
+            let Some(commit) = references.commit_of(branch) else {
+                continue;
+            };
+            let bases = runner
+                .run(&repository.root, &["merge-base", "--all", head, commit])
+                .map_err(git_failed_to_start)?;
+            // git fails, with nothing printed, when the histories never meet.
+            tips.extend(bases.stdout_text().lines().map(str::to_owned));
+        }
+        Ok(tips)
+    }
 }
 
 /// How one row of the graph is drawn. A column is the place of a lane, counted from the left. The
@@ -88,6 +212,19 @@ pub struct GraphRow {
     pub arrows_down: Vec<GraphArrow>,
 }
 
+impl GraphRow {
+    /// The row of a node with no lines.
+    fn node_alone() -> Self {
+        Self {
+            column: 0,
+            above: Vec::new(),
+            below: Vec::new(),
+            arrows_up: Vec::new(),
+            arrows_down: Vec::new(),
+        }
+    }
+}
+
 /// The end of an edge too long to draw whole, which leads to the commit at its other end. A long
 /// edge spans more than [`LONG_EDGE`] rows. Unless the user shows long edges, it is drawn as an
 /// arrow at each end, and it holds no lane between them.
@@ -100,6 +237,11 @@ pub struct GraphArrow {
     /// The hash of the commit at the other end of the edge.
     pub target: String,
 }
+
+/// The most commits a page of a search goes through. A page that finds fewer than it was asked for
+/// in as many ends there, with more to come, so the log stays responsive while a search that finds
+/// little goes through a long history, and a newer search does not wait for it.
+pub const LOG_SEARCH_BATCH: usize = 10_000;
 
 /// The most rows an edge spans and is still drawn whole when long edges are off.
 pub const LONG_EDGE: usize = 30;
@@ -125,6 +267,8 @@ pub struct LogCursor {
     tips: String,
     /// Whether long edges are drawn whole, as when the log started, so the graph goes on as it was.
     show_long_edges: bool,
+    /// What the log shows, as when it started.
+    filter: LogFilter,
     walk: Walk,
 }
 
@@ -153,23 +297,27 @@ struct Child {
 }
 
 impl Walk {
-    /// The walk at the newest commit, with HEAD at `head`.
-    fn from_head(head: Option<&String>) -> Self {
+    /// The walk at the newest commit, where the commits of the current branch start from
+    /// `current_branch_tips`.
+    fn from_tips(current_branch_tips: Vec<String>) -> Self {
         Self {
-            on_current_branch: head.into_iter().cloned().collect(),
+            on_current_branch: current_branch_tips.into_iter().collect(),
             ..Self::default()
         }
     }
 
     /// Goes past the commit git printed as `fields`: returns its row, and leaves the walk as the
     /// next row finds it. `user_email` is the email of the user's Commit identity, if they have
-    /// one, and `is_long` tells whether the edge to a parent is cut.
+    /// one, and `is_long` tells whether the edge to a parent is cut. Unless `with_graph`, the row
+    /// has no lines of the graph, only its node, as in a search, whose commits do not follow one
+    /// another.
     fn row(
         &mut self,
         fields: &[&str; FIELDS],
         labels: &HashMap<String, Vec<RefLabel>>,
         user_email: Option<&str>,
         is_long: impl Fn(&str) -> bool,
+        with_graph: bool,
     ) -> LogRow {
         let [
             hash,
@@ -180,6 +328,7 @@ impl Walk {
             committer,
             committer_email,
             subject,
+            _message,
         ] = *fields;
         let parents: Vec<String> = parents.split_whitespace().map(str::to_owned).collect();
         let on_current_branch = self.on_current_branch.remove(hash);
@@ -192,7 +341,11 @@ impl Walk {
             .filter(|child| child.column.is_none())
             .map(|child| child.hash.clone())
             .collect();
-        let graph = self.lanes.place(hash, &parents, is_long, children_cut);
+        let graph = if with_graph {
+            self.lanes.place(hash, &parents, is_long, children_cut)
+        } else {
+            GraphRow::node_alone()
+        };
         // The child in the same column, with its edge drawn, has its line run straight down here.
         if let Some(on_its_line) = children
             .iter()
@@ -208,7 +361,7 @@ impl Walk {
                 .any(|arrow| &arrow.target == parent);
             let child = Child {
                 hash: hash.to_owned(),
-                column: (!cut).then_some(graph.column),
+                column: (with_graph && !cut).then_some(graph.column),
             };
             self.children.entry(parent.clone()).or_default().push(child);
         }
@@ -228,9 +381,12 @@ impl Walk {
     }
 }
 
-/// What git prints of each commit, a field per NUL. `-z` ends each commit with one more.
-const FORMAT: &str = "--format=%H%x00%P%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s";
-const FIELDS: usize = 8;
+/// What git prints of each commit, a field per NUL, the last one, the whole message, left empty.
+/// `-z` ends each commit with one more.
+const FORMAT: &str = "--format=%H%x00%P%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00";
+/// What git prints of each commit for a search, which also reads the whole message.
+const SEARCH_FORMAT: &str = "--format=%H%x00%P%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00%B";
+const FIELDS: usize = 9;
 
 /// One commit as git printed it, a field of [`FORMAT`] each.
 type Commit = [String; FIELDS];
@@ -310,30 +466,26 @@ struct LogRead {
 }
 
 impl LogRead {
-    /// Starts git listing the commits of `repository` after the first `seen`, from every branch,
-    /// remote branch and tag, and from HEAD when it has a commit.
+    /// Starts git listing the commits of `repository` after the first `seen`, from `revisions`,
+    /// each with its whole message when `with_message`.
     fn start(
         runner: &GitRunner,
         repository: &Repository,
         seen: usize,
-        has_head: bool,
+        revisions: &[String],
+        with_message: bool,
     ) -> Result<Self, Failure> {
         let skip = format!("--skip={seen}");
+        let format = if with_message { SEARCH_FORMAT } else { FORMAT };
         let mut args = vec![
             "log",
             "--date-order",
             "--encoding=UTF-8",
             "-z",
-            FORMAT,
+            format,
             &skip,
-            "--branches",
-            "--remotes",
-            "--tags",
         ];
-        // An unborn HEAD is no revision git can start from.
-        if has_head {
-            args.push("HEAD");
-        }
+        args.extend(revisions.iter().map(String::as_str));
         args.push("--");
         let git = runner
             .stream(&repository.root, &args)
@@ -414,9 +566,9 @@ fn next_commit(git: &mut GitStream) -> std::io::Result<Option<Commit>> {
     Ok(fields.try_into().ok())
 }
 
-/// A page of the log of `repository`: at most `count` commits, and at least one when there are any,
-/// after `after` or from the newest commit. It goes on with the read `reads` holds for `after`, or
-/// starts one.
+/// A page of the log of `repository`: at most `count` of the commits `filter` shows, and at least
+/// one when there are any, after `after` or from the newest commit. It goes on with the read `reads`
+/// holds for `after`, or starts one. A later page keeps to the filter of the first.
 ///
 /// A later page goes on from the lanes of the page before, which only fit the history they were
 /// laid out for. So it needs the log to start from the same commits as then, and otherwise this
@@ -428,6 +580,7 @@ pub(crate) fn read(
     runner: &GitRunner,
     reads: &LogReads,
     repository: &Repository,
+    filter: &LogFilter,
     after: Option<&LogCursor>,
     count: usize,
     show_long_edges: bool,
@@ -435,23 +588,96 @@ pub(crate) fn read(
     let count = count.max(1);
     let seen = after.map_or(0, |cursor| cursor.seen);
     let show_long_edges = after.map_or(show_long_edges, |cursor| cursor.show_long_edges);
+    let filter = after.map_or(filter, |cursor| &cursor.filter);
+    let matcher = match &filter.text {
+        Some(search) => Matcher::new(search)?,
+        None => None,
+    };
     let held = after.and_then(|cursor| reads.take(cursor, &repository.root));
     // Read before git starts, so a reference that moves in between makes the next page find the
     // history changed, instead of letting the read go on with a history the references left.
     let references = References::read(runner, repository)?;
-    let tips = references.tips;
+    let tips = references.tips.clone();
     if after.is_some_and(|cursor| cursor.tips != tips) {
         return Err(Failure::LogChanged);
     }
+    let Some(revisions) = filter.revisions(&references) else {
+        return Ok(LogPage {
+            repository: repository.clone(),
+            rows: Vec::new(),
+            next: None,
+        });
+    };
     let mut log_read = match held {
         Some(held) => held,
         None => {
-            let mut started = LogRead::start(runner, repository, seen, references.head.is_some())?;
+            let with_message = matcher.is_some();
+            let mut started = LogRead::start(runner, repository, seen, &revisions, with_message)?;
             // Read while git goes through the history, which takes longer.
             started.user_email = commit::user_email(runner, &repository.root)?;
             started
         }
     };
+    let mut walk = match after {
+        Some(cursor) => cursor.walk.clone(),
+        None => Walk::from_tips(filter.current_branch_tips(runner, repository, &references)?),
+    };
+    let (rows, more) = match &matcher {
+        Some(matcher) => {
+            let found = found_rows(
+                runner,
+                &mut log_read,
+                &mut walk,
+                &references,
+                matcher,
+                count,
+            )?;
+            (found.rows, found.more)
+        }
+        None => {
+            let laid_out = graph_rows(
+                runner,
+                &mut log_read,
+                &mut walk,
+                &references,
+                count,
+                show_long_edges,
+            )?;
+            (laid_out.rows, laid_out.more)
+        }
+    };
+    let next = more.then(|| LogCursor {
+        seen: log_read.seen,
+        read: reads.hold(log_read),
+        tips,
+        show_long_edges,
+        filter: filter.clone(),
+        walk,
+    });
+    Ok(LogPage {
+        repository: repository.clone(),
+        rows,
+        next,
+    })
+}
+
+/// The rows of a page, and whether more come after it.
+struct PageRows {
+    rows: Vec<LogRow>,
+    more: bool,
+}
+
+/// The next `count` rows of the log `log_read` reads, laid out with the graph from `walk`, which
+/// they leave as the next page finds it. Unless `show_long_edges`, an edge that spans more than
+/// [`LONG_EDGE`] rows is cut.
+fn graph_rows(
+    runner: &GitRunner,
+    log_read: &mut LogRead,
+    walk: &mut Walk,
+    references: &References,
+    count: usize,
+    show_long_edges: bool,
+) -> Result<PageRows, Failure> {
     // One more than the page, to know whether another comes after it, and enough beyond it to know
     // whether the edges from the page are long.
     let lookahead = if show_long_edges { 0 } else { LONG_EDGE };
@@ -472,10 +698,6 @@ pub(crate) fn read(
                     at.saturating_sub(row) > LONG_EDGE
                 })
     };
-    let mut walk = after.map_or_else(
-        || Walk::from_head(references.head.as_ref()),
-        |cursor| cursor.walk.clone(),
-    );
     let rows: Vec<LogRow> = commits
         .iter()
         .take(count)
@@ -483,25 +705,53 @@ pub(crate) fn read(
         .map(|(row, commit)| {
             let labels = &references.labels;
             let fields = commit.each_ref().map(String::as_str);
-            walk.row(&fields, labels, user_email.as_deref(), |parent| {
-                is_long(row, parent)
-            })
+            let is_long = |parent: &str| is_long(row, parent);
+            walk.row(&fields, labels, user_email.as_deref(), is_long, true)
         })
         .collect();
     let more = commits.len() > count;
     log_read.lay_out(rows.len());
-    let next = more.then(|| LogCursor {
-        seen: seen + rows.len(),
-        read: reads.hold(log_read),
-        tips,
-        show_long_edges,
-        walk,
-    });
-    Ok(LogPage {
-        repository: repository.clone(),
-        rows,
-        next,
-    })
+    Ok(PageRows { rows, more })
+}
+
+/// The next `count` commits that `matcher` finds in the log `log_read` reads, each a row of its
+/// own with no lines of the graph. The commits it passes over still go through `walk`, which tells
+/// the ones on the current branch. The read stops before the next commit found, after
+/// [`LOG_SEARCH_BATCH`] commits, or at the end.
+fn found_rows(
+    runner: &GitRunner,
+    log_read: &mut LogRead,
+    walk: &mut Walk,
+    references: &References,
+    matcher: &Matcher,
+    count: usize,
+) -> Result<PageRows, Failure> {
+    let user_email = log_read.user_email.clone();
+    let mut rows = Vec::new();
+    let mut gone_through = 0;
+    let more = loop {
+        let Some(commit) = log_read.next_commits(runner, 1)?.first() else {
+            break false;
+        };
+        let found = matcher.matches(commit);
+        if (found && rows.len() == count) || gone_through == LOG_SEARCH_BATCH {
+            break true;
+        }
+        gone_through += 1;
+        let fields = commit.each_ref().map(String::as_str);
+        let row = walk.row(
+            &fields,
+            &references.labels,
+            user_email.as_deref(),
+            |_| false,
+            false,
+        );
+        log_read.lay_out(1);
+        if found {
+            rows.push(row);
+        }
+    };
+    Ok(PageRows { rows, more })
 }
 
 /// The references the log starts from and labels its commits with.
@@ -522,11 +772,40 @@ const REF_KINDS: [(&str, RefKind); 3] = [
     ("refs/tags/", RefKind::Tag),
 ];
 
+impl RefLabel {
+    /// Its full name, such as `refs/heads/main`.
+    pub(crate) fn full_name(&self) -> String {
+        match REF_KINDS.iter().find(|(_, kind)| *kind == self.kind) {
+            Some((prefix, _)) => format!("{prefix}{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    /// The label of the reference whose full name is `name`, such as `refs/heads/main`, when it is
+    /// of a kind the log shows.
+    pub(crate) fn of_ref(name: &str) -> Option<Self> {
+        REF_KINDS.iter().find_map(|(prefix, kind)| {
+            name.strip_prefix(prefix).map(|short| Self {
+                name: short.to_owned(),
+                kind: *kind,
+            })
+        })
+    }
+}
+
 /// What git prints of each reference, a field per NUL: what it points at, what an annotated tag
 /// points at, where a symbolic ref leads, and its full name.
 const REF_FORMAT: &str = "--format=%(objectname)%00%(*objectname)%00%(symref)%00%(refname)";
 
 impl References {
+    /// The commit `branch` points at, if it exists.
+    fn commit_of(&self, branch: &RefLabel) -> Option<&String> {
+        self.labels
+            .iter()
+            .find(|(_, labels)| labels.contains(branch))
+            .map(|(commit, _)| commit)
+    }
+
     /// The references of `repository` as they are now.
     fn read(runner: &GitRunner, repository: &Repository) -> Result<Self, Failure> {
         let (head, listed) = std::thread::scope(|scope| {
@@ -592,6 +871,76 @@ fn list_references(runner: &GitRunner, repository: &Repository) -> Result<Vec<u8
     Ok(run_git(runner, repository, &args)?.stdout)
 }
 
+/// The local branches, remote branches and tags of `repository`, each kind by name, as the log
+/// labels them. A symbolic ref, such as `origin/HEAD`, only repeats the branch it leads to, so it
+/// is not among them.
+fn references(runner: &GitRunner, repository: &Repository) -> Result<Vec<RefLabel>, Failure> {
+    Ok(labels_of(&list_references(runner, repository)?))
+}
+
+/// The local and remote branches of `repository`, local ones first, each kind by name: those the
+/// log can be filtered by.
+pub(crate) fn branches(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<Vec<RefLabel>, Failure> {
+    let mut branches = references(runner, repository)?;
+    branches.retain(|label| label.kind.is_branch());
+    Ok(branches)
+}
+
+/// The local and remote branches of `repository` that contain the commit `hash`, in the order of
+/// [`branches`].
+pub(crate) fn branches_containing(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<Vec<RefLabel>, Failure> {
+    let args = [
+        "for-each-ref",
+        REF_FORMAT,
+        "--contains",
+        hash,
+        "refs/heads/",
+        "refs/remotes/",
+    ];
+    Ok(labels_of(&run_git(runner, repository, &args)?.stdout))
+}
+
+/// The local branches, remote branches and tags of `repository` the user can go to when they have
+/// typed `text`: those whose name holds it, ignoring case. The names that start with it come
+/// first, then the others, each in the order of [`references`].
+pub(crate) fn suggestions(
+    runner: &GitRunner,
+    repository: &Repository,
+    text: &str,
+) -> Result<Vec<RefLabel>, Failure> {
+    let text = text.trim().to_lowercase();
+    let (mut starting, holding): (Vec<RefLabel>, Vec<RefLabel>) = references(runner, repository)?
+        .into_iter()
+        .filter(|label| label.name.to_lowercase().contains(&text))
+        .partition(|label| label.name.to_lowercase().starts_with(&text));
+    starting.extend(holding);
+    Ok(starting)
+}
+
+/// The references `listed` in [`REF_FORMAT`] that the log labels commits with, each kind by name,
+/// without the symbolic ones.
+fn labels_of(listed: &[u8]) -> Vec<RefLabel> {
+    let mut labels: Vec<RefLabel> = String::from_utf8_lossy(listed)
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\0').collect();
+            let [_, _, symref, name] = fields[..] else {
+                return None;
+            };
+            symref.is_empty().then(|| RefLabel::of_ref(name)).flatten()
+        })
+        .collect();
+    labels.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
+    labels
+}
+
 /// The commit HEAD of `repository` points at, if it has one.
 fn head_commit(runner: &GitRunner, repository: &Repository) -> Result<Option<String>, Failure> {
     // `--verify --quiet` fails quietly for an unborn HEAD.
@@ -606,8 +955,8 @@ fn head_commit(runner: &GitRunner, repository: &Repository) -> Result<Option<Str
         .then(|| head.stdout_text().trim_end().to_owned()))
 }
 
-/// Runs git with `args` in `repository`, for a read of its log.
-fn run_git(
+/// Runs git with `args` in `repository`, for a read of its log or of what it tells of a commit.
+pub(crate) fn run_git(
     runner: &GitRunner,
     repository: &Repository,
     args: &[&str],

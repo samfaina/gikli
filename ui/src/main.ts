@@ -1794,6 +1794,10 @@ function describeFailure(failure: Failure): string {
       return t("failureLogUnreadable", { folder: failure.folder });
     case "logChanged":
       return t("failureLogChanged");
+    case "revisionNotFound":
+      return t("failureRevisionNotFound", { revision: failure.revision });
+    case "searchPatternInvalid":
+      return t("failureSearchPatternInvalid", { message: failure.message });
     case "commitMessagesUnreadable":
       return t("failureCommitMessagesUnreadable", { folder: failure.folder });
     case "commitIdentityMissing":
