@@ -6,7 +6,8 @@ The log reads a Repository's history with one `git log --date-order` that stays 
 
 - gikli holds at most four reads of the log at once, the oldest dropped first, and ends a read's git when the log no longer needs it: when the user closes the log or it starts over, when it reaches the last commit, and when the history changed. A page whose read gikli let go of still comes, from a new git that skips the commits before it, only as slowly as the first page.
 - While the log is open, its git keeps the Repository's pack files open, as `git log` in a terminal pager does. On Windows a `git gc` cannot delete those packs until the log closes.
-- The operation log records the read once its git ends, with the output gikli read from it.
+- The operation log records the read once its git ends, with the first mebibyte of what gikli read from it. A read gikli let go of shows as cancelled, not as failed.
+- A read takes the references and the user's Commit identity once, before its git starts. A reference that moves later makes the next page find the history changed, and the log starts over.
 
 ## Considered Options
 

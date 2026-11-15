@@ -270,9 +270,10 @@ impl LogReads {
     /// no longer held: the page that goes on from it holds it again.
     fn take(&self, cursor: &LogCursor, root: &Path) -> Option<LogRead> {
         let mut held = lock(&self.0);
-        let at = held.reads.iter().position(|(number, read)| {
-            *number == cursor.read && read.root == root && read.seen == cursor.seen
-        })?;
+        let at = held
+            .reads
+            .iter()
+            .position(|(number, read)| *number == cursor.read && read.goes_on_from(cursor, root))?;
         held.reads.remove(at).map(|(_, read)| read)
     }
 
@@ -346,13 +347,20 @@ impl LogRead {
         })
     }
 
+    /// Whether this read goes on from `cursor` in the Repository at `root`: its next commit is the
+    /// one after the page before `cursor`.
+    fn goes_on_from(&self, cursor: &LogCursor, root: &Path) -> bool {
+        self.root == root && self.seen == cursor.seen
+    }
+
     /// The next `wanted` commits no page laid out yet, or all that are left when fewer are. It reads
     /// them from git as far as it has not yet.
-    fn ahead(&mut self, runner: &GitRunner, wanted: usize) -> Result<&[Commit], Failure> {
+    fn next_commits(&mut self, runner: &GitRunner, wanted: usize) -> Result<&[Commit], Failure> {
         while self.ahead.len() < wanted
             && let Some(git) = &mut self.git
         {
-            match next_commit(git).map_err(git_failed_to_start)? {
+            let next = next_commit(git).map_err(|_| self.unreadable())?;
+            match next {
                 Some(commit) => self.ahead.push_back(commit),
                 None => self.finish(runner)?,
             }
@@ -367,14 +375,23 @@ impl LogRead {
         let Some(git) = self.git.take() else {
             return Ok(());
         };
-        let invocation = git.finish().map_err(git_failed_to_start)?;
+        let invocation = git.finish().map_err(|_| self.unreadable())?;
         if !invocation.success {
-            let unreadable = Failure::LogUnreadable {
-                folder: self.root.clone(),
-            };
-            return Err(failure_of(runner, &self.root, &invocation, unreadable));
+            return Err(failure_of(
+                runner,
+                &self.root,
+                &invocation,
+                self.unreadable(),
+            ));
         }
         Ok(())
+    }
+
+    /// The failure of a read that git could not finish.
+    fn unreadable(&self) -> Failure {
+        Failure::LogUnreadable {
+            folder: self.root.clone(),
+        }
     }
 
     /// Takes the next `count` commits as laid out on a page.
@@ -419,31 +436,27 @@ pub(crate) fn read(
     let seen = after.map_or(0, |cursor| cursor.seen);
     let show_long_edges = after.map_or(show_long_edges, |cursor| cursor.show_long_edges);
     let held = after.and_then(|cursor| reads.take(cursor, &repository.root));
-    let (references, mut log_read) = match held {
-        Some(held) => (References::read(runner, repository)?, held),
-        None => {
-            let head = head_commit(runner, repository)?;
-            let mut started = LogRead::start(runner, repository, seen, head.is_some())?;
-            // Read while git goes through the history, which takes longer.
-            let (listed, user_email) = std::thread::scope(|scope| {
-                let listed = scope.spawn(|| list_references(runner, repository));
-                let user_email = commit::user_email(runner, &repository.root);
-                let listed = listed.join().expect("listing the references panicked");
-                (listed, user_email)
-            });
-            started.user_email = user_email?;
-            (References::new(head, &listed?), started)
-        }
-    };
+    // Read before git starts, so a reference that moves in between makes the next page find the
+    // history changed, instead of letting the read go on with a history the references left.
+    let references = References::read(runner, repository)?;
     let tips = references.tips;
     if after.is_some_and(|cursor| cursor.tips != tips) {
         return Err(Failure::LogChanged);
     }
+    let mut log_read = match held {
+        Some(held) => held,
+        None => {
+            let mut started = LogRead::start(runner, repository, seen, references.head.is_some())?;
+            // Read while git goes through the history, which takes longer.
+            started.user_email = commit::user_email(runner, &repository.root)?;
+            started
+        }
+    };
     // One more than the page, to know whether another comes after it, and enough beyond it to know
     // whether the edges from the page are long.
     let lookahead = if show_long_edges { 0 } else { LONG_EDGE };
     let user_email = log_read.user_email.clone();
-    let commits = log_read.ahead(runner, count + 1 + lookahead)?;
+    let commits = log_read.next_commits(runner, count + 1 + lookahead)?;
     let rows_of: HashMap<&str, usize> = commits
         .iter()
         .enumerate()

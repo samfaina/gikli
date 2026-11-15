@@ -506,6 +506,49 @@ impl Drop for RunningGit {
     }
 }
 
+/// A history for [`TestRepository::fast_import`] to write, one commit after another, the commit
+/// with mark `n` made `n` minutes after [`FIRST_MINUTE`], with no files.
+#[derive(Default)]
+pub struct ImportedHistory {
+    stream: String,
+    commits: usize,
+}
+
+impl ImportedHistory {
+    /// Adds a commit to `branch` with the commits of the marks `parents`, the first parent first,
+    /// and returns its mark.
+    pub fn commit(&mut self, branch: &str, parents: &[usize]) -> usize {
+        self.commits += 1;
+        let mark = self.commits;
+        let at = minute_as_seconds(i64::try_from(mark).expect("fits"));
+        let message = format!("Commit {mark} on {branch}");
+        self.stream.push_str(&format!(
+            "commit refs/heads/{branch}\nmark :{mark}\n\
+             author Test User <test@example.com> {at} +0000\n\
+             committer Test User <test@example.com> {at} +0000\n\
+             data {}\n{message}\n",
+            message.len()
+        ));
+        for (index, parent) in parents.iter().enumerate() {
+            let kind = if index == 0 { "from" } else { "merge" };
+            self.stream.push_str(&format!("{kind} :{parent}\n"));
+        }
+        self.stream.push('\n');
+        mark
+    }
+
+    /// Points the reference `name`, such as `refs/tags/v1`, at the commit of the mark `mark`.
+    pub fn reset(&mut self, name: &str, mark: usize) {
+        self.stream
+            .push_str(&format!("reset {name}\nfrom :{mark}\n\n"));
+    }
+
+    /// How many commits it holds.
+    pub fn commits(&self) -> usize {
+        self.commits
+    }
+}
+
 /// A throwaway repository, driven with plain git.
 pub struct TestRepository {
     root: PathBuf,
@@ -660,9 +703,9 @@ impl TestRepository {
         run_git(&self.root, &env, &args)
     }
 
-    /// Writes the history `stream` describes with `git fast-import`, which writes many commits
-    /// far faster than one `git commit` at a time. Panics if git fails.
-    pub fn fast_import(&self, stream: &[u8]) {
+    /// Writes `history` with `git fast-import`, which writes many commits far faster than one
+    /// `git commit` at a time. Panics if git fails.
+    pub fn fast_import(&self, history: &ImportedHistory) {
         let mut git = Command::new("git")
             .args(["fast-import", "--quiet"])
             .current_dir(&self.root)
@@ -672,7 +715,9 @@ impl TestRepository {
             .spawn()
             .expect("start git fast-import");
         let mut input = git.stdin.take().expect("stdin is piped");
-        input.write_all(stream).expect("write the history");
+        input
+            .write_all(history.stream.as_bytes())
+            .expect("write the history");
         drop(input);
         let output = git.wait_with_output().expect("run git fast-import");
         assert!(

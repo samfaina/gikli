@@ -17,7 +17,7 @@
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Output, Stdio};
+use std::process::{Child, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -284,7 +284,7 @@ impl GitRunner {
             output.stderr = stderr;
             output
         });
-        self.finish(entry, output, trace, &Cancellation::default())
+        finish_run(&self.log, entry, output, trace, |_| false)
     }
 
     /// Runs git with `args` in `folder` as the long operation `operation`, which it tells of each
@@ -303,13 +303,11 @@ impl GitRunner {
         let (mut command, entry, mut trace) = self.command(folder, args, true);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let cancellation = operation.cancellation();
-        let started = if self.runs_natively() {
-            process_tree::spawn_contained(&mut command, cancellation)
-        } else {
-            command.spawn()
-        };
+        let started = self.spawn(&mut command, cancellation);
         let output = started.and_then(|child| watch_run(child, &mut trace, operation));
-        self.finish(entry, output, trace, cancellation)
+        finish_run(&self.log, entry, output, trace, |status| {
+            cancellation.ended_run_with(status)
+        })
     }
 
     /// Starts git with `args` in `folder`, for a command whose output gikli reads as it comes,
@@ -318,12 +316,7 @@ impl GitRunner {
         let (mut command, entry, trace) = self.command(folder, args, false);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let cancellation = Cancellation::default();
-        let started = if self.runs_natively() {
-            process_tree::spawn_contained(&mut command, &cancellation)
-        } else {
-            command.spawn()
-        };
-        let mut child = match started {
+        let mut child = match self.spawn(&mut command, &cancellation) {
             Ok(child) => child,
             Err(error) => {
                 let mut entry = entry;
@@ -351,6 +344,16 @@ impl GitRunner {
             }),
             log: self.log.clone(),
         })
+    }
+
+    /// Starts `command`, so that `cancellation` can end it. The git inside WSL cannot be ended
+    /// that way, so it starts as a plain process.
+    fn spawn(&self, command: &mut Command, cancellation: &Cancellation) -> std::io::Result<Child> {
+        if self.runs_natively() {
+            process_tree::spawn_contained(command, cancellation)
+        } else {
+            command.spawn()
+        }
     }
 
     /// The command that runs git with `args` in `folder`, its operation log entry so far, and
@@ -402,17 +405,6 @@ impl GitRunner {
         (command, entry, trace)
     }
 
-    /// Records the run described by `entry`, which ended with `output`, or could not start.
-    fn finish(
-        &self,
-        entry: OperationLogEntry,
-        output: std::io::Result<Output>,
-        trace: RunTrace,
-        cancellation: &Cancellation,
-    ) -> std::io::Result<Invocation> {
-        finish_run(&self.log, entry, output, trace, cancellation)
-    }
-
     /// The git directory of the repository `folder` is in, or None when git cannot say. Inside
     /// the working tree for most repositories; elsewhere for a linked worktree or a submodule.
     pub fn git_dir(&self, folder: &Path) -> std::io::Result<Option<PathBuf>> {
@@ -458,12 +450,13 @@ impl GitRunner {
 }
 
 /// Records in `log` the run described by `entry`, which ended with `output`, or could not start.
+/// `cancelled` tells whether a cancel is what ended a run with the status it ended with.
 fn finish_run(
     log: &OperationLog,
     mut entry: OperationLogEntry,
     output: std::io::Result<Output>,
     mut trace: RunTrace,
-    cancellation: &Cancellation,
+    cancelled: impl FnOnce(ExitStatus) -> bool,
 ) -> std::io::Result<Invocation> {
     let Output {
         status,
@@ -479,7 +472,7 @@ fn finish_run(
     };
     trace.run_ended();
     let stderr = hide_url_passwords(&String::from_utf8_lossy(&stderr));
-    let cancelled = cancellation.ended_run_with(status);
+    let cancelled = cancelled(status);
     entry.cancelled = cancelled;
     entry.exit_code = status.code();
     entry.stdout = hide_url_passwords(&String::from_utf8_lossy(&stdout));
@@ -513,9 +506,14 @@ struct StreamedRun {
     entry: OperationLogEntry,
     trace: RunTrace,
     cancellation: Cancellation,
-    /// What gikli has read of git's output, for the operation log.
+    /// The start of what gikli has read of git's output, for the operation log: at most
+    /// [`STREAM_OUTPUT_KEPT`] bytes.
     read: Vec<u8>,
 }
+
+/// How much of the output of a [`GitStream`] the operation log keeps. A stream can list a whole
+/// history, far more than the operation log can show.
+const STREAM_OUTPUT_KEPT: usize = 1024 * 1024;
 
 impl GitStream {
     /// git's output up to the next `delimiter`, without it, or None once git wrote nothing more.
@@ -528,14 +526,16 @@ impl GitStream {
         if run.stdout.read_until(delimiter, &mut piece)? == 0 {
             return Ok(None);
         }
-        run.read.extend_from_slice(&piece);
+        let room = STREAM_OUTPUT_KEPT.saturating_sub(run.read.len());
+        run.read.extend_from_slice(&piece[..room.min(piece.len())]);
         if piece.last() == Some(&delimiter) {
             piece.pop();
         }
         Ok(Some(piece))
     }
 
-    /// Waits for git to end, once gikli has read all its output, and records the run.
+    /// Waits for git to end, once gikli has read all its output, and records the run. Its standard
+    /// output holds only what the operation log keeps of it.
     pub fn finish(mut self) -> std::io::Result<Invocation> {
         let run = self.run.take().expect("a run is recorded only once");
         run.end(&self.log, true)
@@ -582,8 +582,10 @@ impl StreamedRun {
                 stderr,
             }
         });
-        // Nobody cancelled a run gikli no longer needed.
-        finish_run(log, entry, output, trace, &Cancellation::default())
+        // A git that had listed everything before gikli let go of it ended by itself.
+        finish_run(log, entry, output, trace, |status| {
+            !to_the_end && !status.success()
+        })
     }
 }
 

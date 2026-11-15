@@ -1,14 +1,13 @@
 //! The log stays responsive on a Repository with hundreds of thousands of commits.
 //!
-//! The budgets hold on the development machine, where the test checks them. A CI runner is slower
-//! and shared, so there the test only reports what it measured, and still checks what the pages
-//! show. This is the only test in its file, so no other test of the suite runs beside it and slows
+//! The budgets hold on the development machine, where the test checks them, along with the other
+//! timings. A CI runner is slower and shared, so there the test only reports what it measured, and
+//! still checks what the pages show. This is the only test in its file, so no other test of the suite runs beside it and slows
 //! what it measures.
 
-use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{FIRST_MINUTE, Sandbox, TestRepository};
+use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository};
 use gikli_core::{Gikli, LogPage, Repository};
 
 /// The commits of the generated history.
@@ -28,53 +27,16 @@ fn on_ci() -> bool {
     std::env::var_os("CI").is_some()
 }
 
-/// A history being written for `git fast-import`, one commit after another, each a minute after
-/// the one before.
-#[derive(Default)]
-struct History {
-    stream: String,
-    written: usize,
-}
-
-impl History {
-    /// Adds a commit to `branch` with `parents`, the first parent first, and returns its mark.
-    fn commit(&mut self, branch: &str, parents: &[usize]) -> usize {
-        self.written += 1;
-        let mark = self.written;
-        let at = FIRST_MINUTE + i64::try_from(mark).expect("fits") * 60;
-        let message = format!("Commit {mark} on {branch}");
-        let _ = write!(
-            self.stream,
-            "commit refs/heads/{branch}\nmark :{mark}\n\
-             author Test User <test@example.com> {at} +0000\n\
-             committer Test User <test@example.com> {at} +0000\n\
-             data {}\n{message}\n",
-            message.len()
-        );
-        for (index, parent) in parents.iter().enumerate() {
-            let kind = if index == 0 { "from" } else { "merge" };
-            let _ = writeln!(self.stream, "{kind} :{parent}");
-        }
-        self.stream.push('\n');
-        mark
-    }
-
-    /// Points the reference `name` at the commit `mark`.
-    fn reset(&mut self, name: &str, mark: usize) {
-        let _ = write!(self.stream, "reset {name}\nfrom :{mark}\n\n");
-    }
-}
-
 /// A history of `commits` commits, as `git fast-import` reads it: a main line that a topic branch
 /// of three commits is merged into every twentieth commit, a release line beside it the whole way
 /// that the main line merges every five hundredth, a tag every thousandth and a remote branch.
-fn generated_history(commits: usize) -> Vec<u8> {
-    let mut history = History::default();
+fn generated_history(commits: usize) -> ImportedHistory {
+    let mut history = ImportedHistory::default();
     let mut main: Option<usize> = None;
     let mut release: Option<usize> = None;
-    while history.written < commits {
-        let step = history.written + 1;
-        let room = commits - history.written;
+    while history.commits() < commits {
+        let step = history.commits() + 1;
+        let room = commits - history.commits();
         if step % 500 == 0
             && let (Some(tip), Some(line)) = (main, release)
         {
@@ -95,15 +57,15 @@ fn generated_history(commits: usize) -> Vec<u8> {
             let parents: Vec<usize> = main.into_iter().collect();
             main = Some(history.commit("main", &parents));
         }
-        if history.written % 1000 == 0 {
-            let tag = format!("refs/tags/v{}", history.written / 1000);
-            history.reset(&tag, history.written);
+        if history.commits() % 1000 == 0 {
+            let tag = format!("refs/tags/v{}", history.commits() / 1000);
+            history.reset(&tag, history.commits());
         }
     }
     if let Some(tip) = main {
         history.reset("refs/remotes/origin/main", tip);
     }
-    history.stream.into_bytes()
+    history
 }
 
 /// Opens the repository's folder as a Project and returns its Repository.
@@ -197,9 +159,13 @@ fn the_log_of_several_hundred_thousand_commits_reads_each_page_within_its_budget
         );
         (came_while_reading, reading.join().expect("the read ended"))
     });
-    assert!(
-        changes_came_while_reading,
-        "the changes came only once the log was read"
-    );
     assert_eq!(page.expect("read the log").rows.len(), PAGE_SIZE);
+    // A read of the changes takes a fraction of the first page here, a margin a runner shared with
+    // other jobs need not keep.
+    if !on_ci() {
+        assert!(
+            changes_came_while_reading,
+            "the changes came only once the log was read"
+        );
+    }
 }

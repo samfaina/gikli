@@ -27,7 +27,8 @@ pub struct OperationLogEntry {
     pub stderr: String,
     /// Why git could not start, when it did not.
     pub error: Option<String>,
-    /// Whether the user cancelled this run, which ended it.
+    /// Whether this run was cancelled, which ended it: by the user, or by gikli when it no longer
+    /// needed what git was still writing, as for a read of the log the user closed.
     pub cancelled: bool,
 }
 

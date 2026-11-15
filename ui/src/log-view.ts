@@ -107,7 +107,7 @@ export function createLogView(host: LogViewHost): LogView {
     }
     repository = null;
     latestRead += 1;
-    endRead();
+    endReadOf(next);
     rows = [];
     next = null;
     reading = null;
@@ -134,7 +134,7 @@ export function createLogView(host: LogViewHost): LogView {
 
   /** Reads the log again from its newest commit. Resolves to whether it came. */
   function startOver(): Promise<boolean> {
-    endRead();
+    endReadOf(next);
     rows = [];
     next = null;
     reading = null;
@@ -163,7 +163,7 @@ export function createLogView(host: LogViewHost): LogView {
     try {
       const page = await readLog(shown, after, count);
       if (thisRead !== latestRead) {
-        endReadAt(page.next);
+        endReadOf(page.next);
         return false;
       }
       reading = null;
@@ -184,12 +184,6 @@ export function createLogView(host: LogViewHost): LogView {
       message.replaceChildren(host.errorView(error));
       return false;
     }
-  }
-
-  /** Lets the core go of the read of the log shown so far, which the log does not go on with. */
-  function endRead(): void {
-    endReadAt(next);
-    next = null;
   }
 
   /** The place of the commit `hash` in the list, reading pages until it comes; -1 if it does not. */
@@ -289,8 +283,8 @@ export function createLogView(host: LogViewHost): LogView {
   return { open, close };
 }
 
-/** Lets the core go of the read that the page at `cursor` goes on with, if any. Nothing depends on it. */
-function endReadAt(cursor: LogCursor | null): void {
+/** Lets the core go of the read that the page at `cursor` goes on with, which the log does not read, if any. Nothing depends on it. */
+function endReadOf(cursor: LogCursor | null): void {
   if (cursor !== null) {
     endLogRead(cursor).catch(() => undefined);
   }
