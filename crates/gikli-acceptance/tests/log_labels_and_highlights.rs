@@ -26,6 +26,31 @@ fn rows_of(gikli: &Gikli, root: &Repository) -> Vec<LogRow> {
     gikli.read_log(root, None, 500).expect("read the log").rows
 }
 
+/// Checks that `rows` are the commits plain git lists for the whole graph, in its order, each
+/// with the parents git gives it.
+fn assert_git_lists(repository: &TestRepository, rows: &[LogRow]) {
+    let by_git = repository.git(&[
+        "log",
+        "--date-order",
+        "--format=%H %P",
+        "--branches",
+        "--remotes",
+        "--tags",
+        "HEAD",
+    ]);
+    let by_gikli: Vec<String> = rows
+        .iter()
+        .map(|row| format!("{} {}", row.hash, row.parents.join(" ")))
+        .collect();
+    assert_eq!(by_gikli, by_git.lines().collect::<Vec<_>>());
+}
+
+/// The subjects plain git lists from HEAD, newest commit date first.
+fn subjects_head_reaches_by_git(repository: &TestRepository) -> Vec<String> {
+    let by_git = repository.git(&["log", "--date-order", "--format=%s", "HEAD"]);
+    by_git.lines().map(str::to_owned).collect()
+}
+
 /// The row of the commit with `subject`.
 fn row<'a>(rows: &'a [LogRow], subject: &str) -> &'a LogRow {
     rows.iter()
@@ -187,15 +212,17 @@ fn the_current_branch_stands_out_across_pages_and_in_detached_head() {
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
-    let mut rows = Vec::new();
-    let mut page = gikli.read_log(&root, None, 1).expect("read the log");
-    loop {
-        rows.extend(page.rows.clone());
-        let Some(next) = page.next else { break };
-        page = gikli.read_log(&root, Some(&next), 1).expect("read a page");
-    }
+    let rows = rows_by_pages(&gikli, &root, 1);
 
     assert_eq!(on_current_branch(&rows), vec!["Other work", "Base"]);
+    assert_eq!(
+        subjects_head_reaches_by_git(&repository),
+        vec!["Other work", "Base"]
+    );
+    assert!(
+        !repository.git_succeeds(&["symbolic-ref", "--quiet", "HEAD"]),
+        "HEAD is detached"
+    );
 }
 
 #[test]
@@ -211,6 +238,10 @@ fn nothing_is_on_the_current_branch_while_head_has_no_commit() {
 
     assert_eq!(on_current_branch(&rows), Vec::<&str>::new());
     assert_eq!(labels(&rows[0]), vec![(RefKind::Local, "main")]);
+    assert!(
+        !repository.git_succeeds(&["rev-parse", "--verify", "--quiet", "HEAD"]),
+        "git has no commit for HEAD"
+    );
 }
 
 #[test]
@@ -271,6 +302,12 @@ fn without_an_email_no_commit_is_the_users_own() {
     let rows = rows_of(&gikli, &root);
 
     assert!(!rows[0].own);
+    assert_eq!(
+        repository.git(&["log", "-1", "--format=%ae"]),
+        "test@example.com\n",
+        "the commit still has the email the user had"
+    );
+    assert_eq!(repository.git(&["config", "user.email"]), "\n");
 }
 
 #[test]
@@ -402,6 +439,11 @@ fn a_commit_knows_its_children_on_pages_before_its_own() {
 
     assert_eq!(last.rows[0].subject, "Base");
     assert_eq!(last.rows[0].children, vec![hash_of(&repository, "HEAD~1")]);
+    assert_eq!(
+        repository.git(&["rev-parse", "HEAD~1^"]),
+        format!("{}\n", last.rows[0].hash),
+        "git has Base as the parent of Child"
+    );
 }
 
 /// Every row of the log of `root`, read `count` commits at a time.
@@ -430,11 +472,7 @@ type Drawn<'a> = (
 );
 
 fn drawn(rows: &[LogRow]) -> Vec<Drawn<'_>> {
-    let subject_of = |hash: &str| {
-        rows.iter()
-            .find(|row| row.hash == hash)
-            .map_or("not in the log", |row| row.subject.as_str())
-    };
+    let subject_of = |hash: &String| subjects_of(rows, std::slice::from_ref(hash))[0];
     rows.iter()
         .map(|row| {
             let graph = &row.graph;
@@ -510,6 +548,7 @@ fn a_long_edge_is_cut_into_two_arrows_that_lead_to_each_other_and_frees_its_lane
         "main keeps one lane to itself"
     );
     assert_eq!(rows[0].parents, vec![hash_of(&repository, "main~40")]);
+    assert_git_lists(&repository, &rows);
 }
 
 #[test]
@@ -536,6 +575,12 @@ fn an_edge_of_thirty_rows_is_drawn_whole() {
         )
     );
     assert_eq!(drawn[30], ("Base", 0, vec![(0, 0)], vec![], vec![], vec![]));
+    assert_eq!(
+        repository.git(&["rev-list", "--count", "side^..main"]),
+        "29\n",
+        "the edge from Side to Base spans the 29 commits main got since"
+    );
+    assert_git_lists(&repository, &rows);
 }
 
 #[test]
@@ -567,6 +612,7 @@ fn long_edges_are_drawn_whole_once_the_user_turns_them_on() {
         sandbox.gikli().settings().show_long_edges,
         "the setting stays"
     );
+    assert_git_lists(&repository, &rows);
 }
 
 #[test]
@@ -610,5 +656,74 @@ fn a_sha256_repository_shows_its_64_character_hashes() {
     assert_eq!(
         repository.git(&["rev-parse", "--show-object-format"]),
         "sha256\n"
+    );
+}
+
+#[test]
+fn the_right_arrow_follows_the_drawn_line_and_not_a_cut_edge() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_long_edge(&sandbox, 40);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let rows = rows_by_pages(&gikli, &root, 7);
+
+    let base = row(&rows, "Base");
+    assert_eq!(subjects_of(&rows, &base.children), vec!["Main 2", "Side"]);
+    assert_eq!(
+        repository.git(&["rev-parse", "main~39^", "side^"]),
+        format!("{0}\n{0}\n", base.hash),
+        "both are children of Base for git"
+    );
+}
+
+#[test]
+fn a_merge_whose_second_parent_is_far_below_cuts_only_that_edge() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base");
+    repository.git(&["switch", "--quiet", "--create", "side"]);
+    repository.commit_at(2, "Old side work");
+    repository.git(&["switch", "--quiet", "main"]);
+    for minute in 3..43 {
+        repository.commit_at(minute, &format!("Main {minute}"));
+    }
+    repository.git_at(
+        50,
+        &["merge", "--quiet", "--no-ff", "--message", "Merge", "side"],
+    );
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let rows = rows_by_pages(&gikli, &root, 7);
+
+    let drawn = drawn(&rows);
+    assert_eq!(
+        drawn[0],
+        (
+            "Merge",
+            0,
+            vec![],
+            vec![(0, 0)],
+            vec![],
+            vec![(1, "Old side work")]
+        )
+    );
+    assert_eq!(
+        drawn[41],
+        (
+            "Old side work",
+            1,
+            vec![(0, 0)],
+            vec![(0, 0), (1, 0)],
+            vec![(1, "Merge")],
+            vec![]
+        )
+    );
+    assert_eq!(drawn[42], ("Base", 0, vec![(0, 0)], vec![], vec![], vec![]));
+    assert_eq!(
+        repository.git(&["rev-parse", "HEAD^2"]),
+        format!("{}\n", rows[41].hash),
+        "git has Old side work as the second parent of Merge"
     );
 }

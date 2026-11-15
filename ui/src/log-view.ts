@@ -34,6 +34,8 @@ export interface LogView {
 
 /** Commits to a page: enough to fill the list several times over. */
 const PAGE_SIZE = 200;
+/** Commits to a page read on the way to a commit further down, such as the parent an arrow leads to. */
+const SEARCH_PAGE_SIZE = 5000;
 /** The height of a row in pixels. */
 const ROW_HEIGHT = 26;
 /** Rows drawn beyond each end of the view, and how close to the end the next page is asked for. */
@@ -139,23 +141,24 @@ export function createLogView(host: LogViewHost): LogView {
   }
 
   /**
-   * Reads the page after `after`, or the first page. Resolves to whether the log came: false when
-   * the read failed, or a refresh or a close overtook it.
+   * Reads the page of `count` commits after `after`, or the first page. Resolves to whether the log
+   * came: false when the read failed, or a refresh or a close overtook it.
    */
-  function readPage(after: LogCursor | null): Promise<boolean> {
+  function readPage(after: LogCursor | null, count = PAGE_SIZE): Promise<boolean> {
     if (repository === null) {
       return Promise.resolve(false);
     }
-    const read = readPageOf(repository, after);
+    const read = readPageOf(repository, after, count);
     reading = read;
     return read;
   }
 
-  async function readPageOf(shown: Repository, after: LogCursor | null): Promise<boolean> {
+  /** Reads a page of the log of `shown` for {@link readPage}, and draws it. */
+  async function readPageOf(shown: Repository, after: LogCursor | null, count: number): Promise<boolean> {
     latestRead += 1;
     const thisRead = latestRead;
     try {
-      const page = await readLog(shown, after, PAGE_SIZE);
+      const page = await readLog(shown, after, count);
       if (thisRead !== latestRead) {
         return false;
       }
@@ -187,7 +190,7 @@ export function createLogView(host: LogViewHost): LogView {
       if (index >= 0 || repository !== shown) {
         return index;
       }
-      const read = reading ?? (next === null ? null : readPage(next));
+      const read = reading ?? (next === null ? null : readPage(next, SEARCH_PAGE_SIZE));
       if (read === null || !(await read)) {
         return -1;
       }
@@ -346,19 +349,19 @@ function graphView(row: LogRow, columns: number): SVGElement {
   for (const line of row.graph.below) {
     graph.append(lineView(line, middle, ROW_HEIGHT));
   }
-  const node = row.graph.column;
+  const nodeColumn = row.graph.column;
   for (const arrow of row.graph.arrowsUp) {
-    graph.append(arrowView(arrow, node, middle, ARROW_GAP, t("logGoToChild")));
+    graph.append(arrowView(arrow, nodeColumn, middle, ARROW_GAP, t("logGoToChild")));
   }
   for (const arrow of row.graph.arrowsDown) {
-    graph.append(arrowView(arrow, node, middle, ROW_HEIGHT - ARROW_GAP, t("logGoToParent")));
+    graph.append(arrowView(arrow, nodeColumn, middle, ROW_HEIGHT - ARROW_GAP, t("logGoToParent")));
   }
-  const circle = document.createElementNS(SVG, "circle");
-  circle.classList.add(laneColor(node));
-  circle.setAttribute("cx", String(laneCenter(node)));
-  circle.setAttribute("cy", String(middle));
-  circle.setAttribute("r", "4");
-  graph.append(circle);
+  const node = document.createElementNS(SVG, "circle");
+  node.classList.add(laneColor(nodeColumn));
+  node.setAttribute("cx", String(laneCenter(nodeColumn)));
+  node.setAttribute("cy", String(middle));
+  node.setAttribute("r", "4");
+  graph.append(node);
   return graph;
 }
 
@@ -374,18 +377,19 @@ function lineView(line: GraphLine, top: number, bottom: number): SVGElement {
 }
 
 /**
- * The arrow of a cut edge: a line from the node in `node`, at the height `middle`, to the arrow's
- * column at the height `end`, with its head there. A click on it goes to the commit at the other end.
+ * The arrow of a cut edge: a line from the node in `nodeColumn`, at the height `middle`, to the
+ * arrow's column at the height `end`, with its head there. A click on it goes to the commit at the
+ * other end.
  */
-function arrowView(arrow: GraphArrow, node: number, middle: number, end: number, label: string): SVGElement {
+function arrowView(arrow: GraphArrow, nodeColumn: number, middle: number, end: number, label: string): SVGElement {
   const group = document.createElementNS(SVG, "g");
-  group.classList.add("log-arrow", laneColor(Math.max(node, arrow.column)));
+  group.classList.add("log-arrow", laneColor(Math.max(nodeColumn, arrow.column)));
   group.dataset.target = arrow.target;
   const titleView = document.createElementNS(SVG, "title");
   titleView.textContent = label;
   const x = laneCenter(arrow.column);
   const shaft = document.createElementNS(SVG, "line");
-  shaft.setAttribute("x1", String(laneCenter(node)));
+  shaft.setAttribute("x1", String(laneCenter(nodeColumn)));
   shaft.setAttribute("y1", String(middle));
   shaft.setAttribute("x2", String(x));
   shaft.setAttribute("y2", String(end));

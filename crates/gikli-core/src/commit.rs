@@ -233,16 +233,25 @@ pub(crate) fn has_commits(runner: &GitRunner, root: &Path) -> Result<bool, Failu
         .success)
 }
 
+/// The email of the user's Commit identity in the Repository at `root`: the `user.email` git has
+/// now, if it is not empty.
+pub(crate) fn user_email(runner: &GitRunner, root: &Path) -> Result<Option<String>, Failure> {
+    let email = runner
+        .run(root, &["config", "--get", "user.email"])
+        .map_err(git_failed_to_start)?
+        .stdout_text();
+    let email = email.trim();
+    Ok((!email.is_empty()).then(|| email.to_owned()))
+}
+
 /// The messages of the user's last commits in the Repository at `root`, on any local branch, newest
 /// first and each one once. A commit is theirs when it has the `user.email` git has now, so without
 /// one none is. Merges are left out, as git wrote their messages.
 pub(crate) fn previous_messages(runner: &GitRunner, root: &Path) -> Result<Vec<String>, Failure> {
-    let email = runner
-        .run(root, &["config", "--get", "user.email"])
-        .map_err(git_failed_to_start)?;
-    let email = email.stdout_text();
-    let email = email.trim();
-    if email.is_empty() || !has_commits(runner, root)? {
+    let Some(email) = user_email(runner, root)? else {
+        return Ok(Vec::new());
+    };
+    if !has_commits(runner, root)? {
         return Ok(Vec::new());
     }
     let author = format!("--author=<{email}>");

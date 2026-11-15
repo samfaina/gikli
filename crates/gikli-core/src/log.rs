@@ -6,7 +6,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, Invocation};
-use crate::{Failure, Repository, failure_of, git_failed_to_start};
+use crate::{Failure, Repository, commit, failure_of, git_failed_to_start};
 
 /// One page of the log, newest commit first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -57,9 +57,13 @@ pub struct RefLabel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RefKind {
+    /// HEAD itself, on the commit it points at.
     Head,
+    /// A local branch.
     Local,
+    /// A remote branch.
     Remote,
+    /// A tag, lightweight or annotated.
     Tag,
 }
 
@@ -126,14 +130,13 @@ pub struct LogCursor {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Walk {
+    /// The lanes of the graph.
     lanes: Lanes,
     /// The commits still to come that HEAD reaches: HEAD's own, and the parents of each one
     /// reached.
     on_current_branch: BTreeSet<String>,
     /// The children seen of each commit still to come, newest first.
     children: BTreeMap<String, Vec<Child>>,
-    /// The children whose edges to each commit still to come were cut, newest first.
-    cut_children: BTreeMap<String, Vec<String>>,
 }
 
 /// A child seen of a commit still to come.
@@ -141,8 +144,8 @@ struct Walk {
 #[serde(rename_all = "camelCase")]
 struct Child {
     hash: String,
-    /// The column of its node.
-    column: usize,
+    /// The column of its node, where its edge to the commit starts. None when that edge is cut.
+    column: Option<usize>,
 }
 
 impl Walk {
@@ -154,59 +157,69 @@ impl Walk {
         }
     }
 
-    /// The row of the commit git printed as `fields`, and the walk as the next row finds it.
-    /// `user_email` is the email of the user's Commit identity, if they have one, and `is_long`
-    /// tells whether the edge to a parent is cut.
+    /// Goes past the commit git printed as `fields`: returns its row, and leaves the walk as the
+    /// next row finds it. `user_email` is the email of the user's Commit identity, if they have
+    /// one, and `is_long` tells whether the edge to a parent is cut.
     fn row(
         &mut self,
-        fields: &[&str],
+        fields: &[&str; FIELDS],
         labels: &HashMap<String, Vec<RefLabel>>,
         user_email: Option<&str>,
         is_long: impl Fn(&str) -> bool,
     ) -> LogRow {
-        let hash = fields[0].to_owned();
-        let parents: Vec<String> = fields[1].split_whitespace().map(str::to_owned).collect();
-        let [author, author_email, committer, committer_email] = [3, 4, 5, 6].map(|at| fields[at]);
-        let on_current_branch = self.on_current_branch.remove(&hash);
+        let [
+            hash,
+            parents,
+            committed_at,
+            author,
+            author_email,
+            committer,
+            committer_email,
+            subject,
+        ] = *fields;
+        let parents: Vec<String> = parents.split_whitespace().map(str::to_owned).collect();
+        let on_current_branch = self.on_current_branch.remove(hash);
         if on_current_branch {
             self.on_current_branch.extend(parents.iter().cloned());
         }
-        let cut: Vec<bool> = parents.iter().map(|parent| is_long(parent)).collect();
-        let children_cut = self.cut_children.remove(&hash).unwrap_or_default();
-        let graph = self.lanes.place(&hash, &parents, &cut, children_cut);
-        for (parent, _) in parents.iter().zip(&cut).filter(|(_, cut)| **cut) {
-            let children_cut = self.cut_children.entry(parent.clone()).or_default();
-            children_cut.push(hash.clone());
-        }
-        let mut children = self.children.remove(&hash).unwrap_or_default();
+        let mut children = self.children.remove(hash).unwrap_or_default();
+        let children_cut = children
+            .iter()
+            .filter(|child| child.column.is_none())
+            .map(|child| child.hash.clone())
+            .collect();
+        let graph = self.lanes.place(hash, &parents, is_long, children_cut);
+        // The child in the same column, with its edge drawn, has its line run straight down here.
         if let Some(on_its_line) = children
             .iter()
-            .position(|child| child.column == graph.column)
+            .position(|child| child.column == Some(graph.column))
         {
             let child = children.remove(on_its_line);
             children.insert(0, child);
         }
         for parent in &parents {
-            self.children
-                .entry(parent.clone())
-                .or_default()
-                .push(Child {
-                    hash: hash.clone(),
-                    column: graph.column,
-                });
+            let cut = graph
+                .arrows_down
+                .iter()
+                .any(|arrow| &arrow.target == parent);
+            let child = Child {
+                hash: hash.to_owned(),
+                column: (!cut).then_some(graph.column),
+            };
+            self.children.entry(parent.clone()).or_default().push(child);
         }
         LogRow {
-            graph,
-            labels: labels.get(&hash).cloned().unwrap_or_default(),
+            labels: labels.get(hash).cloned().unwrap_or_default(),
             on_current_branch,
             children: children.into_iter().map(|child| child.hash).collect(),
-            hash,
+            hash: hash.to_owned(),
             parents,
-            committed_at: fields[2].parse().unwrap_or_default(),
+            committed_at: committed_at.parse().unwrap_or_default(),
             own: user_email.is_some_and(|email| email.eq_ignore_ascii_case(author_email)),
             committer_differs: (author, author_email) != (committer, committer_email),
             author: author.to_owned(),
-            subject: fields[7].to_owned(),
+            subject: subject.to_owned(),
+            graph,
         }
     }
 }
@@ -237,14 +250,14 @@ pub(crate) fn read(
     if after.is_some_and(|cursor| cursor.tips != tips) {
         return Err(Failure::LogChanged);
     }
-    let user_email = user_email_of(runner, repository)?;
+    let user_email = commit::user_email(runner, &repository.root)?;
     let seen = after.map_or(0, |cursor| cursor.seen);
     let show_long_edges = after.map_or(show_long_edges, |cursor| cursor.show_long_edges);
     let skip = format!("--skip={seen}");
     // One more than the page, to know whether another comes after it, and enough beyond it to know
     // whether the edges from the page are long.
-    let beyond = if show_long_edges { 0 } else { LONG_EDGE };
-    let max_count = format!("--max-count={}", count + 1 + beyond);
+    let lookahead = if show_long_edges { 0 } else { LONG_EDGE };
+    let max_count = format!("--max-count={}", count + 1 + lookahead);
     let mut args = vec![
         "log",
         "--date-order",
@@ -331,6 +344,7 @@ const REF_KINDS: [(&str, RefKind); 3] = [
 const REF_FORMAT: &str = "--format=%(objectname)%00%(*objectname)%00%(symref)%00%(refname)";
 
 impl References {
+    /// The references of `repository` as they are now.
     fn read(runner: &GitRunner, repository: &Repository) -> Result<Self, Failure> {
         let mut args = vec!["for-each-ref", REF_FORMAT];
         args.extend(REF_KINDS.iter().map(|(prefix, _)| *prefix));
@@ -389,16 +403,6 @@ impl References {
     }
 }
 
-/// The email of the user's Commit identity in `repository`, if it has one.
-fn user_email_of(runner: &GitRunner, repository: &Repository) -> Result<Option<String>, Failure> {
-    let email = runner
-        .run(&repository.root, &["config", "--get", "user.email"])
-        .map_err(git_failed_to_start)?
-        .stdout_text();
-    let email = email.trim();
-    Ok((!email.is_empty()).then(|| email.to_owned()))
-}
-
 /// Runs git with `args` in `repository`, for a read of its log.
 fn run_git(
     runner: &GitRunner,
@@ -444,13 +448,13 @@ struct Lanes(Vec<Option<String>>);
 
 impl Lanes {
     /// Draws the row of the commit `hash`, and leaves the lanes as the next row finds them. The
-    /// edges to the parents `cut` marks, and from `children_cut`, are drawn as arrows and hold no
-    /// lane.
+    /// edges to the parents `is_long` tells, and from `children_cut`, are drawn as arrows and hold
+    /// no lane.
     fn place(
         &mut self,
         hash: &str,
         parents: &[String],
-        cut: &[bool],
+        is_long: impl Fn(&str) -> bool,
         children_cut: Vec<String>,
     ) -> GraphRow {
         let waiting = self.lane_of(hash);
@@ -462,8 +466,8 @@ impl Lanes {
         }
         let mut below = self.straight_lines();
         let mut parents_cut = Vec::new();
-        for (index, (parent, cut)) in parents.iter().zip(cut).enumerate() {
-            if *cut {
+        for (index, parent) in parents.iter().enumerate() {
+            if is_long(parent) {
                 parents_cut.push(parent.clone());
                 continue;
             }
