@@ -23,6 +23,7 @@ export interface CommitPanesHost {
   goToCommit(hash: string): void;
 }
 
+/** The panes of the selected commit. */
 export interface CommitPanes {
   /** Shows what the commit `hash` of `repository` changed and its details, or nothing when null. */
   show(repository: Repository | null, hash: string | null): void;
@@ -30,10 +31,12 @@ export interface CommitPanes {
 
 /** The branches containing a commit that show before "Show all". */
 const BRANCHES_SHOWN = 6;
+/** How many characters of a hash the log shows where the whole one does not fit. */
 export const SHORT_HASH_LENGTH = 8;
 
 const dates = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
+/** The panes beside the commit list, in the elements of index.html that hold them. */
 export function createCommitPanes(host: CommitPanesHost): CommitPanes {
   const changesTitle = element<HTMLElement>("log-changes-title");
   const groupingButton = element<HTMLButtonElement>("log-changes-grouping");
@@ -142,9 +145,11 @@ export function createCommitPanes(host: CommitPanesHost): CommitPanes {
     field(fields, t("logDetailsHash"), hash);
     field(fields, t("logDetailsAuthor"), t("logDetailsPerson", { name: details.author, email: details.authorEmail }));
     field(fields, t("logDetailsDate"), dates.format(new Date(details.authoredAt * 1000)));
-    if (details.committer !== details.author || details.committerEmail !== details.authorEmail) {
-      const committed = `${t("logDetailsPerson", { name: details.committer, email: details.committerEmail })}, ${dates.format(new Date(details.committedAt * 1000))}`;
-      field(fields, t("logDetailsCommitter"), committed);
+    // An amended, rebased or cherry-picked commit was committed later than it was written.
+    if (details.committerDiffers || details.committedAt !== details.authoredAt) {
+      const person = t("logDetailsPerson", { name: details.committer, email: details.committerEmail });
+      const date = dates.format(new Date(details.committedAt * 1000));
+      field(fields, t("logDetailsCommitter"), t("logDetailsCommitted", { person, date }));
     }
     field(fields, t("logDetailsBranches"), branchesView(details));
     content.append(message, fields);
@@ -197,6 +202,7 @@ export function createCommitPanes(host: CommitPanesHost): CommitPanes {
   return { show };
 }
 
+/** Adds the field `name` with its `value` to the description `list`. */
 function field(list: HTMLElement, name: string, value: string | Node): void {
   const term = document.createElement("dt");
   term.textContent = name;
@@ -205,6 +211,7 @@ function field(list: HTMLElement, name: string, value: string | Node): void {
   list.append(term, description);
 }
 
+/** A line of `text` that stands in a pane for what it has nothing of. */
 function note(text: string): HTMLElement {
   const view = document.createElement("p");
   view.className = "log-side-note";
@@ -232,7 +239,8 @@ function nodesView(nodes: ChangeNode[], inFolder = false): HTMLElement {
       const path = document.createElement("span");
       path.className = "change-path";
       const shownPath = inFolder ? node.path.slice(node.path.lastIndexOf("/") + 1) : node.path;
-      path.textContent = node.originalPath === null ? shownPath : `${shownPath} ← ${node.originalPath}`;
+      path.textContent =
+        node.originalPath === null ? shownPath : t("logRenamedFrom", { path: shownPath, from: node.originalPath });
       path.title = node.path;
       item.append(path);
     }

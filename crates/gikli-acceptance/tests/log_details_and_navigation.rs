@@ -1,10 +1,10 @@
 //! The log's details and navigation: the user finds a commit, sees what it did and where it lives,
 //! and acts on it from the log.
 
-use gikli_acceptance::{Sandbox, TestRepository, minute_as_seconds};
+use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository, minute_as_seconds};
 use gikli_core::{
-    ChangeGrouping, ChangeNode, Failure, Gikli, LogFilter, LogRow, RefKind, RefLabel, Repository,
-    TextSearch,
+    ChangeGrouping, ChangeNode, Failure, Gikli, LOG_SEARCH_BATCH, LogFilter, LogRow, RefKind,
+    RefLabel, Repository, TextSearch,
 };
 
 /// Opens the repository's folder as a Project and returns its Repository.
@@ -56,6 +56,15 @@ fn commit_details_show_the_message_hash_author_with_email_and_date() {
     assert_eq!(details.authored_at, minute_as_seconds(2));
     assert_eq!(details.committer, "Test User");
     assert_eq!(details.committed_at, minute_as_seconds(2));
+    assert!(details.committer_differs);
+    assert_eq!(
+        repository.git(&["log", "-1", "--format=%an <%ae> %at|%cn"]),
+        format!(
+            "Ada Lovelace <ada@example.com> {}|Test User\n",
+            minute_as_seconds(2)
+        ),
+        "git agrees on the author and that someone else committed it"
+    );
     assert_eq!(
         details.message_text(),
         repository.git(&["log", "-1", "--format=%B"]).trim_end()
@@ -418,6 +427,23 @@ fn a_sha256_repository_takes_its_64_character_hashes() {
         .commit_details(&root, "HEAD")
         .expect("read the details");
     assert_eq!(later.message[1].commit.as_deref(), Some(first.as_str()));
+    assert_eq!(
+        repository.git(&[
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            &first
+        ]),
+        "a.txt\n",
+        "git agrees on the changed file"
+    );
+    assert_eq!(
+        repository.git(&["log", "-1", "--format=%s"]),
+        format!("After {first}\n"),
+        "git agrees the message names the first commit"
+    );
 }
 
 #[test]
@@ -696,6 +722,10 @@ fn a_search_that_is_no_regular_expression_says_why() {
         gikli.log_search_history().is_empty(),
         "a search that failed is not kept"
     );
+    assert!(
+        !repository.git_succeeds(&["log", "-E", "--grep=fix("]),
+        "git does not take it either"
+    );
 }
 
 #[test]
@@ -710,10 +740,8 @@ fn the_searches_the_user_ran_are_kept_newest_first() {
     for text in ["parser", "lex", "", "parser"] {
         filtered_rows(&gikli, &root, &search(text), 1);
     }
-    for number in 0..25 {
-        if number >= 3 {
-            filtered_rows(&gikli, &root, &search(&format!("search {number}")), 1);
-        }
+    for number in 3..25 {
+        filtered_rows(&gikli, &root, &search(&format!("search {number}")), 1);
     }
 
     let history = gikli.log_search_history();
@@ -760,4 +788,48 @@ fn a_search_keeps_to_the_branches_the_log_is_filtered_by() {
         .expect("read the log");
     assert!(gone.rows.is_empty(), "a branch that is gone shows nothing");
     assert_eq!(gone.next, None);
+}
+
+#[test]
+fn a_search_that_finds_little_comes_in_short_pages_so_the_log_stays_responsive() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    let mut history = ImportedHistory::default();
+    let mut previous = history.commit("main", &[]);
+    while history.commits() < LOG_SEARCH_BATCH + 5 {
+        previous = history.commit("main", &[previous]);
+    }
+    repository.fast_import(&history);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let filter = LogFilter {
+        text: Some(TextSearch {
+            text: "^Commit 1 on main$".to_owned(),
+            regex: true,
+            match_case: true,
+        }),
+        ..LogFilter::default()
+    };
+
+    let first = gikli
+        .read_filtered_log(&root, &filter, None, 50)
+        .expect("read the log");
+    let rows = filtered_rows(&gikli, &root, &filter, 50);
+
+    assert!(
+        first.rows.is_empty(),
+        "the first page went through no match"
+    );
+    assert!(first.next.is_some(), "the search goes on");
+    assert_eq!(subjects(&rows), vec!["Commit 1 on main"]);
+    assert_eq!(
+        repository.git(&[
+            "log",
+            "--format=%s",
+            "-E",
+            "--grep=^Commit 1 on main$",
+            "main"
+        ]),
+        "Commit 1 on main\n"
+    );
 }

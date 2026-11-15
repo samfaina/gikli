@@ -70,6 +70,13 @@ pub enum RefKind {
     Tag,
 }
 
+impl RefKind {
+    /// Whether it is a local or a remote branch.
+    pub(crate) fn is_branch(self) -> bool {
+        matches!(self, Self::Local | Self::Remote)
+    }
+}
+
 /// What the log shows of the history.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -85,6 +92,7 @@ pub struct LogFilter {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextSearch {
+    /// What the user typed.
     pub text: String,
     /// Whether the text is a regular expression. Otherwise a commit matches when its message or
     /// author holds the text, or its hash starts with it.
@@ -229,6 +237,11 @@ pub struct GraphArrow {
     /// The hash of the commit at the other end of the edge.
     pub target: String,
 }
+
+/// The most commits a page of a search goes through. A page that finds fewer than it was asked for
+/// in as many ends there, with more to come, so the log stays responsive while a search that finds
+/// little goes through a long history, and a newer search does not wait for it.
+pub const LOG_SEARCH_BATCH: usize = 10_000;
 
 /// The most rows an edge spans and is still drawn whole when long edges are off.
 pub const LONG_EDGE: usize = 30;
@@ -703,7 +716,8 @@ fn graph_rows(
 
 /// The next `count` commits that `matcher` finds in the log `log_read` reads, each a row of its
 /// own with no lines of the graph. The commits it passes over still go through `walk`, which tells
-/// the ones on the current branch. The read stops before the next commit found, or at the end.
+/// the ones on the current branch. The read stops before the next commit found, after
+/// [`LOG_SEARCH_BATCH`] commits, or at the end.
 fn found_rows(
     runner: &GitRunner,
     log_read: &mut LogRead,
@@ -714,14 +728,16 @@ fn found_rows(
 ) -> Result<PageRows, Failure> {
     let user_email = log_read.user_email.clone();
     let mut rows = Vec::new();
+    let mut gone_through = 0;
     let more = loop {
         let Some(commit) = log_read.next_commits(runner, 1)?.first() else {
             break false;
         };
         let found = matcher.matches(commit);
-        if found && rows.len() == count {
+        if (found && rows.len() == count) || gone_through == LOG_SEARCH_BATCH {
             break true;
         }
+        gone_through += 1;
         let fields = commit.each_ref().map(String::as_str);
         let row = walk.row(
             &fields,
@@ -858,12 +874,60 @@ fn list_references(runner: &GitRunner, repository: &Repository) -> Result<Vec<u8
 /// The local branches, remote branches and tags of `repository`, each kind by name, as the log
 /// labels them. A symbolic ref, such as `origin/HEAD`, only repeats the branch it leads to, so it
 /// is not among them.
-pub(crate) fn references(
+fn references(runner: &GitRunner, repository: &Repository) -> Result<Vec<RefLabel>, Failure> {
+    Ok(labels_of(&list_references(runner, repository)?))
+}
+
+/// The local and remote branches of `repository`, local ones first, each kind by name: those the
+/// log can be filtered by.
+pub(crate) fn branches(
     runner: &GitRunner,
     repository: &Repository,
 ) -> Result<Vec<RefLabel>, Failure> {
-    let listed = list_references(runner, repository)?;
-    let mut labels: Vec<RefLabel> = String::from_utf8_lossy(&listed)
+    let mut branches = references(runner, repository)?;
+    branches.retain(|label| label.kind.is_branch());
+    Ok(branches)
+}
+
+/// The local and remote branches of `repository` that contain the commit `hash`, in the order of
+/// [`branches`].
+pub(crate) fn branches_containing(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<Vec<RefLabel>, Failure> {
+    let args = [
+        "for-each-ref",
+        REF_FORMAT,
+        "--contains",
+        hash,
+        "refs/heads/",
+        "refs/remotes/",
+    ];
+    Ok(labels_of(&run_git(runner, repository, &args)?.stdout))
+}
+
+/// The local branches, remote branches and tags of `repository` the user can go to when they have
+/// typed `text`: those whose name holds it, ignoring case. The names that start with it come
+/// first, then the others, each in the order of [`references`].
+pub(crate) fn suggestions(
+    runner: &GitRunner,
+    repository: &Repository,
+    text: &str,
+) -> Result<Vec<RefLabel>, Failure> {
+    let text = text.trim().to_lowercase();
+    let (mut starting, holding): (Vec<RefLabel>, Vec<RefLabel>) = references(runner, repository)?
+        .into_iter()
+        .filter(|label| label.name.to_lowercase().contains(&text))
+        .partition(|label| label.name.to_lowercase().starts_with(&text));
+    starting.extend(holding);
+    Ok(starting)
+}
+
+/// The references `listed` in [`REF_FORMAT`] that the log labels commits with, each kind by name,
+/// without the symbolic ones.
+fn labels_of(listed: &[u8]) -> Vec<RefLabel> {
+    let mut labels: Vec<RefLabel> = String::from_utf8_lossy(listed)
         .lines()
         .filter_map(|line| {
             let fields: Vec<&str> = line.split('\0').collect();
@@ -874,7 +938,7 @@ pub(crate) fn references(
         })
         .collect();
     labels.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
-    Ok(labels)
+    labels
 }
 
 /// The commit HEAD of `repository` points at, if it has one.
@@ -891,8 +955,8 @@ fn head_commit(runner: &GitRunner, repository: &Repository) -> Result<Option<Str
         .then(|| head.stdout_text().trim_end().to_owned()))
 }
 
-/// Runs git with `args` in `repository`, for a read of its log.
-fn run_git(
+/// Runs git with `args` in `repository`, for a read of its log or of what it tells of a commit.
+pub(crate) fn run_git(
     runner: &GitRunner,
     repository: &Repository,
     args: &[&str],

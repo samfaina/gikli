@@ -934,6 +934,8 @@ export interface CommitDetails {
   committerEmail: string;
   /** When it was committed, in seconds since the epoch. */
   committedAt: number;
+  /** Whether its author and its committer are not the same. */
+  committerDiffers: boolean;
   /** The local and remote branches that contain it, local ones first. */
   branches: RefLabel[];
 }

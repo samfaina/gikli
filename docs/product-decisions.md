@@ -110,6 +110,13 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - HEAD has its own label on the commit it points at, whether it is on a branch or detached, next to the label of the branch it is on. The current branch is what HEAD reaches, so in detached HEAD the commits under HEAD are highlighted.
 - A commit is the user's own when its author email is the `user.email` git has now, compared without regard to case. Without a `user.email`, no commit is.
 - The right arrow goes to the child whose line of the graph runs straight down to the commit, or to the newest child when no line does.
+- A text search shows the commits it finds without the graph, as their neighbors in the list are not parent and child. A branch filter keeps the graph, and the current branch is still highlighted where the branches shown meet HEAD's history.
+- Text search matches the whole message and the author's name, not the email. Without regex, the message or name holds the text, ignoring case unless match case is on, or the hash starts with it. With regex, `^` and `$` match at each line, as in git.
+- A page of a search goes through at most 10,000 commits, so a search that finds little stays responsive on a large history and a newer search does not wait for it. Such a page can hold fewer commits than asked for, or none, while the search goes on.
+- The search history keeps the last 20 search texts, newest first, each once, across restarts. It keeps the text only, not the regex and match-case options.
+- Go to accepts any revision git knows, not only a hash, branch or tag, and suggests the branches and tags whose name holds what was typed, those that start with it first. A commit that the filtered log does not show is reported as not shown.
+- The commit details show the committer and commit date only when they differ from the author's.
+- The changed files of a commit are a tree by default, and the choice of tree or list is kept as a setting.
 
 ### Defaults for settings the reference leaves "not stated"
 

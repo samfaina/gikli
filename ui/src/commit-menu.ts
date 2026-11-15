@@ -5,7 +5,9 @@ import { t } from "./strings";
 
 /** An action of the commit menu. */
 export interface CommitAction {
+  /** The `data-testid` of its item. */
   testId: string;
+  /** The text of its item. */
   label(): string;
   /** Acts on the commit `hash`. A rejection shows as an error in the log. */
   run(hash: string): Promise<void>;
@@ -20,6 +22,7 @@ export const COMMIT_ACTIONS: CommitAction[] = [
   },
 ];
 
+/** The menu of a commit, which one log has at a time. */
 export interface CommitMenu {
   /** Opens the menu of the commit `hash` at the point `x`, `y`; the focus goes back to `from` on Escape. */
   open(hash: string, x: number, y: number, from: HTMLElement): void;

@@ -115,7 +115,7 @@ export function createLogView(host: LogViewHost): LogView {
   goToInput.setAttribute("aria-label", t("logGoTo"));
   refreshButton.textContent = t("logRefresh");
   closeButton.textContent = t("logClose");
-  refreshButton.addEventListener("click", () => void startOver());
+  refreshButton.addEventListener("click", refresh);
   closeButton.addEventListener("click", close);
   longEdgesInput.addEventListener("change", () => void changeLongEdges());
   searchInput.addEventListener("keydown", (event) => {
@@ -164,19 +164,31 @@ export function createLogView(host: LogViewHost): LogView {
     list.focus();
   }
 
-  /** Lists the branches of `shown` in the branch filter, with every branch first. */
-  async function listBranches(shown: Repository): Promise<void> {
-    try {
-      const listed = await logBranches(shown);
-      if (repository !== shown) {
-        return;
-      }
-      branches = listed;
-    } catch {
-      branches = [];
+  /** Reads the log again, and the branches it can be filtered by, which may have changed. */
+  function refresh(): void {
+    if (repository !== null) {
+      void listBranches(repository);
     }
+    void startOver();
+  }
+
+  /** Lists the branches of `shown` in the branch filter, with every branch first, keeping the one chosen. */
+  async function listBranches(shown: Repository): Promise<void> {
+    const chosen = branchSelect.value === "" ? undefined : branches[Number(branchSelect.value)];
+    let listed: RefLabel[] = [];
+    try {
+      listed = await logBranches(shown);
+    } catch {
+      // The filter then offers every branch only; the log says why it cannot be read.
+    }
+    if (repository !== shown) {
+      return;
+    }
+    branches = listed;
     const every = new Option(t("logAllBranches"), "");
     branchSelect.replaceChildren(every, ...branches.map((branch, index) => new Option(branch.name, String(index))));
+    const still = branches.findIndex((branch) => branch.name === chosen?.name && branch.kind === chosen.kind);
+    branchSelect.value = still < 0 ? "" : String(still);
   }
 
   /** Offers the searches the user ran, newest first, under the search field. */
@@ -314,7 +326,9 @@ export function createLogView(host: LogViewHost): LogView {
       next = page.next;
       columns = page.rows.reduce((widest, row) => Math.max(widest, columnsOf(row)), columns);
       const filtered = shownFilter.text !== null || shownFilter.branches.length > 0;
-      message.replaceChildren(rows.length === 0 ? t(filtered ? "logNoMatches" : "logEmpty") : "");
+      // A page of a search can find nothing while the search goes on through the history.
+      const emptyMessage = next !== null ? t("logSearching") : t(filtered ? "logNoMatches" : "logEmpty");
+      message.replaceChildren(rows.length === 0 ? emptyMessage : "");
       draw();
       return true;
     } catch (error) {
@@ -365,10 +379,22 @@ export function createLogView(host: LogViewHost): LogView {
     return true;
   }
 
-  /** The left and right arrows go to the parent and the child, the up and down arrows along the list. */
+  /**
+   * The left and right arrows go to the parent and the child, the up and down arrows along the list,
+   * and the menu key or Shift+F10 opens the commit menu of the selected commit.
+   */
   function onKey(event: KeyboardEvent): void {
     const index = rows.findIndex((row) => row.hash === selected);
     const current = rows[index];
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      event.preventDefault();
+      const row = rowsView.querySelector<HTMLElement>(".log-row.selected");
+      if (current !== undefined && row !== null) {
+        const box = row.getBoundingClientRect();
+        menu.open(current.hash, box.left + 16, box.bottom, list);
+      }
+      return;
+    }
     let target: string | undefined;
     if (event.key === "ArrowLeft") {
       target = current?.parents[0];

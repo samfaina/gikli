@@ -3,28 +3,36 @@
 use serde::Serialize;
 
 use crate::git::{GitRunner, path_from_bytes};
+use crate::log::{self, run_git};
 use crate::{
-    Change, ChangeGroup, ChangeGrouping, ChangeStatus, Failure, RefKind, RefLabel, Repository,
-    failure_of, git_failed_to_start,
+    Change, ChangeGroup, ChangeGrouping, ChangeStatus, Failure, RefLabel, Repository,
+    git_failed_to_start,
 };
 
 /// The details of a commit, as the log shows them beside the commit list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitDetails {
+    /// Its full hash.
     pub hash: String,
     /// The hashes of its parents, the first parent first.
     pub parents: Vec<String>,
     /// Its whole message, in parts, so the hashes of commits it names can lead to them.
     pub message: Vec<MessagePart>,
+    /// The name of who wrote it.
     pub author: String,
+    /// The email of who wrote it.
     pub author_email: String,
     /// When it was written, in seconds since the epoch.
     pub authored_at: i64,
+    /// The name of who committed it.
     pub committer: String,
+    /// The email of who committed it.
     pub committer_email: String,
     /// When it was committed, in seconds since the epoch.
     pub committed_at: i64,
+    /// Whether its author and its committer are not the same name and email.
+    pub committer_differs: bool,
     /// The local and remote branches that contain it, local ones first, each kind by name.
     pub branches: Vec<RefLabel>,
 }
@@ -40,6 +48,7 @@ impl CommitDetails {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessagePart {
+    /// The text of this piece, as the message has it.
     pub text: String,
     /// The full hash of the commit the text names, when it is the hash of one.
     pub commit: Option<String>,
@@ -51,6 +60,7 @@ pub struct MessagePart {
 pub struct CommitChanges {
     /// The hash of the parent, or None for a commit with no parent, whose files are all new.
     pub parent: Option<String>,
+    /// The files, arranged as the user chose.
     pub group: ChangeGroup,
 }
 
@@ -108,40 +118,9 @@ pub(crate) fn read(
         committer: committer.to_owned(),
         committer_email: committer_email.to_owned(),
         committed_at: committed_at.parse().unwrap_or_default(),
-        branches: containing_branches(runner, repository, hash)?,
+        committer_differs: (author, author_email) != (committer, committer_email),
+        branches: log::branches_containing(runner, repository, hash)?,
     })
-}
-
-/// The local and remote branches of `repository` that contain the commit `hash`, in the order
-/// [`CommitDetails::branches`] has them.
-fn containing_branches(
-    runner: &GitRunner,
-    repository: &Repository,
-    hash: &str,
-) -> Result<Vec<RefLabel>, Failure> {
-    let listed = run_git(
-        runner,
-        repository,
-        &[
-            "for-each-ref",
-            "--format=%(refname)%00%(symref)",
-            "--contains",
-            hash,
-            "refs/heads/",
-            "refs/remotes/",
-        ],
-    )?;
-    let mut branches: Vec<RefLabel> = String::from_utf8_lossy(&listed)
-        .lines()
-        .filter_map(|line| {
-            let (name, symref) = line.split_once('\0')?;
-            // A symbolic ref, such as `origin/HEAD`, only repeats the branch it leads to.
-            symref.is_empty().then(|| RefLabel::of_ref(name)).flatten()
-        })
-        .filter(|label| matches!(label.kind, RefKind::Local | RefKind::Remote))
-        .collect();
-    branches.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
-    Ok(branches)
 }
 
 /// The files the commit `revision` names in `repository` changed against each of its parents,
@@ -188,7 +167,7 @@ fn parents_of(
             hash,
         ],
     )?;
-    Ok(String::from_utf8_lossy(&listed)
+    Ok(String::from_utf8_lossy(&listed.stdout)
         .split_whitespace()
         .skip(1)
         .map(str::to_owned)
@@ -215,7 +194,7 @@ fn changed_files(
         Some(parent) => args.extend(["--end-of-options", parent, hash]),
         None => args.extend(["--root", "--end-of-options", hash]),
     }
-    let listed = run_git(runner, repository, &args)?;
+    let listed = run_git(runner, repository, &args)?.stdout;
     // Each file is its status, then its path, or for a rename or a copy the path it came from and
     // its new path.
     let mut fields = listed.split(|byte| *byte == 0);
@@ -246,20 +225,6 @@ fn changed_files(
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(changes)
-}
-
-/// Runs git with `args` in `repository`, for what the log tells of a commit, and returns what it
-/// printed.
-fn run_git(runner: &GitRunner, repository: &Repository, args: &[&str]) -> Result<Vec<u8>, Failure> {
-    let root = &repository.root;
-    let invocation = runner.run(root, args).map_err(git_failed_to_start)?;
-    if !invocation.success {
-        let unreadable = Failure::LogUnreadable {
-            folder: root.clone(),
-        };
-        return Err(failure_of(runner, root, &invocation, unreadable));
-    }
-    Ok(invocation.stdout)
 }
 
 /// The shortest and longest hashes a message can name a commit by: git abbreviates to 7 characters
@@ -358,6 +323,7 @@ pub(crate) fn resolve(
     Ok(hash)
 }
 
+/// The failure of a `revision` that names no commit.
 fn not_found(revision: &str) -> Failure {
     Failure::RevisionNotFound {
         revision: revision.trim().to_owned(),

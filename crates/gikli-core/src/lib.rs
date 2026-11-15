@@ -51,8 +51,8 @@ pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use host::HostEnvironment;
 pub use log::{
-    GraphArrow, GraphLine, GraphRow, LONG_EDGE, LogCursor, LogFilter, LogPage, LogRow, RefKind,
-    RefLabel, TextSearch,
+    GraphArrow, GraphLine, GraphRow, LOG_SEARCH_BATCH, LONG_EDGE, LogCursor, LogFilter, LogPage,
+    LogRow, RefKind, RefLabel, TextSearch,
 };
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
@@ -1770,24 +1770,13 @@ impl Gikli {
         repository: &Repository,
         text: &str,
     ) -> Result<Vec<RefLabel>, Failure> {
-        let text = text.trim().to_lowercase();
-        let references = log::references(&self.runner(&repository.root)?, repository)?;
-        let (mut starting, holding): (Vec<RefLabel>, Vec<RefLabel>) = references
-            .into_iter()
-            .filter(|label| label.name.to_lowercase().contains(&text))
-            .partition(|label| label.name.to_lowercase().starts_with(&text));
-        starting.extend(holding);
-        Ok(starting)
+        log::suggestions(&self.runner(&repository.root)?, repository, text)
     }
 
     /// The local and remote branches of `repository`, local ones first, each kind by name: those
     /// the user can filter the log by.
     pub fn log_branches(&self, repository: &Repository) -> Result<Vec<RefLabel>, Failure> {
-        let references = log::references(&self.runner(&repository.root)?, repository)?;
-        Ok(references
-            .into_iter()
-            .filter(|label| matches!(label.kind, RefKind::Local | RefKind::Remote))
-            .collect())
+        log::branches(&self.runner(&repository.root)?, repository)
     }
 
     /// The files the commit `revision` names in `repository` changed, against each of its parents,
