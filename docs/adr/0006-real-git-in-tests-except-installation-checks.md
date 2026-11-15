@@ -11,6 +11,7 @@ Every test builds and checks its repositories with the real git executable. The 
 - One more test outside the installation checks uses it. `what_git_writes_on_its_standard_output_shows_without_the_password` needs a URL in git's standard output. The real git writes none there for any command gikli runs today, and the version text of `fake-git` can hold one.
 - `a_burst_without_a_pause_is_announced_once`, in `crates/gikli-core/src/watch.rs`, runs no git at all. It builds no repository and checks only how the changes watcher groups the signals it is given, which real files and their events cannot show independently of the machine.
 - `a_process_the_cancel_missed_is_ended_too`, in `crates/gikli-core/src/process_tree.rs`, runs no git at all. It plays a process that a cancel missed, which a real git and its hooks only do by chance.
+- `a_cancelled_run_is_over_only_once_its_processes_have_exited`, in the same file, runs no git either. On Windows it plays processes of a run that take a while to exit once the cancel ends them, which a real git and its hooks only do by chance, under load. Those processes are the test binary run again, as `play_a_process_of_the_run`, an ignored test that does nothing when no test starts it.
 - The tests of `git_may_run`, in `crates/gikli-core/src/processes.rs`, run no git at all. They play the looks at the processes, as a git that Windows refuses to open while it starts or ends only turns up by chance.
 - Teaching `fake-git` another command, or using it in another kind of test, means changing this ADR first.
 
