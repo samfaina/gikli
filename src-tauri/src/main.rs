@@ -88,6 +88,11 @@ fn set_change_grouping(
 }
 
 #[tauri::command]
+fn set_show_long_edges(gikli: State<'_, Gikli>, show: bool) -> Result<Settings, Failure> {
+    gikli.set_show_long_edges(show)
+}
+
+#[tauri::command]
 fn set_operation_log_soft_wrap(
     gikli: State<'_, Gikli>,
     soft_wrap: bool,
@@ -633,6 +638,7 @@ fn main() {
             set_show_ignored_files,
             set_change_grouping,
             set_operation_log_soft_wrap,
+            set_show_long_edges,
             set_use_credential_helper,
             set_clone_submodules_recursively,
             set_diff_local_side_editable,

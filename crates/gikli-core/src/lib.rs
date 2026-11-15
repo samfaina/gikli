@@ -47,7 +47,9 @@ pub use diff::{
 pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use host::HostEnvironment;
-pub use log::{GraphLine, GraphRow, LogCursor, LogPage, LogRow};
+pub use log::{
+    GraphArrow, GraphLine, GraphRow, LONG_EDGE, LogCursor, LogPage, LogRow, RefKind, RefLabel,
+};
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
@@ -546,6 +548,12 @@ impl Gikli {
     /// Groups the changes view by folder or shows it as a flat list.
     pub fn set_change_grouping(&self, grouping: ChangeGrouping) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.change_grouping = grouping)
+    }
+
+    /// Turns on or off drawing long edges of the log whole. It applies from the next first page of
+    /// the log.
+    pub fn set_show_long_edges(&self, show: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.show_long_edges = show)
     }
 
     /// Turns soft wrap of the operation log on or off.
@@ -1644,7 +1652,9 @@ impl Gikli {
     /// A page of the log of `repository`: its commits on every branch, remote branch and tag and
     /// on HEAD, newest commit date first, at most `count` to a page, each with its row of the graph.
     /// The first page comes with no `after`, and each later one with the [`LogPage::next`] of the
-    /// page before it. A Repository with no commits has an empty page.
+    /// page before it. A Repository with no commits has an empty page. Unless the user shows long
+    /// edges, an edge that spans more than [`LONG_EDGE`] rows is drawn as two arrows that lead to
+    /// each other; later pages keep to what the first one did.
     ///
     /// When the history changed since the page before, this returns [`Failure::LogChanged`], and
     /// the log has to start over from the first page.
@@ -1654,7 +1664,9 @@ impl Gikli {
         after: Option<&LogCursor>,
         count: usize,
     ) -> Result<LogPage, Failure> {
-        log::read(&self.runner(&repository.root)?, repository, after, count)
+        let show_long_edges = self.settings().show_long_edges;
+        let runner = self.runner(&repository.root)?;
+        log::read(&runner, repository, after, count, show_long_edges)
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes

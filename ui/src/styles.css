@@ -784,6 +784,16 @@ button:disabled {
   --log-lane-5: #c4262e;
   --log-lane-6: #6f7a2a;
   --log-lane-7: #9b3d6b;
+  --log-label-head: #fff3c4;
+  --log-label-head-text: #6b4a00;
+  --log-label-local: #dcefdc;
+  --log-label-local-text: #1f5a1f;
+  --log-label-remote: #e8ddf5;
+  --log-label-remote-text: #57368a;
+  --log-label-tag: #e6eaef;
+  --log-label-tag-text: #3d4650;
+  --log-current-branch: #eef4fc;
+  --log-selected: #cfe0f7;
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
@@ -800,6 +810,16 @@ button:disabled {
     --log-lane-5: #ff7b72;
     --log-lane-6: #b5c06a;
     --log-lane-7: #e07fb0;
+    --log-label-head: #4a3c12;
+    --log-label-head-text: #f2cc60;
+    --log-label-local: #1f3a1f;
+    --log-label-local-text: #8fd88f;
+    --log-label-remote: #352a48;
+    --log-label-remote-text: #c9adf0;
+    --log-label-tag: #33363b;
+    --log-label-tag-text: #c4c8cf;
+    --log-current-branch: #252b35;
+    --log-selected: #2f4466;
   }
 }
 
@@ -856,6 +876,54 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+/* The commits HEAD reaches. */
+.log-row.current-branch {
+  background: var(--log-current-branch);
+}
+
+.log-row.selected {
+  background: var(--log-selected);
+}
+
+/* The user's own commits. */
+.log-row.own .log-subject,
+.log-row.own .log-author {
+  font-weight: 600;
+}
+
+.log-list:focus-visible .log-row.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.log-summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.log-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-label {
+  flex: 0 1 auto;
+  max-width: 160px;
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  font-size: 0.85em;
+  line-height: 18px;
+  text-overflow: ellipsis;
+}
+
+.log-label-head { background: var(--log-label-head); color: var(--log-label-head-text); font-weight: 600; }
+.log-label-local { background: var(--log-label-local); color: var(--log-label-local-text); }
+.log-label-remote { background: var(--log-label-remote); color: var(--log-label-remote-text); }
+.log-label-tag { background: var(--log-label-tag); color: var(--log-label-tag-text); }
+
 .log-author,
 .log-date,
 .log-hash {
@@ -871,9 +939,19 @@ button:disabled {
   overflow: hidden;
 }
 
-.log-graph line {
+.log-graph line,
+.log-graph polyline {
   fill: none;
   stroke-width: 2;
+}
+
+/* The arrows of a cut edge go to the commit at its other end. */
+.log-arrow {
+  cursor: pointer;
+}
+
+.log-graph .log-arrow polyline {
+  fill: none;
 }
 
 .log-graph .log-lane-0 { stroke: var(--log-lane-0); fill: var(--log-lane-0); }

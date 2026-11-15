@@ -1,7 +1,17 @@
 // The log: the commit list with its graph. The core reads the commits and lays out the graph a page
 // at a time; this draws only the rows in view, and asks for the next page as the user nears the end.
 
-import { readLog, isFailure, type GraphLine, type LogCursor, type LogRow, type Repository } from "./core";
+import {
+  readLog,
+  isFailure,
+  settings,
+  setShowLongEdges,
+  type GraphArrow,
+  type GraphLine,
+  type LogCursor,
+  type LogRow,
+  type Repository,
+} from "./core";
 import { element } from "./dom";
 import { t } from "./strings";
 
@@ -32,6 +42,10 @@ const ROWS_BEYOND_VIEW = 30;
 const LANE_WIDTH = 14;
 /** The number of lane colors in the styles. */
 const LANE_COLORS = 8;
+/** How far an arrow of a cut edge stays from the edge of its row, in pixels. */
+const ARROW_GAP = 4;
+/** The length of the sides of an arrowhead, in pixels. */
+const ARROWHEAD = 4;
 const SHORT_HASH_LENGTH = 8;
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -43,31 +57,43 @@ export function createLogView(host: LogViewHost): LogView {
   const message = element<HTMLElement>("log-message");
   const list = element<HTMLElement>("log-list");
   const rowsView = element<HTMLElement>("log-rows");
+  const longEdgesInput = element<HTMLInputElement>("log-long-edges");
   const refreshButton = element<HTMLButtonElement>("log-refresh");
   const closeButton = element<HTMLButtonElement>("log-close");
 
   let repository: Repository | null = null;
   let rows: LogRow[] = [];
   let next: LogCursor | null = null;
-  let loading = false;
+  /** The read of a page under way, if any. */
+  let reading: Promise<boolean> | null = null;
   /** Tells the answer to the latest read from one that a refresh or a close overtook. */
   let latestRead = 0;
   let columns = 1;
   let drawScheduled = false;
+  /** The hash of the selected commit, if any. */
+  let selected: string | null = null;
 
+  element<HTMLElement>("log-long-edges-label").textContent = t("logLongEdges");
   refreshButton.textContent = t("logRefresh");
   closeButton.textContent = t("logClose");
   refreshButton.addEventListener("click", () => void startOver());
   closeButton.addEventListener("click", close);
+  longEdgesInput.addEventListener("change", () => void changeLongEdges());
   list.addEventListener("scroll", scheduleDraw);
+  list.addEventListener("keydown", onKey);
+  rowsView.addEventListener("click", onClick);
   window.addEventListener("resize", scheduleDraw);
 
   function open(toShow: Repository): void {
     repository = toShow;
+    selected = null;
     title.textContent = t("logTitle", { root: toShow.root });
     view.hidden = false;
     host.opened();
     list.scrollTop = 0;
+    void settings().then((current) => {
+      longEdgesInput.checked = current.showLongEdges;
+    });
     void startOver();
     list.focus();
   }
@@ -80,50 +106,140 @@ export function createLogView(host: LogViewHost): LogView {
     latestRead += 1;
     rows = [];
     next = null;
-    loading = false;
+    reading = null;
+    selected = null;
     rowsView.replaceChildren();
     view.hidden = true;
     host.closed();
   }
 
-  /** Reads the log again from its newest commit. */
-  async function startOver(): Promise<void> {
-    rows = [];
-    next = null;
-    columns = 1;
-    message.replaceChildren(t("logReading"));
-    await readPage(null);
+  /** Saves whether long edges are drawn whole, and reads the log again to draw them so. */
+  async function changeLongEdges(): Promise<void> {
+    longEdgesInput.disabled = true;
+    try {
+      const saved = await setShowLongEdges(longEdgesInput.checked);
+      longEdgesInput.checked = saved.showLongEdges;
+      await startOver();
+    } catch (error) {
+      longEdgesInput.checked = !longEdgesInput.checked;
+      message.replaceChildren(host.errorView(error));
+    } finally {
+      longEdgesInput.disabled = false;
+    }
   }
 
-  /** Reads the page after `after`, or the first page. */
-  async function readPage(after: LogCursor | null): Promise<void> {
+  /** Reads the log again from its newest commit. Resolves to whether it came. */
+  function startOver(): Promise<boolean> {
+    rows = [];
+    next = null;
+    reading = null;
+    columns = 1;
+    message.replaceChildren(t("logReading"));
+    return readPage(null);
+  }
+
+  /**
+   * Reads the page after `after`, or the first page. Resolves to whether the log came: false when
+   * the read failed, or a refresh or a close overtook it.
+   */
+  function readPage(after: LogCursor | null): Promise<boolean> {
     if (repository === null) {
-      return;
+      return Promise.resolve(false);
     }
+    const read = readPageOf(repository, after);
+    reading = read;
+    return read;
+  }
+
+  async function readPageOf(shown: Repository, after: LogCursor | null): Promise<boolean> {
     latestRead += 1;
     const thisRead = latestRead;
-    loading = true;
     try {
-      const page = await readLog(repository, after, PAGE_SIZE);
+      const page = await readLog(shown, after, PAGE_SIZE);
       if (thisRead !== latestRead) {
-        return;
+        return false;
       }
-      loading = false;
+      reading = null;
       rows = rows.concat(page.rows);
       next = page.next;
       columns = page.rows.reduce((widest, row) => Math.max(widest, columnsOf(row)), columns);
       message.replaceChildren(rows.length === 0 ? t("logEmpty") : "");
       draw();
+      return true;
     } catch (error) {
       if (thisRead !== latestRead) {
-        return;
+        return false;
       }
-      loading = false;
+      reading = null;
       if (isFailure(error) && error.kind === "logChanged") {
-        await startOver();
-      } else {
-        message.replaceChildren(host.errorView(error));
+        return startOver();
       }
+      message.replaceChildren(host.errorView(error));
+      return false;
+    }
+  }
+
+  /** The place of the commit `hash` in the list, reading pages until it comes; -1 if it does not. */
+  async function placeOf(hash: string): Promise<number> {
+    const shown = repository;
+    for (;;) {
+      const index = rows.findIndex((row) => row.hash === hash);
+      if (index >= 0 || repository !== shown) {
+        return index;
+      }
+      const read = reading ?? (next === null ? null : readPage(next));
+      if (read === null || !(await read)) {
+        return -1;
+      }
+    }
+  }
+
+  /** Selects the commit `hash`, and scrolls it into view. */
+  async function select(hash: string): Promise<void> {
+    const index = await placeOf(hash);
+    if (index < 0) {
+      return;
+    }
+    selected = hash;
+    const top = index * ROW_HEIGHT;
+    if (top < list.scrollTop) {
+      list.scrollTop = top;
+    } else if (top + ROW_HEIGHT > list.scrollTop + list.clientHeight) {
+      list.scrollTop = top + ROW_HEIGHT - list.clientHeight;
+    }
+    draw();
+  }
+
+  /** The left and right arrows go to the parent and the child, the up and down arrows along the list. */
+  function onKey(event: KeyboardEvent): void {
+    const index = rows.findIndex((row) => row.hash === selected);
+    const current = rows[index];
+    let target: string | undefined;
+    if (event.key === "ArrowLeft") {
+      target = current?.parents[0];
+    } else if (event.key === "ArrowRight") {
+      target = current?.children[0];
+    } else if (event.key === "ArrowDown") {
+      target = rows[current === undefined ? 0 : index + 1]?.hash;
+    } else if (event.key === "ArrowUp") {
+      target = rows[current === undefined ? 0 : index - 1]?.hash;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    if (target !== undefined) {
+      void select(target);
+    }
+  }
+
+  /** A click on an arrow of a cut edge goes to the commit at its other end, and one elsewhere on a row selects it. */
+  function onClick(event: MouseEvent): void {
+    const target = event.target instanceof Element ? event.target : null;
+    const arrow = target?.closest<SVGElement>("[data-target]");
+    const row = target?.closest<HTMLElement>(".log-row");
+    const hash = arrow?.dataset.target ?? row?.dataset.hash;
+    if (hash !== undefined) {
+      void select(hash);
     }
   }
 
@@ -149,8 +265,10 @@ export function createLogView(host: LogViewHost): LogView {
     rowsView.style.height = `${(rows.length + (next === null ? 0 : 1)) * ROW_HEIGHT}px`;
     list.style.setProperty("--log-graph-width", `${columns * LANE_WIDTH}px`);
     list.style.setProperty("--log-row-height", `${ROW_HEIGHT}px`);
-    rowsView.replaceChildren(...rows.slice(start, end).map((row, index) => rowView(row, start + index, columns)));
-    if (next !== null && !loading && end + ROWS_BEYOND_VIEW >= rows.length) {
+    rowsView.replaceChildren(
+      ...rows.slice(start, end).map((row, index) => rowView(row, start + index, columns, row.hash === selected)),
+    );
+    if (next !== null && reading === null && end + ROWS_BEYOND_VIEW >= rows.length) {
       void readPage(next);
     }
   }
@@ -160,24 +278,47 @@ export function createLogView(host: LogViewHost): LogView {
 
 /** How many columns of the graph `row` takes. */
 function columnsOf(row: LogRow): number {
-  const lines = [...row.graph.above, ...row.graph.below];
-  return Math.max(row.graph.column, ...lines.flatMap((line) => [line.from, line.to])) + 1;
+  const { graph } = row;
+  const lines = [...graph.above, ...graph.below].flatMap((line) => [line.from, line.to]);
+  const arrows = [...graph.arrowsUp, ...graph.arrowsDown].map((arrow) => arrow.column);
+  return Math.max(graph.column, ...lines, ...arrows) + 1;
 }
 
-function rowView(row: LogRow, index: number, columns: number): HTMLElement {
+function rowView(row: LogRow, index: number, columns: number, selected: boolean): HTMLElement {
   const view = document.createElement("div");
   view.className = "log-row";
+  view.classList.toggle("current-branch", row.onCurrentBranch);
+  view.classList.toggle("own", row.own);
+  view.classList.toggle("selected", selected);
   view.dataset.testid = "log-row";
   view.dataset.hash = row.hash;
+  view.setAttribute("aria-selected", String(selected));
   view.style.top = `${index * ROW_HEIGHT}px`;
+  const author = cell("log-author", row.committerDiffers ? `${row.author}*` : row.author);
+  if (row.committerDiffers) {
+    author.title = t("logCommitterDiffers");
+  }
   view.append(
     graphView(row, columns),
-    cell("log-subject", row.subject),
-    cell("log-author", row.author),
+    summaryView(row),
+    author,
     cell("log-date", dates.format(new Date(row.committedAt * 1000))),
     cell("log-hash", row.hash.slice(0, SHORT_HASH_LENGTH)),
   );
   return view;
+}
+
+/** The labels of the references on `row`'s commit, then its subject. */
+function summaryView(row: LogRow): HTMLElement {
+  const summary = document.createElement("span");
+  summary.className = "log-summary";
+  for (const label of row.labels) {
+    const chip = cell(`log-label log-label-${label.kind}`, label.name);
+    chip.title = label.name;
+    summary.append(chip);
+  }
+  summary.append(cell("log-subject", row.subject));
+  return summary;
 }
 
 function cell(className: string, text: string): HTMLElement {
@@ -198,7 +339,6 @@ function graphView(row: LogRow, columns: number): SVGElement {
   graph.classList.add("log-graph");
   graph.setAttribute("width", String(columns * LANE_WIDTH));
   graph.setAttribute("height", String(ROW_HEIGHT));
-  graph.setAttribute("aria-hidden", "true");
   const middle = ROW_HEIGHT / 2;
   for (const line of row.graph.above) {
     graph.append(lineView(line, 0, middle));
@@ -206,12 +346,19 @@ function graphView(row: LogRow, columns: number): SVGElement {
   for (const line of row.graph.below) {
     graph.append(lineView(line, middle, ROW_HEIGHT));
   }
-  const node = document.createElementNS(SVG, "circle");
-  node.classList.add(laneColor(row.graph.column));
-  node.setAttribute("cx", String(laneCenter(row.graph.column)));
-  node.setAttribute("cy", String(middle));
-  node.setAttribute("r", "4");
-  graph.append(node);
+  const node = row.graph.column;
+  for (const arrow of row.graph.arrowsUp) {
+    graph.append(arrowView(arrow, node, middle, ARROW_GAP, t("logGoToChild")));
+  }
+  for (const arrow of row.graph.arrowsDown) {
+    graph.append(arrowView(arrow, node, middle, ROW_HEIGHT - ARROW_GAP, t("logGoToParent")));
+  }
+  const circle = document.createElementNS(SVG, "circle");
+  circle.classList.add(laneColor(node));
+  circle.setAttribute("cx", String(laneCenter(node)));
+  circle.setAttribute("cy", String(middle));
+  circle.setAttribute("r", "4");
+  graph.append(circle);
   return graph;
 }
 
@@ -224,6 +371,30 @@ function lineView(line: GraphLine, top: number, bottom: number): SVGElement {
   view.setAttribute("x2", String(laneCenter(line.to)));
   view.setAttribute("y2", String(bottom));
   return view;
+}
+
+/**
+ * The arrow of a cut edge: a line from the node in `node`, at the height `middle`, to the arrow's
+ * column at the height `end`, with its head there. A click on it goes to the commit at the other end.
+ */
+function arrowView(arrow: GraphArrow, node: number, middle: number, end: number, label: string): SVGElement {
+  const group = document.createElementNS(SVG, "g");
+  group.classList.add("log-arrow", laneColor(Math.max(node, arrow.column)));
+  group.dataset.target = arrow.target;
+  const titleView = document.createElementNS(SVG, "title");
+  titleView.textContent = label;
+  const x = laneCenter(arrow.column);
+  const shaft = document.createElementNS(SVG, "line");
+  shaft.setAttribute("x1", String(laneCenter(node)));
+  shaft.setAttribute("y1", String(middle));
+  shaft.setAttribute("x2", String(x));
+  shaft.setAttribute("y2", String(end));
+  // The head points away from the node: up at the top of the row, down at the bottom.
+  const back = end < middle ? end + ARROWHEAD : end - ARROWHEAD;
+  const head = document.createElementNS(SVG, "polyline");
+  head.setAttribute("points", `${x - ARROWHEAD},${back} ${x},${end} ${x + ARROWHEAD},${back}`);
+  group.append(titleView, shaft, head);
+  return group;
 }
 
 function laneColor(column: number): string {
