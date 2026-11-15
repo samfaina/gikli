@@ -51,18 +51,21 @@ jobs:
       - uses: actions/checkout@v4
 
       # Every command that reaches Ubuntu's package servers, Launchpad or kernel.org runs through
-      # retry.sh, which tries it again when it fails and stops each try that hangs. The apt
-      # settings written here hold for every later apt-get: a server that stops answering fails the
-      # try instead of stalling it, and apt-get update fails, and so is tried again, when any
-      # repository could not be fetched.
+      # retry.sh, which tries it again when it fails and stops each try that hangs. Its bounds keep
+      # every step's tries within the job's time limit, so a step that runs out of tries says
+      # what it could not reach before the limit stops the job. The apt settings written here hold
+      # for every later apt-get: a server that stops answering fails the try instead of stalling
+      # it, apt-get update fails, and so is tried again, when any repository could not be fetched,
+      # and a try waits for the lock that a stopped try's apt-get may still hold.
       - name: Install the Tauri prerequisites and the smoke test's WebDriver
         if: runner.os == 'Linux'
         run: |
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' \
-            'Acquire::https::Timeout "30";' 'APT::Update::Error-Mode "any";' |
+            'Acquire::https::Timeout "30";' 'APT::Update::Error-Mode "any";' \
+            'DPkg::Lock::Timeout "60";' |
             sudo tee /etc/apt/apt.conf.d/80-ci-network > /dev/null
-          .github/scripts/retry.sh "Ubuntu's package servers" 180 sudo apt-get update
-          .github/scripts/retry.sh "Ubuntu's package servers" 600 \
+          .github/scripts/retry.sh "Ubuntu's package servers" 120 sudo apt-get update
+          .github/scripts/retry.sh "Ubuntu's package servers" 300 \
             sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
             libayatana-appindicator3-dev webkit2gtk-driver xvfb
 
@@ -72,18 +75,18 @@ jobs:
           # -n: the apt-get update below fetches the PPA, so add-apt-repository reaches only Launchpad.
           .github/scripts/retry.sh "Launchpad (ppa:git-core/ppa)" 120 \
             sudo add-apt-repository -y -n ppa:git-core/ppa
-          .github/scripts/retry.sh "Ubuntu's package servers or ppa:git-core/ppa" 180 \
+          .github/scripts/retry.sh "Ubuntu's package servers or ppa:git-core/ppa" 120 \
             sudo apt-get update
-          .github/scripts/retry.sh "Ubuntu's package servers or ppa:git-core/ppa" 300 \
+          .github/scripts/retry.sh "Ubuntu's package servers or ppa:git-core/ppa" 180 \
             sudo apt-get install -y git
-          package=$(dpkg-query -W -f='${Version}' git)
+          package_version=$(dpkg-query -W -f='${Version}' git)
           # Never test Ubuntu's own git, such as 1:2.43.0-1ubuntu7.3, in place of the PPA's.
-          case "$package" in
+          case "$package_version" in
             *ppa*) ;;
-            *) echo "::error::git $package was installed, not the latest stable git from ppa:git-core/ppa"; exit 1 ;;
+            *) echo "::error::git $package_version was installed, not the latest stable git from ppa:git-core/ppa"; exit 1 ;;
           esac
           # The package version, such as 1:2.51.1-0ppa1~ubuntu24.04.1, without epoch and revision.
-          version=$(sed -E 's/^[0-9]+://; s/-.*//' <<< "$package")
+          version=$(sed -E 's/^[0-9]+://; s/-.*//' <<< "$package_version")
           # Checked by the_suite_runs_against_the_git_ci_asked_for.
           echo "GIKLI_EXPECTED_GIT_VERSION=$version" >> "$GITHUB_ENV"
 
@@ -113,12 +116,12 @@ jobs:
           VERSION: ${{ steps.minimum-git.outputs.version }}
           PREFIX: ${{ steps.minimum-git.outputs.prefix }}
         run: |
-          .github/scripts/retry.sh "Ubuntu's package servers" 300 \
+          .github/scripts/retry.sh "Ubuntu's package servers" 180 \
             sudo apt-get install -y zlib1g-dev libcurl4-openssl-dev
           # Into a file, not piped to tar: a try that fails partway leaves nothing behind to unpack.
           tarball="git-$VERSION.tar.gz"
-          .github/scripts/retry.sh "kernel.org" 300 \
-            curl -fsSL --connect-timeout 30 --max-time 240 -o "$tarball" \
+          .github/scripts/retry.sh "kernel.org" 180 \
+            curl -fsSL --connect-timeout 30 --max-time 150 -o "$tarball" \
             "https://mirrors.edge.kernel.org/pub/software/scm/git/$tarball"
           tar -xzf "$tarball"
           rm "$tarball"
