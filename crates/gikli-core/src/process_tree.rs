@@ -37,7 +37,7 @@ impl Cancellation {
     pub fn request(&self) {
         let mut state = lock(&self.state);
         state.requested = true;
-        if let Some(tree) = &state.tree {
+        if let Some(tree) = &mut state.tree {
             tree.end();
         }
     }
@@ -53,7 +53,7 @@ impl Cancellation {
     }
 
     /// Makes `tree` the run this ends.
-    fn attach(&self, tree: ProcessTree) {
+    fn attach(&self, mut tree: ProcessTree) {
         let mut state = lock(&self.state);
         if state.requested {
             tree.end();
@@ -75,7 +75,7 @@ impl Cancellation {
             drop(state);
             std::thread::sleep(POLL);
         };
-        if let Some(tree) = tree {
+        if let Some(mut tree) = tree {
             let give_up = Instant::now() + GRACE;
             while !tree.is_gone() && Instant::now() < give_up {
                 // Again, as the request can miss a process. The run's pid is not given back while
@@ -93,21 +93,28 @@ use platform::ProcessTree;
 #[cfg(windows)]
 mod platform {
     use std::io;
+    use std::mem::offset_of;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use std::process::{Child, Command, ExitStatus};
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-        JobObjectBasicAccountingInformation, QueryInformationJobObject, TerminateJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+        JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList,
+        QueryInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenProcess, OpenThread,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, ResumeThread,
+        THREAD_SUSPEND_RESUME, WaitForSingleObject,
     };
 
     /// The exit code of a process ended by a cancel, which no program gives by itself: `GIKL`.
@@ -117,9 +124,13 @@ mod platform {
     /// outside it, as it allows no breakaway. Closing it ends nothing: gikli kills only on request.
     pub(crate) struct ProcessTree {
         job: HANDLE,
+        /// The processes the job held when it was ended, with their pids. The job stops counting
+        /// a process it ended before that process has exited, which under load takes a while.
+        ended: Vec<(u32, HANDLE)>,
     }
 
-    // SAFETY: a job handle is valid from any thread, and every call on it here is thread-safe.
+    // SAFETY: job and process handles are valid from any thread, and every call on them here is
+    // thread-safe.
     unsafe impl Send for ProcessTree {}
 
     /// Makes `command` start without running, so that it starts nothing before it is in a job,
@@ -141,7 +152,10 @@ mod platform {
             if job.is_null() {
                 return Err(io::Error::last_os_error());
             }
-            let tree = Self { job };
+            let tree = Self {
+                job,
+                ended: Vec::new(),
+            };
             // SAFETY: both handles are open: the job right above, and the process in `child`.
             if unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
                 return Err(io::Error::last_os_error());
@@ -150,10 +164,14 @@ mod platform {
             Ok(tree)
         }
 
-        pub fn end(&self) {
+        pub fn end(&mut self) {
+            // Before, as the job can stop listing a process as soon as it is ended, and after,
+            // for one started in between.
+            self.hold_processes();
             // SAFETY: the handle is open until this is dropped. A job with no process left in it
             // only gives an error back, and so does one that is ending, which is the same result.
             unsafe { TerminateJobObject(self.job, CANCELLED) };
+            self.hold_processes();
         }
 
         pub fn is_gone(&self) -> bool {
@@ -169,12 +187,90 @@ mod platform {
                     ptr::null_mut(),
                 )
             };
-            queried == 0 || info.ActiveProcesses == 0
+            let none_counted = queried == 0 || info.ActiveProcesses == 0;
+            none_counted
+                && self.ended.iter().all(|&(_, process)| {
+                    // SAFETY: the handle is open until this is dropped, and a wait of no time only
+                    // looks.
+                    unsafe { WaitForSingleObject(process, 0) == WAIT_OBJECT_0 }
+                })
+        }
+
+        /// Opens the processes in the job that are not held yet, so that [`Self::is_gone`] sees
+        /// when they have exited.
+        fn hold_processes(&mut self) {
+            for pid in self.process_ids() {
+                if self.ended.iter().any(|&(held, _)| held == pid) {
+                    continue;
+                }
+                // SAFETY: a process that is gone only gives a null handle back.
+                let process = unsafe {
+                    OpenProcess(
+                        PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                        0,
+                        pid,
+                    )
+                };
+                if process.is_null() {
+                    continue;
+                }
+                // The pid may have gone to another process since the job listed it.
+                let mut in_job = 0;
+                // SAFETY: both handles are open, and `in_job` is valid for the call.
+                let asked = unsafe { IsProcessInJob(process, self.job, &mut in_job) } != 0;
+                if asked && in_job != 0 {
+                    self.ended.push((pid, process));
+                } else {
+                    // SAFETY: the handle was opened above, and nothing uses it after this.
+                    unsafe { CloseHandle(process) };
+                }
+            }
+        }
+
+        /// The pids of the processes in the job, or none when the job cannot say.
+        fn process_ids(&self) -> Vec<u32> {
+            let header =
+                offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList) / size_of::<usize>();
+            let mut capacity = 16;
+            loop {
+                // In words, so that the list is aligned as it needs.
+                let mut buffer = vec![0usize; header + capacity];
+                // SAFETY: the buffer is as big as the size given, and the returned length may be
+                // null.
+                let queried = unsafe {
+                    QueryInformationJobObject(
+                        self.job,
+                        JobObjectBasicProcessIdList,
+                        buffer.as_mut_ptr().cast(),
+                        size_of_val(buffer.as_slice()) as u32,
+                        ptr::null_mut(),
+                    )
+                } != 0;
+                let too_small = !queried
+                    && io::Error::last_os_error().raw_os_error() == Some(ERROR_MORE_DATA as i32);
+                // SAFETY: the buffer is aligned for the list and holds at least its header.
+                let list = unsafe { &*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+                if queried {
+                    let listed = (list.NumberOfProcessIdsInList as usize).min(capacity);
+                    return buffer[header..header + listed]
+                        .iter()
+                        .map(|&pid| pid as u32)
+                        .collect();
+                }
+                if !too_small {
+                    return Vec::new();
+                }
+                capacity = (list.NumberOfAssignedProcesses as usize).max(capacity * 2);
+            }
         }
     }
 
     impl Drop for ProcessTree {
         fn drop(&mut self) {
+            for &(_, process) in &self.ended {
+                // SAFETY: the handle is open, and nothing uses it after this.
+                unsafe { CloseHandle(process) };
+            }
             // SAFETY: the handle is open, and nothing uses it after this.
             unsafe { CloseHandle(self.job) };
         }
@@ -247,7 +343,7 @@ mod platform {
         }
 
         /// Reaches the processes in the group at this moment, so it can miss one being forked.
-        pub fn end(&self) {
+        pub fn end(&mut self) {
             // SAFETY: this takes no pointers. A group with no process left only gives an error.
             unsafe { libc::killpg(self.group, libc::SIGKILL) };
         }
@@ -325,5 +421,119 @@ mod tests {
             ended.and_then(|status| status.signal()),
             Some(libc::SIGKILL)
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    use super::*;
+
+    /// What the test binary plays when a test starts it again: see [`play_a_process_of_the_run`].
+    const ROLE: &str = "GIKLI_TEST_PROCESS_TREE_ROLE";
+    /// How a slow process says it is ready, followed by its pid.
+    const READY: &str = "slow process ready:";
+    /// How many slow processes one run starts.
+    const SLOW_PROCESSES: usize = 2;
+    /// The memory each slow process holds, which Windows takes a while to give back once it ends.
+    const HELD: usize = 512 << 20;
+
+    fn play(role: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("find the test binary"));
+        command
+            .args([
+                "--exact",
+                "process_tree::windows_tests::play_a_process_of_the_run",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(ROLE, role);
+        command
+    }
+
+    /// Cancels the run when a test stops before it does, which leaves nothing running.
+    struct EndOnDrop<'a>(&'a Cancellation);
+
+    impl Drop for EndOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.request();
+        }
+    }
+
+    /// Not a test: the test binary, started again by a test, plays a process of the run there.
+    #[test]
+    #[ignore = "a process of the runs the tests start, not a test"]
+    fn play_a_process_of_the_run() {
+        let _held;
+        match std::env::var(ROLE).as_deref() {
+            Ok("starter") => {
+                let slow: Vec<_> = (0..SLOW_PROCESSES)
+                    .map(|_| play("slow").spawn().expect("start a slow process"))
+                    .collect();
+                for mut process in slow {
+                    let _ = process.wait();
+                }
+            }
+            Ok("slow") => {
+                _held = std::hint::black_box(vec![1u8; HELD]);
+                println!("{READY} {}", std::process::id());
+            }
+            _ => return,
+        }
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
+
+    /// Processes the cancel ended, but that Windows has not finished taking down, which the job
+    /// already counts as gone.
+    #[test]
+    fn a_cancelled_run_is_over_only_once_its_processes_have_exited() {
+        let cancellation = Cancellation::default();
+        let mut run = spawn_contained(play("starter").stdout(Stdio::piped()), &cancellation)
+            .expect("start the run");
+        let _ended = EndOnDrop(&cancellation);
+        let output = BufReader::new(run.stdout.take().expect("stdout is piped"));
+        let slow: Vec<_> = output
+            .lines()
+            .map(|line| line.expect("read what the run writes"))
+            // The test harness writes on the same line first.
+            .filter_map(|line| {
+                let (_, pid) = line.rsplit_once(READY)?;
+                Some(pid.trim().parse().expect("a pid"))
+            })
+            .take(SLOW_PROCESSES)
+            .map(|pid| {
+                // SAFETY: a process that is gone only gives a null handle back.
+                let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+                assert!(!process.is_null(), "open the slow process {pid}");
+                process
+            })
+            .collect();
+        assert_eq!(slow.len(), SLOW_PROCESSES, "slow processes ready");
+
+        cancellation.request();
+        cancellation.wait_for(&mut run).expect("wait for the run");
+
+        let left = slow
+            .into_iter()
+            .filter(|&process| {
+                // SAFETY: the handle was opened above, and nothing uses it after this.
+                unsafe {
+                    let exited = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+                    CloseHandle(process);
+                    !exited
+                }
+            })
+            .count();
+        assert_eq!(left, 0, "processes of the run still exiting");
     }
 }
