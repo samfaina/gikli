@@ -432,10 +432,23 @@ impl GitRunner {
     /// None when git cannot say. Such a path needs no translation from WSL's Linux paths, so git
     /// inside WSL can also be given one.
     pub fn relative_git_dir(&self, folder: &Path) -> std::io::Result<Option<String>> {
-        let invocation = self.run(
-            folder,
-            &["rev-parse", "--path-format=relative", "--git-dir"],
-        )?;
+        self.relative_path(folder, &["--git-dir"])
+    }
+
+    /// The path git keeps `name` at in the git directory of the repository `folder` is in, such as
+    /// `shallow`, relative to `folder` as [`Self::relative_git_dir`] gives it, or None when git
+    /// cannot say. For a linked worktree, a file all the worktrees share is in the common git
+    /// directory.
+    pub fn relative_git_path(&self, folder: &Path, name: &str) -> std::io::Result<Option<String>> {
+        self.relative_path(folder, &["--git-path", name])
+    }
+
+    /// The path `git rev-parse` gives for `query` in `folder`, relative to `folder` as git writes
+    /// it, or None when git cannot say.
+    fn relative_path(&self, folder: &Path, query: &[&str]) -> std::io::Result<Option<String>> {
+        let mut args = vec!["rev-parse", "--path-format=relative"];
+        args.extend(query);
+        let invocation = self.run(folder, &args)?;
         let output = invocation
             .stdout
             .strip_suffix(b"\n")

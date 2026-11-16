@@ -6,6 +6,7 @@
 import { createCommitMenu } from "./commit-menu";
 import {
   endLogRead,
+  fetchRestOfHistory,
   filteredLogReaches,
   goTo,
   goToSuggestions,
@@ -73,6 +74,8 @@ export function createLogView(host: LogViewHost): LogView {
   const view = element<HTMLElement>("log");
   const title = element<HTMLElement>("log-title");
   const message = element<HTMLElement>("log-message");
+  const historyCut = element<HTMLElement>("log-history-cut");
+  const fetchRestButton = element<HTMLButtonElement>("log-fetch-rest");
   const list = element<HTMLElement>("log-list");
   const rowsView = element<HTMLElement>("log-rows");
   const longEdgesInput = element<HTMLInputElement>("log-long-edges");
@@ -121,6 +124,9 @@ export function createLogView(host: LogViewHost): LogView {
   searchHistory.setAttribute("aria-label", t("logRecentSearches"));
   goToInput.placeholder = t("logGoTo");
   goToInput.setAttribute("aria-label", t("logGoTo"));
+  element<HTMLElement>("log-history-cut-text").textContent = t("logHistoryCut");
+  fetchRestButton.textContent = t("logFetchRest");
+  fetchRestButton.addEventListener("click", () => void fetchRest());
   refreshButton.textContent = t("logRefresh");
   closeButton.textContent = t("logClose");
   refreshButton.addEventListener("click", refresh);
@@ -161,6 +167,7 @@ export function createLogView(host: LogViewHost): LogView {
     searchInput.value = "";
     goToInput.value = "";
     title.textContent = t("logTitle", { root: toShow.root });
+    historyCut.hidden = true;
     view.hidden = false;
     host.opened();
     list.scrollTop = 0;
@@ -323,6 +330,27 @@ export function createLogView(host: LogViewHost): LogView {
     host.closed();
   }
 
+  /** Fetches the rest of the cut history, and reads the log again to show it whole. */
+  async function fetchRest(): Promise<void> {
+    const shown = repository;
+    if (shown === null) {
+      return;
+    }
+    fetchRestButton.disabled = true;
+    try {
+      await fetchRestOfHistory(shown);
+      if (repository === shown) {
+        refresh();
+      }
+    } catch (error) {
+      if (repository === shown) {
+        message.replaceChildren(host.errorView(error));
+      }
+    } finally {
+      fetchRestButton.disabled = false;
+    }
+  }
+
   /** Saves whether long edges are drawn whole, and reads the log again to draw them so. */
   async function changeLongEdges(): Promise<void> {
     longEdgesInput.disabled = true;
@@ -380,6 +408,7 @@ export function createLogView(host: LogViewHost): LogView {
       reading = null;
       rows.push(...page.rows);
       next = page.next;
+      historyCut.hidden = !page.historyCut;
       columns = page.rows.reduce((widest, row) => Math.max(widest, columnsOf(row)), columns);
       const filtered = shownFilter.text !== null || shownFilter.branches.length > 0;
       // A page of a search can find nothing while the search goes on through the history.
@@ -609,6 +638,9 @@ function graphView(row: LogRow, columns: number): SVGElement {
   for (const arrow of row.graph.arrowsDown) {
     graph.append(arrowView(arrow, nodeColumn, middle, ROW_HEIGHT - ARROW_GAP, t("logGoToParent")));
   }
+  if (row.historyCut) {
+    graph.append(cutView(nodeColumn, middle));
+  }
   const node = document.createElementNS(SVG, "circle");
   node.classList.add(laneColor(nodeColumn));
   node.setAttribute("cx", String(laneCenter(nodeColumn)));
@@ -651,6 +683,29 @@ function arrowView(arrow: GraphArrow, nodeColumn: number, middle: number, end: n
   const head = document.createElementNS(SVG, "polyline");
   head.setAttribute("points", `${x - ARROWHEAD},${back} ${x},${end} ${x + ARROWHEAD},${back}`);
   group.append(titleView, shaft, head);
+  return group;
+}
+
+/**
+ * The mark of a history cut at the node in `nodeColumn`, at the height `middle`: a dashed line down
+ * from the node that ends in a cross stroke, where the parents the Repository lacks would be.
+ */
+function cutView(nodeColumn: number, middle: number): SVGElement {
+  const group = document.createElementNS(SVG, "g");
+  group.classList.add("log-cut", laneColor(nodeColumn));
+  group.dataset.testid = "log-history-cut-mark";
+  const titleView = document.createElementNS(SVG, "title");
+  titleView.textContent = t("logHistoryCutHere");
+  const x = laneCenter(nodeColumn);
+  const end = ROW_HEIGHT - ARROW_GAP;
+  const stub = document.createElementNS(SVG, "line");
+  stub.setAttribute("x1", String(x));
+  stub.setAttribute("y1", String(middle));
+  stub.setAttribute("x2", String(x));
+  stub.setAttribute("y2", String(end));
+  const cross = document.createElementNS(SVG, "polyline");
+  cross.setAttribute("points", `${x - ARROWHEAD},${end + 1} ${x + ARROWHEAD},${end - 1}`);
+  group.append(titleView, stub, cross);
   return group;
 }
 

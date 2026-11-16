@@ -9,7 +9,7 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, GitStream, Invocation};
-use crate::{Failure, Repository, commit, failure_of, git_failed_to_start, lock};
+use crate::{Failure, Repository, commit, failure_of, git_failed_to_start, lock, shallow};
 
 /// One page of the log, newest commit first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -19,6 +19,9 @@ pub struct LogPage {
     pub rows: Vec<LogRow>,
     /// Where the next page starts. None on the last page.
     pub next: Option<LogCursor>,
+    /// Whether the history of the Repository is cut anywhere, as in a shallow clone, on this page
+    /// or not, so gikli offers to fetch the rest.
+    pub history_cut: bool,
 }
 
 /// One commit of the log.
@@ -45,6 +48,9 @@ pub struct LogRow {
     pub own: bool,
     /// Whether its author and its committer are not the same name and email.
     pub committer_differs: bool,
+    /// Whether the history is cut at it, as in a shallow clone: the Repository does not hold its
+    /// parents, so it shows none. The graph marks it, unlike a first commit, which has none.
+    pub history_cut: bool,
 }
 
 /// A reference shown on the commit it points at.
@@ -314,14 +320,14 @@ impl Walk {
     }
 
     /// Goes past the commit git printed as `fields`: returns its row, and leaves the walk as the
-    /// next row finds it. `user_email` is the email of the user's Commit identity, if they have
-    /// one, and `is_long` tells whether the edge to a parent is cut. Unless `with_graph`, the row
-    /// has no lines of the graph, only its node, as in a search, whose commits do not follow one
-    /// another.
+    /// next row finds it, labelled from `references`. `user_email` is the email of the user's
+    /// Commit identity, if they have one, and `is_long` tells whether the edge to a parent is cut.
+    /// Unless `with_graph`, the row has no lines of the graph, only its node, as in a search, whose
+    /// commits do not follow one another.
     fn row(
         &mut self,
         fields: &[&str; FIELDS],
-        labels: &HashMap<String, Vec<RefLabel>>,
+        references: &References,
         user_email: Option<&str>,
         is_long: impl Fn(&str) -> bool,
         with_graph: bool,
@@ -373,7 +379,8 @@ impl Walk {
             self.children.entry(parent.clone()).or_default().push(child);
         }
         LogRow {
-            labels: labels.get(hash).cloned().unwrap_or_default(),
+            labels: references.labels.get(hash).cloned().unwrap_or_default(),
+            history_cut: references.cut.contains(hash),
             on_current_branch,
             children: children.into_iter().map(|child| child.hash).collect(),
             hash: hash.to_owned(),
@@ -610,6 +617,7 @@ pub(crate) fn read(
             repository: repository.clone(),
             rows: Vec::new(),
             next: None,
+            history_cut: references.is_cut(),
         });
     };
     let mut log_read = match held {
@@ -662,6 +670,7 @@ pub(crate) fn read(
         repository: repository.clone(),
         rows,
         next,
+        history_cut: references.is_cut(),
     })
 }
 
@@ -707,10 +716,9 @@ fn graph_rows(
         .take(count)
         .enumerate()
         .map(|(row, commit)| {
-            let labels = &references.labels;
             let fields = commit.each_ref().map(String::as_str);
             let is_long = |parent: &str| is_long(row, parent);
-            walk.row(&fields, labels, user_email.as_deref(), is_long, true)
+            walk.row(&fields, references, user_email.as_deref(), is_long, true)
         })
         .collect();
     let more = commits.len() > count;
@@ -743,13 +751,7 @@ fn found_rows(
         }
         gone_through += 1;
         let fields = commit.each_ref().map(String::as_str);
-        let row = walk.row(
-            &fields,
-            &references.labels,
-            user_email.as_deref(),
-            |_| false,
-            false,
-        );
+        let row = walk.row(&fields, references, user_email.as_deref(), |_| false, false);
         log_read.lay_out(1);
         if found {
             rows.push(row);
@@ -764,6 +766,8 @@ struct References {
     head: Option<String>,
     /// The labels of each commit, in the order they show.
     labels: HashMap<String, Vec<RefLabel>>,
+    /// The commits where the history is cut, whose parents the Repository does not hold.
+    cut: BTreeSet<String>,
     /// A digest of the references, which tells whether the history moved since.
     tips: String,
 }
@@ -802,6 +806,11 @@ impl RefLabel {
 const REF_FORMAT: &str = "--format=%(objectname)%00%(*objectname)%00%(symref)%00%(refname)";
 
 impl References {
+    /// Whether the history is cut anywhere.
+    fn is_cut(&self) -> bool {
+        !self.cut.is_empty()
+    }
+
     /// The commit `branch` points at, if it exists.
     fn commit_of(&self, branch: &RefLabel) -> Option<&String> {
         self.labels
@@ -812,19 +821,27 @@ impl References {
 
     /// The references of `repository` as they are now.
     fn read(runner: &GitRunner, repository: &Repository) -> Result<Self, Failure> {
-        let (head, listed) = std::thread::scope(|scope| {
+        let (head, listed, cut) = std::thread::scope(|scope| {
             let listed = scope.spawn(|| list_references(runner, repository));
+            let cut = scope.spawn(|| {
+                shallow::cut_commits(runner, repository).map_err(|_| Failure::LogUnreadable {
+                    folder: repository.root.clone(),
+                })
+            });
             let head = head_commit(runner, repository);
             (
                 head,
                 listed.join().expect("listing the references panicked"),
+                cut.join()
+                    .expect("reading where the history is cut panicked"),
             )
         });
-        Ok(Self::new(head?, &listed?))
+        Ok(Self::new(head?, &listed?, cut?))
     }
 
-    /// The references with HEAD at `head`, and the others as [`list_references`] `listed` them.
-    fn new(head: Option<String>, listed: &[u8]) -> Self {
+    /// The references with HEAD at `head`, and the others as [`list_references`] `listed` them, in
+    /// a history cut where [`shallow::cut_commits`] says.
+    fn new(head: Option<String>, listed: &[u8], cut: BTreeSet<String>) -> Self {
         let mut labels: HashMap<String, Vec<RefLabel>> = HashMap::new();
         if let Some(head) = &head {
             labels.entry(head.clone()).or_default().push(RefLabel {
@@ -857,12 +874,15 @@ impl References {
             commit_labels.sort_by(|a, b| (a.kind, &a.name).cmp(&(b.kind, &b.name)));
         }
 
+        // Fetching the rest of a cut history changes it as much as moving a reference does.
         let mut digest = DefaultHasher::new();
         listed.hash(&mut digest);
         head.hash(&mut digest);
+        cut.hash(&mut digest);
         Self {
             head,
             labels,
+            cut,
             tips: format!("{:x}", digest.finish()),
         }
     }

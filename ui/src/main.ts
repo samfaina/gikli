@@ -1592,6 +1592,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationRollbackFiles", { root: operation.repository.root });
     case "commitFiles":
       return t("operationCommitFiles", { root: operation.repository.root });
+    case "fetchRestOfHistory":
+      return t("operationFetchRestOfHistory", { root: operation.repository.root, remote: operation.remote });
   }
 }
 
@@ -1818,6 +1820,10 @@ function describeFailure(failure: Failure): string {
       return t("failureLogUnreadable", { folder: failure.folder });
     case "logChanged":
       return t("failureLogChanged");
+    case "noRemoteToFetchFrom":
+      return t("failureNoRemoteToFetchFrom", { folder: failure.folder });
+    case "historyNotFetched":
+      return t("failureHistoryNotFetched", { folder: failure.folder, remote: failure.remote });
     case "revisionNotFound":
       return t("failureRevisionNotFound", { revision: failure.revision });
     case "fileVersionNotRestored":
