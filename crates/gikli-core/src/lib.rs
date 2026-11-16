@@ -25,6 +25,7 @@ mod prompts;
 mod rollback;
 mod search_history;
 mod settings;
+mod shallow;
 mod status;
 mod trace;
 mod url_passwords;
@@ -365,6 +366,18 @@ pub enum Failure {
     /// The history changed since the page of the log before this one, so this one would not follow
     /// from it. The log starts over from the first page.
     LogChanged,
+    /// The Repository at `folder` has no remote to fetch the rest of its history from.
+    #[serde(rename_all = "camelCase")]
+    NoRemoteToFetchFrom {
+        folder: PathBuf,
+    },
+    /// git could not fetch the rest of the history of the Repository at `folder` from `remote`.
+    /// The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    HistoryNotFetched {
+        folder: PathBuf,
+        remote: String,
+    },
     /// No commit of the Repository goes by `revision`, as a hash, a branch, a tag or any other
     /// name git knows.
     #[serde(rename_all = "camelCase")]
@@ -1749,6 +1762,36 @@ impl Gikli {
     /// They are kept from one start of gikli to the next.
     pub fn log_search_history(&self) -> Vec<TextSearch> {
         self.log_searches.searches()
+    }
+
+    /// Fetches the rest of the history of `repository`, whose history is cut, as in a shallow clone,
+    /// so that the log shows it whole, as [`LogPage::history_cut`] offers. It fetches every branch
+    /// of the remote the current branch fetches from, or of `origin`, or of the only remote, into
+    /// its remote branches, even when the Repository tracks a single one, as `git clone --depth`
+    /// leaves it. The configuration of the remote stays as it is. It runs as a [`LongOperation`]
+    /// that reports its progress and that the user can cancel.
+    pub fn fetch_rest_of_history(&self, repository: &Repository) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        let root = &repository.root;
+        let remote = shallow::remote_to_fetch_from(&runner, repository)?.ok_or_else(|| {
+            Failure::NoRemoteToFetchFrom {
+                folder: root.clone(),
+            }
+        })?;
+        let operation = LongOperation::FetchRestOfHistory {
+            repository: repository.clone(),
+            remote: remote.clone(),
+        };
+        let args = shallow::fetch_rest_args(&remote);
+        let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
+        if !invocation.success || invocation.cancelled {
+            let fallback = Failure::HistoryNotFetched {
+                folder: root.clone(),
+                remote,
+            };
+            return Err(failure_of(&runner, root, &invocation, fallback));
+        }
+        Ok(())
     }
 
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer

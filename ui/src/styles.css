@@ -992,6 +992,15 @@ button:disabled {
   color: var(--muted);
 }
 
+/* The offer to fetch the rest of a cut history. */
+.log-history-cut:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  color: var(--muted);
+}
+
 .log-list {
   flex: 1 1 0;
   overflow: auto;
@@ -1095,6 +1104,11 @@ button:disabled {
 
 .log-graph .log-arrow polyline {
   fill: none;
+}
+
+/* Where the history is cut: a dashed stub under the node, crossed at its end. */
+.log-graph .log-cut line {
+  stroke-dasharray: 2 2;
 }
 
 .log-graph .log-lane-0 { stroke: var(--log-lane-0); fill: var(--log-lane-0); }

@@ -320,6 +320,9 @@ export type Failure =
   | { kind: "logUnreadable"; folder: string }
   /** The history changed since the page before: the log starts over from the first page. */
   | { kind: "logChanged" }
+  /** The Repository has no remote to fetch the rest of its history from. */
+  | { kind: "noRemoteToFetchFrom"; folder: string }
+  | { kind: "historyNotFetched"; folder: string; remote: string }
   /** No commit goes by `revision`: no hash, branch, tag or other name git knows. */
   | { kind: "revisionNotFound"; revision: string }
   | { kind: "fileVersionNotRestored"; path: string }
@@ -410,7 +413,8 @@ export type LongOperation =
   | { kind: "addFiles"; repository: Repository }
   | { kind: "unstageFiles"; repository: Repository }
   | { kind: "rollbackFiles"; repository: Repository }
-  | { kind: "commitFiles"; repository: Repository };
+  | { kind: "commitFiles"; repository: Repository }
+  | { kind: "fetchRestOfHistory"; repository: Repository; remote: string };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -858,6 +862,8 @@ export interface LogRow {
   own: boolean;
   /** Whether its author and its committer are not the same. */
   committerDiffers: boolean;
+  /** Whether the history is cut at it, as in a shallow clone: the Repository does not hold its parents. */
+  historyCut: boolean;
 }
 
 /** Where a page of the log starts. Only the core reads it. */
@@ -869,6 +875,8 @@ export interface LogPage {
   rows: LogRow[];
   /** Where the next page starts, or null on the last page. */
   next: LogCursor | null;
+  /** Whether the history of the Repository is cut anywhere, as in a shallow clone, so the log offers to fetch the rest. */
+  historyCut: boolean;
 }
 
 /** A search of the log for the commits whose message, author or hash match a text. */
@@ -899,6 +907,14 @@ export function readLog(
   count: number,
 ): Promise<LogPage> {
   return invoke("read_log", { repository, filter, after, count });
+}
+
+/**
+ * Fetches the rest of the cut history of `repository` from its remote, every branch of the remote
+ * included, as a long operation. Rejects with a {@link Failure}.
+ */
+export function fetchRestOfHistory(repository: Repository): Promise<void> {
+  return invoke("fetch_rest_of_history", { repository });
 }
 
 /** The searches of the log the user ran, newest first, each with its regex and match-case options. */

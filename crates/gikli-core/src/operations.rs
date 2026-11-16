@@ -28,6 +28,11 @@ pub enum LongOperation {
     RollbackFiles { repository: Repository },
     /// Committing files of `repository`, where a hook can take as long as it likes.
     CommitFiles { repository: Repository },
+    /// Fetching the rest of the history of `repository`, whose history is cut, from `remote`.
+    FetchRestOfHistory {
+        repository: Repository,
+        remote: String,
+    },
 }
 
 /// How far one phase of a long operation has come, as git reports it.

@@ -586,6 +586,11 @@ fn read_log(
     gikli.read_filtered_log(&repository, &filter, after.as_ref(), count)
 }
 
+#[tauri::command(async)]
+fn fetch_rest_of_history(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
+    gikli.fetch_rest_of_history(&repository)
+}
+
 #[tauri::command]
 fn log_search_history(gikli: State<'_, Gikli>) -> Vec<TextSearch> {
     gikli.log_search_history()
@@ -801,6 +806,7 @@ fn main() {
             last_commit_message,
             set_commit_identity,
             read_log,
+            fetch_rest_of_history,
             end_log_read,
             log_search_history,
             log_branches,
