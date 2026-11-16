@@ -17,9 +17,10 @@ const QUIET_PERIOD: Duration = Duration::from_millis(250);
 /// The longest a burst that does not stop is held back before it is announced anyway.
 const LONGEST_WAIT: Duration = Duration::from_secs(2);
 
-/// Folders of a git directory whose changes never change the changes view: git's object store,
-/// its reflogs, and gikli's own files, which it writes when it reads the changes. They count at any
-/// depth, so those of submodules under `modules/` and worktrees under `worktrees/` count too.
+/// Folders of a git directory whose changes never change what gikli shows, in the changes view,
+/// the status area, the log or the branch filter: git's object store, its reflogs, and gikli's own
+/// files, which it writes when it reads the changes. They count at any depth, so those of
+/// submodules under `modules/` and worktrees under `worktrees/` count too.
 const UNWATCHED_GIT_FOLDERS: &[&str] = &["objects", "logs", "gikli"];
 
 /// Watches one Repository until dropped.
@@ -38,24 +39,24 @@ impl ChangesWatcher {
         events: Arc<EventBus>,
     ) -> notify::Result<Self> {
         let inside = repository.root.join(".git");
-        let outside: Vec<PathBuf> = [common_git_dir, git_dir]
+        let mut outside_root: Vec<PathBuf> = [git_dir, common_git_dir]
             .into_iter()
             .flatten()
             .filter(|git_dir| !git_dir.starts_with(&repository.root))
             .collect();
-        // A submodule's common git directory is its git directory, and a linked worktree's git
-        // directory sits inside its common one: a folder already watched is not watched again.
-        let watched: Vec<PathBuf> = outside
+        // For a submodule the two are one folder.
+        outside_root.dedup();
+        // A linked worktree's git directory sits inside its common one, watched with it.
+        let to_watch: Vec<PathBuf> = outside_root
             .iter()
-            .enumerate()
-            .filter(|(index, git_dir)| {
-                !outside[..*index]
+            .filter(|git_dir| {
+                !outside_root
                     .iter()
-                    .any(|earlier| git_dir.starts_with(earlier))
+                    .any(|other| other != *git_dir && git_dir.starts_with(other))
             })
-            .map(|(_, git_dir)| git_dir.clone())
+            .cloned()
             .collect();
-        let git_dirs: Vec<PathBuf> = std::iter::once(inside).chain(outside).collect();
+        let git_dirs: Vec<PathBuf> = std::iter::once(inside).chain(outside_root).collect();
         let (sender, receiver) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |result: notify::Result<_>| {
             // An error can mean lost events: count it as a change, so nothing goes unseen.
@@ -66,7 +67,7 @@ impl ChangesWatcher {
         watcher.watch(&repository.root, RecursiveMode::Recursive)?;
         // A linked worktree or a submodule keeps its index and HEAD outside its working tree, and
         // a linked worktree its refs in the common git directory, outside it as well.
-        for git_dir in &watched {
+        for git_dir in &to_watch {
             watcher.watch(git_dir, RecursiveMode::Recursive)?;
         }
         std::thread::spawn(move || announce_bursts(&receiver, &repository, &events));
@@ -74,7 +75,7 @@ impl ChangesWatcher {
     }
 }
 
-/// Whether `event` is a change to a file that can change the changes view. Reading a file is
+/// Whether `event` is a change to a file that can change what gikli shows. Reading a file is
 /// not: git reads the working tree every time gikli reads the changes. Neither is anything in
 /// the [`UNWATCHED_GIT_FOLDERS`] of the `git_dirs`, nor a git directory itself being modified:
 /// that only says something inside it changed, which has an event of its own.
