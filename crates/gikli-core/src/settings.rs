@@ -42,7 +42,12 @@ pub struct Settings {
     pub show_long_edges: bool,
     /// How the log arranges the files a commit changed.
     pub commit_changes_grouping: ChangeGrouping,
+    /// The most revisions a file history lists, newest first. It is at least 1.
+    pub file_history_row_limit: usize,
 }
+
+/// How many revisions a file history lists until the user sets another limit.
+const DEFAULT_FILE_HISTORY_ROW_LIMIT: usize = 1000;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -60,6 +65,7 @@ impl Default for Settings {
             staging_mode: false,
             show_long_edges: false,
             commit_changes_grouping: ChangeGrouping::default(),
+            file_history_row_limit: DEFAULT_FILE_HISTORY_ROW_LIMIT,
         }
     }
 }

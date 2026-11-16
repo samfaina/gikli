@@ -53,6 +53,8 @@ export interface ChangeSelectionHost {
   describeError(error: unknown): string;
   /** What to say about a change besides its path. */
   describeChange(change: Change): string;
+  /** Opens the history of the file at `path`. */
+  showFileHistory(path: string): void;
 }
 
 export interface ChangeSelection {
@@ -190,6 +192,15 @@ export function createChangeSelection(host: ChangeSelectionHost): ChangeSelectio
     });
     return item;
   };
+  /** The item that shows the history of the file of the row the menu was opened on. */
+  const historyItem = (): HTMLButtonElement =>
+    menuItem("show-file-history", t("showFileHistory"), () => {
+      const path = menuRow?.dataset.path;
+      if (path !== undefined) {
+        host.showFileHistory(path);
+      }
+    });
+  // A file git does not track yet has no history.
   const itemsOf: Record<RowGroup, HTMLButtonElement[]> = {
     changelist: [
       menuItem("move-to-another-changelist", t("moveToAnotherChangelist"), (paths) => {
@@ -198,14 +209,17 @@ export function createChangeSelection(host: ChangeSelectionHost): ChangeSelectio
         }
       }),
       menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths)),
+      historyItem(),
     ],
     staged: [
       menuItem("unstage-files", t("unstageFiles"), (paths) => host.run(() => unstageFiles(repository, paths))),
       menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths, "staged")),
+      historyItem(),
     ],
     unstaged: [
       menuItem("stage-files", t("stageFiles"), (paths) => host.run(() => addFiles(repository, paths))),
       menuItem("rollback-changes", t("rollbackMenu"), (paths) => rollback.open(paths, "unstaged")),
+      historyItem(),
     ],
     unversioned: [menuItem("add-to-git", t("addToGit"), (paths) => host.run(() => addFiles(repository, paths)))],
     ignored: [menuItem("force-add-to-git", t("forceAddToGit"), (paths) => host.run(() => forceAddFiles(repository, paths)))],

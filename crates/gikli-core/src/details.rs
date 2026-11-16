@@ -151,7 +151,7 @@ pub(crate) fn changes(
 }
 
 /// The parents of the commit `hash`, the first parent first.
-fn parents_of(
+pub(crate) fn parents_of(
     runner: &GitRunner,
     repository: &Repository,
     hash: &str,
@@ -176,7 +176,7 @@ fn parents_of(
 
 /// The files that differ from `parent` to the commit `hash`, by path, with renames found. Without
 /// a parent, every file of the commit is new.
-fn changed_files(
+pub(crate) fn changed_files(
     runner: &GitRunner,
     repository: &Repository,
     parent: Option<&str>,
@@ -200,13 +200,7 @@ fn changed_files(
     let mut fields = listed.split(|byte| *byte == 0);
     let mut changes = Vec::new();
     while let Some(status) = fields.next().filter(|status| !status.is_empty()) {
-        let (status, moved) = match status[0] {
-            b'A' => (ChangeStatus::Added, false),
-            b'D' => (ChangeStatus::Deleted, false),
-            b'R' => (ChangeStatus::Renamed, true),
-            b'C' => (ChangeStatus::Copied, true),
-            _ => (ChangeStatus::Modified, false),
-        };
+        let (status, moved) = name_status(status[0]);
         let original_path = if moved {
             fields.next().map(path_from_bytes)
         } else {
@@ -225,6 +219,18 @@ fn changed_files(
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(changes)
+}
+
+/// What the letter of a file in git's `--name-status` says the commit did to it, and whether a path
+/// it came from comes before its own: for a rename or a copy.
+pub(crate) fn name_status(letter: u8) -> (ChangeStatus, bool) {
+    match letter {
+        b'A' => (ChangeStatus::Added, false),
+        b'D' => (ChangeStatus::Deleted, false),
+        b'R' => (ChangeStatus::Renamed, true),
+        b'C' => (ChangeStatus::Copied, true),
+        _ => (ChangeStatus::Modified, false),
+    }
 }
 
 /// The shortest and longest hashes a message can name a commit by: git abbreviates to 7 characters

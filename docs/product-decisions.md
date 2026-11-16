@@ -118,6 +118,16 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - The commit details show the committer and commit date only when they differ from the author's.
 - The changed files of a commit are a tree by default, and the choice of tree or list is kept as a setting.
 
+### File history
+
+- File history lists the commits that changed the file, newest first, as `git log --follow --name-status` finds them, the command the reference names, so it follows renames and copies. It reads the history of HEAD, the current branch, and the branch filter replaces it with one branch. A branch that no longer exists, or an unborn HEAD, shows no revisions.
+- `--follow` follows one path back from the file's path now, so a branch filtered by keeps to the renames on that branch: a branch that still has the file under its old path shows nothing of it. `--follow` also lists no merge commits, so a change a merge brought shows in the commit on the merged branch, and the history leaves out what a merge resolved by hand.
+- Each revision shows the path the file has in it, the renames column, and a rename or copy also shows the path it came from.
+- The row limit is a setting, 1,000 by default as in JetBrains, kept across restarts and at least 1. When the file has more revisions, the history says it shows only the newest ones.
+- The preview compares the file in the revision with the file in its first parent, at the path it had there, so a rename compares the two paths. The revision's side is read-only.
+- The files affected in a revision are every file its commit changed against its first parent, the file of the history among them.
+- Get brings the file back to its version in the revision on disk only: the index and every other file stay as they are, and the file becomes a local change. git writes it, as a checkout of the file's path now would, with its mode and as a symbolic link if it was one, through the filters and line endings of that path. A revision from before a rename is written at the file's path now, not at the old path, so gikli gives git an index of its own in the git directory, holding that one version, and removes it afterwards. A revision that deleted the file deletes it, with `git restore` when git tracks it and `git clean` of that one path when it does not. Uncommitted changes to the file are lost, so gikli asks first.
+
 ### Defaults for settings the reference leaves "not stated"
 
 | Setting | Default |

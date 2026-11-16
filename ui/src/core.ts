@@ -46,6 +46,8 @@ export interface Settings {
   showLongEdges: boolean;
   /** How the log arranges the files a commit changed. */
   commitChangesGrouping: ChangeGrouping;
+  /** The most revisions a file history lists, newest first. At least 1. */
+  fileHistoryRowLimit: number;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -202,7 +204,7 @@ export interface UnchangedRegion {
 }
 
 /** Why the local side of a diff cannot be edited. */
-export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink" | "index";
+export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink" | "index" | "revision";
 
 /** The two versions of a text file and where they differ, with `\n` between lines. {@link FileDiff.side} says what each side holds on a side of Staging mode. */
 export interface TextDiff {
@@ -320,6 +322,7 @@ export type Failure =
   | { kind: "logChanged" }
   /** No commit goes by `revision`: no hash, branch, tag or other name git knows. */
   | { kind: "revisionNotFound"; revision: string }
+  | { kind: "fileVersionNotRestored"; path: string }
   /** The text of a search is no regular expression, as `message` explains. */
   | { kind: "searchPatternInvalid"; message: string }
   /** The user has to say who they are: see {@link setCommitIdentity}. */
@@ -487,6 +490,11 @@ export function setChangeGrouping(grouping: ChangeGrouping): Promise<Settings> {
 /** Arranges the files a commit changed as a tree of folders or a list. Rejects with a {@link Failure}. */
 export function setCommitChangesGrouping(grouping: ChangeGrouping): Promise<Settings> {
   return invoke("set_commit_changes_grouping", { grouping });
+}
+
+/** Sets the most revisions a file history lists; below 1 it is 1. */
+export function setFileHistoryRowLimit(limit: number): Promise<Settings> {
+  return invoke("set_file_history_row_limit", { limit });
 }
 
 /** Draws long edges of the log whole, or as two arrows. Rejects with a {@link Failure}. */
@@ -965,6 +973,61 @@ export function commitDetails(repository: Repository, revision: string): Promise
 /** The files the commit `revision` names changed, against each of its parents. Rejects with a {@link Failure}. */
 export function commitChanges(repository: Repository, revision: string): Promise<CommitChanges[]> {
   return invoke("commit_changes", { repository, revision });
+}
+
+/** A commit that changed a file, and what it did to it. */
+export interface FileRevision {
+  hash: string;
+  parents: string[];
+  subject: string;
+  author: string;
+  /** When it was committed, in seconds since the epoch. */
+  committedAt: number;
+  /** The path the file has in this commit, which differs from {@link FileHistory.path} before a rename. */
+  path: string;
+  /** The path the file had before this commit, for a commit that renamed or copied it. */
+  originalPath: string | null;
+  status: ChangeStatus;
+}
+
+/** The history of one file: the commits that changed it, newest first, followed through its renames. */
+export interface FileHistory {
+  repository: Repository;
+  /** Relative to the Repository root, with `/` between folders. */
+  path: string;
+  revisions: FileRevision[];
+  /** Whether the file has older revisions than those listed, which the row limit left out. */
+  more: boolean;
+}
+
+/** What a commit changed in one file, against its first parent. The local side is the file in the commit, read-only. */
+export interface RevisionFileDiff {
+  repository: Repository;
+  revision: string;
+  /** The first parent, or null for a commit with none. */
+  parent: string | null;
+  path: string;
+  /** The path the file had in the parent, which the head side shows, for a rename or a copy. */
+  originalPath: string | null;
+  content: DiffContent;
+}
+
+/** The history of the file at `path`, of HEAD or of `branches` when the user filters by them. Rejects with a {@link Failure}. */
+export function fileHistory(repository: Repository, path: string, branches: RefLabel[]): Promise<FileHistory> {
+  return invoke("file_history", { repository, path, branches });
+}
+
+/** What the commit `revision` changed in the file at `path`, its path there. Rejects with a {@link Failure}. */
+export function revisionFileDiff(repository: Repository, revision: string, path: string): Promise<RevisionFileDiff> {
+  return invoke("revision_file_diff", { repository, revision, path });
+}
+
+/**
+ * Brings the file at `path` back to its version in the commit `revision`, where it was at
+ * `revisionPath`, on disk only. Rejects with a {@link Failure}.
+ */
+export function getFileVersion(repository: Repository, revision: string, revisionPath: string, path: string): Promise<void> {
+  return invoke("get_file_version", { repository, revision, revisionPath, path });
 }
 
 /** Lets go of what the core holds to read the page at `cursor` quickly, once the log no longer needs it. */

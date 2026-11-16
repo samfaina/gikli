@@ -11,6 +11,7 @@ mod details;
 mod diff;
 mod events;
 mod explainer;
+mod file_history;
 mod git;
 mod host;
 mod log;
@@ -45,10 +46,12 @@ pub use clone_url::CloneUrlForms;
 pub use commit::CommitWarning;
 pub use details::{CommitChanges, CommitDetails, MessagePart};
 pub use diff::{
-    DiffContent, Difference, FileDiff, LineRange, LocalReadOnly, TextDiff, UnchangedRegion,
+    DiffContent, Difference, FileDiff, LineRange, LocalReadOnly, RevisionFileDiff, TextDiff,
+    UnchangedRegion,
 };
 pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
+pub use file_history::{FileHistory, FileRevision};
 pub use host::HostEnvironment;
 pub use log::{
     GraphArrow, GraphLine, GraphRow, LOG_SEARCH_BATCH, LONG_EDGE, LogCursor, LogFilter, LogPage,
@@ -368,6 +371,12 @@ pub enum Failure {
     RevisionNotFound {
         revision: String,
     },
+    /// git could not bring the file at `path` back to its version in a commit. The operation log
+    /// holds git's output.
+    #[serde(rename_all = "camelCase")]
+    FileVersionNotRestored {
+        path: PathBuf,
+    },
     /// The text of a search of the log is no regular expression gikli can read, as `message`
     /// explains.
     #[serde(rename_all = "camelCase")]
@@ -585,6 +594,11 @@ impl Gikli {
         grouping: ChangeGrouping,
     ) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.commit_changes_grouping = grouping)
+    }
+
+    /// Sets the most revisions a file history lists, newest first. A limit below 1 is 1.
+    pub fn set_file_history_row_limit(&self, limit: usize) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.file_history_row_limit = limit.max(1))
     }
 
     /// Turns soft wrap of the operation log on or off.
@@ -1812,6 +1826,60 @@ impl Gikli {
             revision,
             grouping,
         )
+    }
+
+    /// The history of the file at `path`, relative to the root of `repository`: the commits that
+    /// changed it, newest first, followed through its renames, each with the path the file has in
+    /// it. It reads the history of HEAD, or of `branches` when the user filters it by branch, and
+    /// lists at most the row limit set with [`Self::set_file_history_row_limit`].
+    pub fn file_history(
+        &self,
+        repository: &Repository,
+        path: &str,
+        branches: &[RefLabel],
+    ) -> Result<FileHistory, Failure> {
+        let limit = self.settings().file_history_row_limit;
+        file_history::read(
+            &self.runner(&repository.root)?,
+            repository,
+            path,
+            branches,
+            limit,
+        )
+    }
+
+    /// Get a file version: brings the file at `path`, relative to the root of `repository`, back to
+    /// what it was in the commit `revision` names, where it was at `revision_path`, which differs
+    /// from `path` before a rename. Only that file changes, on disk alone: the index and every
+    /// other file stay as they are. When the commit has no such file, the file is deleted. A
+    /// revision that names no commit returns [`Failure::RevisionNotFound`].
+    pub fn get_file_version(
+        &self,
+        repository: &Repository,
+        revision: &str,
+        revision_path: &str,
+        path: &str,
+    ) -> Result<(), Failure> {
+        file_history::get_version(
+            &self.runner(&repository.root)?,
+            repository,
+            revision,
+            revision_path,
+            path,
+        )
+    }
+
+    /// What the commit `revision` names in `repository` changed in the file at `path`, its path in
+    /// that commit: the file in its first parent, at the path it had there, against the file in the
+    /// commit, as the preview of a file history shows it. A revision that names no commit returns
+    /// [`Failure::RevisionNotFound`].
+    pub fn revision_file_diff(
+        &self,
+        repository: &Repository,
+        revision: &str,
+        path: &str,
+    ) -> Result<RevisionFileDiff, Failure> {
+        diff::read_revision(&self.runner(&repository.root)?, repository, revision, path)
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes
