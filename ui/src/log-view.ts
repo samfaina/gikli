@@ -21,6 +21,7 @@ import {
   type LogRow,
   type RefLabel,
   type Repository,
+  type TextSearch,
 } from "./core";
 import { element } from "./dom";
 import { createCommitPanes, SHORT_HASH_LENGTH } from "./log-details";
@@ -75,7 +76,7 @@ export function createLogView(host: LogViewHost): LogView {
   const refreshButton = element<HTMLButtonElement>("log-refresh");
   const closeButton = element<HTMLButtonElement>("log-close");
   const searchInput = element<HTMLInputElement>("log-search");
-  const searchHistory = element<HTMLDataListElement>("log-search-history");
+  const searchHistory = element<HTMLSelectElement>("log-search-history");
   const regexInput = element<HTMLInputElement>("log-search-regex");
   const matchCaseInput = element<HTMLInputElement>("log-search-match-case");
   const branchSelect = element<HTMLSelectElement>("log-branch-filter");
@@ -97,6 +98,8 @@ export function createLogView(host: LogViewHost): LogView {
   let filter: LogFilter = { branches: [], text: null };
   /** The branches the log can be filtered by, as the branch filter lists them. */
   let branches: RefLabel[] = [];
+  /** The searches the user ran, newest first, as the recent searches list them. */
+  let searches: TextSearch[] = [];
   let suggestionTimer: number | undefined;
 
   const panes = createCommitPanes({
@@ -111,6 +114,7 @@ export function createLogView(host: LogViewHost): LogView {
   element<HTMLElement>("log-branch-filter-label").textContent = t("logBranchFilter");
   searchInput.placeholder = t("logSearch");
   searchInput.setAttribute("aria-label", t("logSearch"));
+  searchHistory.setAttribute("aria-label", t("logRecentSearches"));
   goToInput.placeholder = t("logGoTo");
   goToInput.setAttribute("aria-label", t("logGoTo"));
   refreshButton.textContent = t("logRefresh");
@@ -131,6 +135,7 @@ export function createLogView(host: LogViewHost): LogView {
   });
   regexInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
   matchCaseInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
+  searchHistory.addEventListener("change", runRecentSearch);
   branchSelect.addEventListener("change", applyFilter);
   goToInput.addEventListener("input", scheduleSuggestions);
   goToInput.addEventListener("keydown", (event) => {
@@ -191,10 +196,39 @@ export function createLogView(host: LogViewHost): LogView {
     branchSelect.value = still < 0 ? "" : String(still);
   }
 
-  /** Offers the searches the user ran, newest first, under the search field. */
+  /** Offers the searches the user ran, newest first, with their options, beside the search field. */
   async function listSearches(): Promise<void> {
-    const searches = await logSearchHistory().catch(() => [] as string[]);
-    searchHistory.replaceChildren(...searches.map((search) => new Option(search)));
+    searches = await logSearchHistory().catch(() => [] as TextSearch[]);
+    const prompt = new Option(t("logRecentSearches"), "");
+    prompt.disabled = true;
+    searchHistory.replaceChildren(prompt, ...searches.map((search, index) => new Option(recentSearchLabel(search), String(index))));
+    searchHistory.value = "";
+    searchHistory.disabled = searches.length === 0;
+  }
+
+  /** The search as the recent searches name it: its text, and the options it has on. */
+  function recentSearchLabel(search: TextSearch): string {
+    const options: string[] = [];
+    if (search.regex) {
+      options.push(t("logSearchRegex"));
+    }
+    if (search.matchCase) {
+      options.push(t("logSearchMatchCase"));
+    }
+    return options.length === 0 ? search.text : t("logRecentSearch", { text: search.text, options: options.join(", ") });
+  }
+
+  /** Runs again the search the user picked from the recent searches, with its text and options. */
+  function runRecentSearch(): void {
+    const picked = searches[Number(searchHistory.value)];
+    searchHistory.value = "";
+    if (picked === undefined) {
+      return;
+    }
+    searchInput.value = picked.text;
+    regexInput.checked = picked.regex;
+    matchCaseInput.checked = picked.matchCase;
+    applyFilter();
   }
 
   /** Reads the log again with the search and the branch filter as the user set them. */

@@ -15,7 +15,7 @@ use gikli_core::{
     CommitWarning, Failure, FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, LogCursor,
     LogFilter, LogPage, MoveTarget, Notification, NotificationAction, NotificationOutcome,
     OperationLogEntry, Project, ProjectWindow, Prompt, RefLabel, Repository, RollbackPlan,
-    RunningOperation, Settings, StagingSide, answer_askpass_request,
+    RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -581,7 +581,7 @@ fn read_log(
 }
 
 #[tauri::command]
-fn log_search_history(gikli: State<'_, Gikli>) -> Vec<String> {
+fn log_search_history(gikli: State<'_, Gikli>) -> Vec<TextSearch> {
     gikli.log_search_history()
 }
 

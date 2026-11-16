@@ -267,6 +267,8 @@ export const en = {
   logSearch: "Search the message, author or hash",
   logSearchRegex: "Regex",
   logSearchMatchCase: "Match case",
+  logRecentSearches: "Recent searches",
+  logRecentSearch: "{text} ({options})",
   logBranchFilter: "Branch",
   logAllBranches: "All branches",
   logGoTo: "Go to hash, branch or tag",

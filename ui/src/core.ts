@@ -893,8 +893,8 @@ export function readLog(
   return invoke("read_log", { repository, filter, after, count });
 }
 
-/** The searches of the log the user ran, newest first. */
-export function logSearchHistory(): Promise<string[]> {
+/** The searches of the log the user ran, newest first, each with its regex and match-case options. */
+export function logSearchHistory(): Promise<TextSearch[]> {
   return invoke("log_search_history");
 }
 
