@@ -15,8 +15,8 @@ use gikli_core::{
     CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck,
     HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget, Notification,
     NotificationAction, NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt,
-    PushPlan, PushTags, PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan,
-    RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
+    PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository, RevisionFileDiff,
+    RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -152,6 +152,22 @@ fn set_clear_commit_message_after_commit(
     clear: bool,
 ) -> Result<Settings, Failure> {
     gikli.set_clear_commit_message_after_commit(clear)
+}
+
+#[tauri::command]
+fn set_show_push_dialog_for_commit_and_push(
+    gikli: State<'_, Gikli>,
+    show: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_show_push_dialog_for_commit_and_push(show)
+}
+
+#[tauri::command]
+fn set_show_push_dialog_only_for_protected_branches(
+    gikli: State<'_, Gikli>,
+    only_protected: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_show_push_dialog_only_for_protected_branches(only_protected)
 }
 
 #[tauri::command]
@@ -625,6 +641,14 @@ fn push(
 }
 
 #[tauri::command(async)]
+fn push_after_commit(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<PushAfterCommit, Failure> {
+    gikli.push_after_commit(&repository)
+}
+
+#[tauri::command(async)]
 fn add_remote(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -870,6 +894,7 @@ fn main() {
             fetch_branch,
             push_plan,
             push,
+            push_after_commit,
             add_remote,
             local_branches,
             current_branch,
@@ -887,6 +912,8 @@ fn main() {
             set_file_history_row_limit,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
+            set_show_push_dialog_for_commit_and_push,
+            set_show_push_dialog_only_for_protected_branches,
             set_staging_mode,
             watch_changes,
             unwatch_changes,

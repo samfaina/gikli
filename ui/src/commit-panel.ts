@@ -10,6 +10,7 @@ import {
   lastCommitMessage,
   prefilledCommitMessage,
   previousCommitMessages,
+  pushAfterCommit,
   setCommitIdentity,
   settings,
   type Change,
@@ -26,6 +27,10 @@ export interface CommitPanelHost {
   describeChange(change: Change): string;
   /** A commit went through, so the changes need reading again. */
   committed(): void;
+  /** Commit and push went through its commit, and the push dialog is to open for the Repository. */
+  openPushDialog(): void;
+  /** Commit and push pushed at once, as the settings suppress the dialog, so the branches may have moved, even when the push failed. */
+  branchesMoved(): void;
   /** What to show for an error from the core. `retry` runs once the user has done what it offers. */
   errorView(error: unknown, retry?: () => void): HTMLElement;
 }
@@ -81,10 +86,13 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.dataset.testid = "commit-submit";
+  const submitAndPush = document.createElement("button");
+  submitAndPush.type = "button";
+  submitAndPush.dataset.testid = "commit-and-push-submit";
 
   const identity = identityForm(host.repository, host.errorView, () => void commit());
   const warning = warningForm(() => void commit());
-  view.append(title, files, amendLabel, messageLabel, previousMessages, identity.view, warning.view, result, submit);
+  view.append(title, files, amendLabel, messageLabel, previousMessages, identity.view, warning.view, result, submit, submitAndPush);
 
   let ticked = new Set<string>();
   /** The files of the Active changelist the last time, so that one the user unticked is told from one that just came in. */
@@ -93,6 +101,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   let activeId: string | null = null;
   let shownChanges: ChangeSet | null = null;
   let committing = false;
+  /** Whether the commit the user asked for is Commit and push, so the push follows it. */
+  let pushAfter = false;
   /** What gikli last put in the message: while the message is still this, the user has not written over it. Null when what is there has to stay. */
   let prefilled: string | null = "";
   /** The ticked files and comments the message was last pre-filled for, so that reading the changes again asks for nothing new. */
@@ -105,6 +115,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     const nothingToCommit = staging !== null ? staging.staged.changes.length === 0 && !staging.merging : ticked.size === 0;
     submit.disabled = committing || nothingToCommit || message.value.trim() === "";
     submit.textContent = t(amend.checked ? "commitSubmitAmend" : "commitSubmit");
+    submitAndPush.disabled = submit.disabled;
+    submitAndPush.textContent = t(amend.checked ? "commitAndPushSubmitAmend" : "commitAndPushSubmit");
   };
   message.addEventListener("input", () => {
     if (message.value === "") {
@@ -329,6 +341,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       identity.close();
       void loadPreviousMessages();
       host.committed();
+      if (pushAfter) {
+        await pushAfterCommitted();
+      }
     } catch (error) {
       if (isFailure(error) && error.kind === "commitIdentityMissing") {
         identity.ask(error.nameMissing, error.emailMissing);
@@ -341,8 +356,43 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     }
   }
 
+  /** The push of Commit and push, once its commit went through. A failed push leaves the commit made, and offers the push again. */
+  async function pushAfterCommitted(): Promise<void> {
+    try {
+      const after = await pushAfterCommit(host.repository);
+      if (after.kind === "dialog") {
+        host.openPushDialog();
+      } else {
+        result.textContent = t("commitAndPushPushed", { target: `${after.target.remote}/${after.target.branch}` });
+        host.branchesMoved();
+      }
+    } catch (error) {
+      result.replaceChildren(host.errorView(error, () => void pushAgain()));
+      // A push that failed may still have moved remote branches.
+      host.branchesMoved();
+    }
+  }
+
+  /** Pushes again after Commit and push failed to, holding the panel as a commit would. */
+  async function pushAgain(): Promise<void> {
+    if (!startCommitting()) {
+      return;
+    }
+    try {
+      await pushAfterCommitted();
+    } finally {
+      committing = false;
+      updateSubmit();
+    }
+  }
+
   view.addEventListener("submit", (event) => {
     event.preventDefault();
+    pushAfter = false;
+    void commitUnlessWarned();
+  });
+  submitAndPush.addEventListener("click", () => {
+    pushAfter = true;
     void commitUnlessWarned();
   });
 

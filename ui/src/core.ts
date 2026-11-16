@@ -40,6 +40,10 @@ export interface Settings {
   warnOnUnusualCommitState: boolean;
   /** Whether the commit message is emptied once the commit went through. */
   clearCommitMessageAfterCommit: boolean;
+  /** Whether Commit and push opens the push dialog once the commit went through, instead of pushing at once. */
+  showPushDialogForCommitAndPush: boolean;
+  /** Whether Commit and push opens the push dialog only when the push goes to a protected branch. */
+  showPushDialogOnlyForProtectedBranches: boolean;
   /** Whether the changes view shows the git index as Staged and Unstaged changes instead of Changelists. */
   stagingMode: boolean;
   /** Whether the log draws an edge that spans many rows whole, instead of as two arrows. */
@@ -568,6 +572,16 @@ export function setWarnOnUnusualCommitState(warn: boolean): Promise<Settings> {
 /** Makes the commit message empty once a commit went through, or keeps it. Rejects with a {@link Failure}. */
 export function setClearCommitMessageAfterCommit(clear: boolean): Promise<Settings> {
   return invoke("set_clear_commit_message_after_commit", { clear });
+}
+
+/** Makes Commit and push open the push dialog once the commit went through, or push at once. Rejects with a {@link Failure}. */
+export function setShowPushDialogForCommitAndPush(show: boolean): Promise<Settings> {
+  return invoke("set_show_push_dialog_for_commit_and_push", { show });
+}
+
+/** Makes Commit and push open the push dialog only for a push to a protected branch, or for every push. Rejects with a {@link Failure}. */
+export function setShowPushDialogOnlyForProtectedBranches(onlyProtected: boolean): Promise<Settings> {
+  return invoke("set_show_push_dialog_only_for_protected_branches", { onlyProtected });
 }
 
 /** Switches between Changelist mode and Staging mode. Rejects with a {@link Failure}. */
@@ -1118,6 +1132,18 @@ export function pushPlan(repository: Repository, target: PushTarget | null): Pro
  */
 export function push(repository: Repository, target: PushTarget, tags: PushTags): Promise<void> {
   return invoke("push", { repository, target, tags });
+}
+
+/** What follows a commit made with Commit and push: the push dialog, or a push that already ran because the settings suppress the dialog. */
+export type PushAfterCommit = { kind: "dialog"; plan: PushPlan } | { kind: "pushed"; target: PushTarget };
+
+/**
+ * The second step of Commit and push, once the commit of `repository` went through: opens the push
+ * dialog, or pushes the current branch at once, without tags, when the settings suppress the dialog.
+ * Rejects with a {@link Failure}.
+ */
+export function pushAfterCommit(repository: Repository): Promise<PushAfterCommit> {
+  return invoke("push_after_commit", { repository });
 }
 
 /**

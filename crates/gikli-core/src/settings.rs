@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::ChangeGrouping;
+use crate::push::{self, PushTarget};
 
 /// gikli's application settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +35,12 @@ pub struct Settings {
     pub warn_on_unusual_commit_state: bool,
     /// Whether the commit message is emptied once the commit went through.
     pub clear_commit_message_after_commit: bool,
+    /// Whether Commit and push opens the push dialog once the commit went through. When off, the
+    /// push runs at once.
+    pub show_push_dialog_for_commit_and_push: bool,
+    /// Whether Commit and push opens the push dialog only when the push goes to a protected
+    /// branch, and pushes at once otherwise. It applies while the dialog shows for Commit and push.
+    pub show_push_dialog_only_for_protected_branches: bool,
     /// Whether the changes view shows the git index as Staged and Unstaged changes instead of
     /// Changelists.
     pub staging_mode: bool,
@@ -62,6 +69,8 @@ impl Default for Settings {
             go_to_next_file_after_last_change: true,
             warn_on_unusual_commit_state: true,
             clear_commit_message_after_commit: true,
+            show_push_dialog_for_commit_and_push: true,
+            show_push_dialog_only_for_protected_branches: false,
             staging_mode: false,
             show_long_edges: false,
             commit_changes_grouping: ChangeGrouping::default(),
@@ -71,6 +80,15 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Whether Commit and push opens the push dialog for a push to `target`, instead of pushing at
+    /// once: when it shows for Commit and push, and either for every branch or `target` is a
+    /// protected branch.
+    pub(crate) fn shows_push_dialog_after_commit_for(&self, target: &PushTarget) -> bool {
+        self.show_push_dialog_for_commit_and_push
+            && (!self.show_push_dialog_only_for_protected_branches
+                || push::is_protected(&target.branch))
+    }
+
     /// Reads the settings in `file`. A missing or unreadable file gives the defaults, so gikli
     /// always starts.
     pub(crate) fn load(file: &Path) -> Self {
