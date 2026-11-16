@@ -2405,7 +2405,7 @@ fn failure_of(
         runner,
         folder,
         invocation,
-        &explainer::Contacted::Remotes(&[]),
+        &explainer::Contacted::Nothing,
         otherwise,
     )
 }

@@ -28,6 +28,14 @@ fn work_with_origin(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
     (work, remote)
 }
 
+/// The URL of `remote` in `repository`, as plain git gives it.
+fn url_of(repository: &TestRepository, remote: &str) -> String {
+    repository
+        .git(&["remote", "get-url", remote])
+        .trim_end()
+        .to_owned()
+}
+
 /// What the failure explainer says of `remote`, when there is one, whose `url` holds no repository.
 fn no_repository(remote: Option<&str>, url: &str) -> Result<(), Failure> {
     Err(Failure::Explained {
@@ -46,10 +54,7 @@ fn no_repository(remote: Option<&str>, url: &str) -> Result<(), Failure> {
 fn a_fetch_from_a_folder_that_is_gone_or_empty_names_the_remote_and_its_url() {
     let sandbox = Sandbox::new();
     let (work, remote) = work_with_origin(&sandbox);
-    let url = work
-        .git(&["remote", "get-url", "origin"])
-        .trim_end()
-        .to_owned();
+    let url = url_of(&work, "origin");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -93,10 +98,7 @@ fn a_fetch_of_every_remote_names_the_one_that_holds_no_repository() {
     work.git(&["push", "--quiet", "mirror", "main"]);
     let backup = sandbox.bare_remote("backup.git");
     work.add_remote("backup", &backup);
-    let url = work
-        .git(&["remote", "get-url", "mirror"])
-        .trim_end()
-        .to_owned();
+    let url = url_of(&work, "mirror");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -133,6 +135,7 @@ fn a_clone_from_a_path_or_file_url_that_holds_no_repository_names_the_url() {
 /// as ssh passes it on before git's own sentence.
 const GITHUB_OVER_SSH: &str = "echo 'ERROR: Repository not found.' >&2; exit 1";
 
+/// The URL of a remote on a server, which the stand-in for ssh answers.
 const SSH_URL: &str = "git@gikli.test:ada/gone.git";
 
 #[test]
@@ -322,4 +325,104 @@ fn what_gitlab_says_of_a_project_it_does_not_have_names_the_url() {
         .map(|_| ());
 
     assert_eq!(cloned, no_repository(None, SSH_URL));
+}
+
+/// git decodes a `file://` URL as it reads it, so `%20` names a space.
+#[test]
+fn a_file_url_is_read_as_git_decodes_it() {
+    let sandbox = Sandbox::new();
+    let (work, remote) = work_with_origin(&sandbox);
+    let encoded = sandbox.root().join("gone%20remote.git");
+    work.git(&[
+        "clone",
+        "--quiet",
+        "--bare",
+        &as_git_writes_it(remote.root()),
+        &as_git_writes_it(&encoded),
+    ]);
+    let url = file_url(&encoded);
+    work.git(&["remote", "set-url", "origin", &url]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    let fetched = gikli.fetch_all(&root);
+
+    assert_eq!(fetched, no_repository(Some("origin"), &url));
+}
+
+/// git skips a remote that has `remote.<name>.skipFetchAll` when it fetches every remote, so that
+/// one holds nothing it reached for.
+#[test]
+fn a_fetch_of_every_remote_names_only_a_remote_it_fetched() {
+    let sandbox = Sandbox::new();
+    let (work, remote) = work_with_origin(&sandbox);
+    let backup = sandbox.bare_remote("backup.git");
+    work.add_remote("backup", &backup);
+    let skipped = sandbox.bare_remote("skipped.git");
+    work.add_remote("skipped", &skipped);
+    work.git(&["config", "remote.skipped.skipFetchAll", "true"]);
+    fs::remove_dir_all(skipped.root()).expect("remove the skipped remote");
+    work.git(&["remote", "set-url", "origin", SSH_URL]);
+    sandbox.ssh_stand_in(GITHUB_OVER_SSH);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    drop(remote);
+
+    let fetched = gikli.fetch_all(&root);
+
+    assert_eq!(fetched, no_repository(Some("origin"), SSH_URL));
+}
+
+/// A fetch goes on to the submodules whose commits it brings, and what their server says is about
+/// them, not about the remote of the Repository.
+#[test]
+fn a_submodule_whose_server_has_no_repository_does_not_read_as_the_remote_without_one() {
+    let sandbox = Sandbox::new();
+    sandbox.allow_local_submodules();
+    let library = sandbox.bare_remote("library.git");
+    let library_work = sandbox.repository("library");
+    library_work.write("lib.txt", "lib\n");
+    library_work.commit_all("Library");
+    library_work.add_remote("origin", &library);
+    library_work.git(&["push", "--quiet", "origin", "main"]);
+    let (work, remote) = work_with_origin(&sandbox);
+    work.git(&[
+        "submodule",
+        "add",
+        "--quiet",
+        &file_url(library.root()),
+        "lib",
+    ]);
+    work.commit_all("Add the library");
+    work.git(&["push", "--quiet", "origin", "main"]);
+    let mine = sandbox.clone_of(&remote, "mine");
+    mine.git(&["remote", "set-url", "origin", SSH_URL]);
+    mine.git(&["submodule", "update", "--quiet", "--init"]);
+    library_work.write("lib.txt", "lib 2\n");
+    library_work.commit_all("Library 2");
+    library_work.git(&["push", "--quiet", "origin", "main"]);
+    let lib = work.folder("lib");
+    let lib = sandbox.existing_repository(&lib);
+    lib.git(&["pull", "--quiet", "origin", "main"]);
+    work.commit_all("Library 2 in the work");
+    work.git(&["push", "--quiet", "origin", "main"]);
+    let server = sandbox.http_remote_saying(&library, "404 Not Found", GITHUB_OVER_HTTPS);
+    sandbox.existing_repository(&mine.root().join("lib")).git(&[
+        "remote",
+        "set-url",
+        "origin",
+        &server.url(),
+    ]);
+    sandbox.ssh_stand_in(&serves(&remote));
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+
+    let fetched = gikli.fetch_all(&root);
+
+    assert_eq!(
+        fetched,
+        Err(Failure::FetchFailed {
+            folder: root.root.clone()
+        })
+    );
 }

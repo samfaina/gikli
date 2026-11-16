@@ -1,7 +1,10 @@
 //! A shallow clone: the log shows where its history is cut, and gikli fetches the rest.
 
 use gikli_acceptance::{Sandbox, TestRepository, file_url, minute_as_seconds};
-use gikli_core::{Event, Failure, Gikli, LogRow, LongOperation, RefKind, Repository};
+use gikli_core::{
+    Event, ExplainedMessage, Explanation, Failure, Gikli, LogRow, LongOperation, NextStep, RefKind,
+    Repository,
+};
 
 /// Opens the repository's folder as a Project and returns its Repository.
 fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
@@ -227,11 +230,12 @@ fn a_shallow_clone_without_a_remote_has_nowhere_to_fetch_the_rest_from() {
 }
 
 #[test]
-fn when_git_cannot_reach_the_remote_the_history_stays_cut() {
+fn when_the_fetch_fails_the_history_stays_cut() {
     let sandbox = Sandbox::new();
     let remote = remote_with_history(&sandbox);
     let clone = shallow_clone(&sandbox, &remote, "1", &[]);
-    std::fs::remove_dir_all(remote.root()).expect("remove the remote");
+    let server = sandbox.http_remote_answering(&remote, "500 Internal Server Error");
+    clone.git(&["remote", "set-url", "origin", &server.url()]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &clone);
 
@@ -242,6 +246,37 @@ fn when_git_cannot_reach_the_remote_the_history_stays_cut() {
         Err(Failure::HistoryNotFetched {
             folder: root.root.clone(),
             remote: "origin".to_owned(),
+        })
+    );
+    assert!(gikli.read_log(&root, None, 50).expect("read").history_cut);
+}
+
+#[test]
+fn when_the_remote_holds_no_repository_any_more_the_history_stays_cut() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_history(&sandbox);
+    let clone = shallow_clone(&sandbox, &remote, "1", &[]);
+    let url = clone
+        .git(&["remote", "get-url", "origin"])
+        .trim_end()
+        .to_owned();
+    std::fs::remove_dir_all(remote.root()).expect("remove the remote");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &clone);
+
+    let fetched = gikli.fetch_rest_of_history(&root);
+
+    assert_eq!(
+        fetched,
+        Err(Failure::Explained {
+            explanation: Explanation {
+                message: ExplainedMessage::RemoteWithoutRepository {
+                    remote: Some("origin".to_owned()),
+                    url,
+                },
+                next_step: NextStep::CheckRemoteUrl,
+                actions: vec![],
+            }
         })
     );
     assert!(gikli.read_log(&root, None, 50).expect("read").history_cut);

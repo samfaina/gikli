@@ -242,7 +242,7 @@ export const en = {
     "Do not connect until whoever runs the server confirms the new key. Then remove the old one with ssh-keygen -R and the name of the server, and try again. gikli leaves your known_hosts file to you.",
   nextStepCheckConnection: "Check the URL and your connection, then try again.",
   nextStepCheckRemoteUrl:
-    "Check the URL and that you have access to the repository there, then try again. git remote set-url changes the URL of a remote.",
+    "Check the URL, and that you have access to the repository there, then try again. A remote keeps its URL in the configuration of its Repository.",
   nextStepChooseEmptyFolder: "Choose an empty folder, or a folder that does not exist yet.",
   nextStepUseOrDeleteClone:
     "The operation log shows why. You can open the folder without its submodules, or delete it before you clone again.",

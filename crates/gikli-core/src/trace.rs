@@ -1,8 +1,8 @@
 //! git's trace of one run, read as git writes it and kept in memory.
 //!
 //! The trace is the only place that tells which hook runs or failed, in every language, and which
-//! remote failed when git fetches each remote in a git of its own, as `git fetch --all` does. git also
-//! writes every command line to it, which can hold a password in a URL that git does not hide
+//! fetch failed when git fetches in gits of its own: each remote, as `git fetch --all` does, or
+//! each submodule. git also writes every command line to it, which can hold a password in a URL that git does not hide
 //! (an older git hides none, and no git hides one that reads as a port). So no file ever holds
 //! the trace, and git writes it to something that keeps no data.
 //!
@@ -44,24 +44,43 @@ pub(crate) fn new_run_name() -> String {
     format!("gikli-trace-{}-{number}", std::process::id())
 }
 
-/// The hooks the git gikli started has run so far, and the gits it started to fetch from one
-/// remote each, as `git fetch --all` does. Of the trace, gikli keeps only this: the names of the
-/// hooks and of the remotes, and how each run ended. The rest holds command lines.
+/// The hooks the git gikli started has run so far, and the gits it started to fetch, from one
+/// remote each, as `git fetch --all` does, or into a submodule. Of the trace, gikli keeps only
+/// this: the names of the hooks and of the remotes, and how each run ended. The rest holds command
+/// lines.
 #[derive(Default)]
 pub(crate) struct ChildRuns(Vec<ChildRun>);
 
+/// One process the git gikli started that gikli keeps track of.
 struct ChildRun {
     child_id: i64,
     kind: ChildKind,
-    /// The name of the hook, or of the remote.
-    name: String,
     exit_code: Option<i64>,
 }
 
-#[derive(PartialEq, Eq)]
+/// What a [`ChildRun`] does.
 enum ChildKind {
-    Hook,
-    Fetch,
+    /// Runs the hook of this name.
+    Hook(String),
+    /// Fetches from the remote of this name.
+    Fetch(String),
+    /// Fetches into a submodule.
+    SubmoduleFetch,
+}
+
+impl ChildRun {
+    /// Whether it ended with an error.
+    fn failed(&self) -> bool {
+        self.exit_code.is_some_and(|code| code != 0)
+    }
+
+    /// The name of the hook it runs, if it runs one.
+    fn hook(&self) -> Option<&str> {
+        match &self.kind {
+            ChildKind::Hook(name) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 impl ChildRuns {
@@ -79,15 +98,10 @@ impl ChildRuns {
         };
         match event["event"].as_str() {
             Some("child_start") => {
-                let started = match event["hook_name"].as_str() {
-                    Some(hook) => Some((ChildKind::Hook, hook)),
-                    None => fetched_remote(&event).map(|remote| (ChildKind::Fetch, remote)),
-                };
-                if let Some((kind, name)) = started {
+                if let Some(kind) = kind_of_child(&event) {
                     self.0.push(ChildRun {
                         child_id,
                         kind,
-                        name: name.to_owned(),
                         exit_code: None,
                     });
                 }
@@ -101,57 +115,84 @@ impl ChildRuns {
         }
     }
 
-    fn hooks(&self) -> impl DoubleEndedIterator<Item = &ChildRun> {
-        self.0.iter().filter(|child| child.kind == ChildKind::Hook)
+    /// The hooks started, in order, each with its run.
+    fn hooks(&self) -> impl DoubleEndedIterator<Item = (&str, &ChildRun)> {
+        self.0
+            .iter()
+            .filter_map(|child| Some((child.hook()?, child)))
     }
 
     /// The hook that ended with an error.
     pub fn failed_hook(&self) -> Option<String> {
-        let failed = |hook: &&ChildRun| hook.exit_code.is_some_and(|code| code != 0);
-        self.hooks().find(failed).map(|hook| hook.name.clone())
+        let (hook, _) = self.hooks().find(|(_, run)| run.failed())?;
+        Some(hook.to_owned())
     }
 
     /// The hook running now: the last one started that has not ended.
     pub fn running_hook(&self) -> Option<String> {
-        let running = |hook: &&ChildRun| hook.exit_code.is_none();
-        self.hooks()
-            .rev()
-            .find(running)
-            .map(|hook| hook.name.clone())
+        let running = |(_, run): &(&str, &ChildRun)| run.exit_code.is_none();
+        let (hook, _) = self.hooks().rev().find(running)?;
+        Some(hook.to_owned())
     }
 
     /// The last hook started, running or not.
     pub fn last_hook(&self) -> Option<String> {
-        self.hooks().last().map(|hook| hook.name.clone())
+        let (hook, _) = self.hooks().last()?;
+        Some(hook.to_owned())
     }
 
     /// The remotes whose own git ended with an error, in the order git fetched them.
     pub fn failed_fetches(&self) -> Vec<String> {
         self.0
             .iter()
-            .filter(|child| {
-                child.kind == ChildKind::Fetch && child.exit_code.is_some_and(|code| code != 0)
+            .filter(|child| child.failed())
+            .filter_map(|child| match &child.kind {
+                ChildKind::Fetch(remote) => Some(remote.clone()),
+                _ => None,
             })
-            .map(|child| child.name.clone())
             .collect()
+    }
+
+    /// Whether the git of a submodule's fetch ended with an error.
+    pub fn submodule_fetch_failed(&self) -> bool {
+        self.0
+            .iter()
+            .any(|child| matches!(child.kind, ChildKind::SubmoduleFetch) && child.failed())
     }
 }
 
-/// The remote a git started by `git fetch --all` fetches from: such a git appends to what the
-/// others fetched, and gets the remote last, as in `git -c fetch.bundleURI= fetch --append
-/// --no-auto-gc origin`. The git inside WSL forwards only the name, as `fetched`.
-fn fetched_remote(event: &serde_json::Value) -> Option<&str> {
+/// What the child that `event` starts does, when gikli keeps track of it: a hook, which the trace
+/// names, or a git that fetches. One that `git fetch --all` started appends to what the others
+/// fetched, and gets the remote last, as in `git -c fetch.bundleURI= fetch --append --no-auto-gc
+/// origin`. One that fetches into a submodule gets the submodule's folder, with
+/// `--submodule-prefix`. The git inside WSL forwards only the remote, as `fetched`, or that it is
+/// a submodule's, as `submodule`.
+fn kind_of_child(event: &serde_json::Value) -> Option<ChildKind> {
+    if let Some(hook) = event["hook_name"].as_str() {
+        return Some(ChildKind::Hook(hook.to_owned()));
+    }
     if let Some(remote) = event["fetched"].as_str() {
-        return Some(remote);
+        return Some(ChildKind::Fetch(remote.to_owned()));
+    }
+    if event["submodule"].as_bool() == Some(true) {
+        return Some(ChildKind::SubmoduleFetch);
     }
     let argv: Vec<&str> = event["argv"]
         .as_array()?
         .iter()
         .map(|argument| argument.as_str())
         .collect::<Option<_>>()?;
-    let fetches =
-        argv.first() == Some(&"git") && argv.contains(&"fetch") && argv.contains(&"--append");
-    fetches.then(|| argv.last().copied()).flatten()
+    if argv.first() != Some(&"git") || !argv.contains(&"fetch") {
+        return None;
+    }
+    if argv
+        .iter()
+        .any(|argument| argument.starts_with("--submodule-prefix"))
+    {
+        return Some(ChildKind::SubmoduleFetch);
+    }
+    let remote = argv.last().filter(|_| argv.contains(&"--append"))?;
+    Some(ChildKind::Fetch((*remote).to_owned()))
 }
 
 /// Reads the trace of a git on this machine, on a thread of its own, into [`ChildRuns`].
@@ -227,10 +268,10 @@ const CHUNK_SIZE: usize = 16 * 1024;
 
 /// Runs inside WSL in front of git, as `sh -c <this> sh <marker> git <arguments>`, as nothing
 /// inside WSL can reach a pipe of Windows, and the error output is what reaches gikli. It forwards
-/// there only what names a hook of the git gikli started, or the remote of a git it started to
-/// fetch from one remote, each with the marker in front, and never a command line: the remote goes
-/// as `fetched`, the last argument of that git. It runs git without a trace when it cannot make
-/// the FIFO.
+/// there only what names a hook of the git gikli started, or what a git it started fetches from,
+/// each with the marker in front, and never a command line: the remote of a git that fetches from
+/// one remote goes as `fetched`, its last argument, and a git that fetches into a submodule goes as
+/// `submodule`. It runs git without a trace when it cannot make the FIFO.
 ///
 /// The folder goes as soon as git has connected, which it does before it starts anything, so a git
 /// a hook starts can neither connect nor create a file there. It moves first, as removing it leaves
@@ -256,6 +297,9 @@ dir=$(mktemp -d 2>/dev/null) && mkfifo "$dir/trace" 2>/dev/null && exec 3<>"$dir
       '{"event":"child_start"'*'"hook_name":"'*)
         event=${line%%,\"argv\":*}
         printf '%s%s}\n' "$marker" "$event" >&2 ;;
+      '{"event":"child_start"'*'"argv":["git",'*'"fetch",'*'"--submodule-prefix'*)
+        event=${line%%,\"argv\":*}
+        printf '%s%s,"submodule":true}\n' "$marker" "$event" >&2 ;;
       '{"event":"child_start"'*'"argv":["git",'*'"fetch",'*'"--append",'*)
         event=${line%%,\"argv\":*}
         remote=${line##*,\"}

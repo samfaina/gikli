@@ -6,8 +6,8 @@
 //! quotes, the sentences git never translates and those of programs that have no translations,
 //! such as ssh and curl, what a server says in words of its own, which git passes on as they are,
 //! the sentences of a run git was told not to translate, the state of the repository and what is
-//! at the path of a local URL. ADR-0001 pins what gikli parses, but git's error output has no format to pin, which
-//! is why only these fixed parts of it count.
+//! at the path of a local URL. ADR-0001 pins what gikli parses, but git's error output has no
+//! format to pin, which is why only these fixed parts of it count.
 
 use std::path::{Path, PathBuf};
 
@@ -196,8 +196,9 @@ pub(crate) fn explain(
 
 /// What a run of git reached out to, which the failure explainer checks for a repository.
 pub(crate) enum Contacted<'a> {
-    /// These remotes of the Repository, by name, as a fetch does. Empty for a run that reaches out
-    /// to nothing.
+    /// Nothing outside the Repository.
+    Nothing,
+    /// These remotes of the Repository, by name, as a fetch does.
     Remotes(&'a [String]),
     /// The URL given to a clone, which has no remote yet.
     Url(&'a str),
@@ -229,55 +230,71 @@ fn explain_remote_without_repository(
     Some(explained(message, NextStep::CheckRemoteUrl))
 }
 
+/// A remote, or the URL of a clone, that may be the one without a repository.
+struct Candidate<'a> {
+    /// The name of the remote, and None for a clone.
+    remote: Option<&'a str>,
+    /// The URL to show: the one git uses for a remote, the one given for a clone.
+    url: String,
+    /// The folder the URL names, when git reads it as a path on its own machine.
+    path: Option<PathBuf>,
+}
+
 /// The remote of those `contacted` names whose URL holds no repository, when gikli can tell. A
 /// local URL tells by what is at its path, whatever git said about it. A server tells in words of
 /// its own, which name no remote, so they count for the one remote on a server that can have said
-/// them: the only one, or the only one whose git failed, as git's trace names it.
-fn remote_without_repository(
+/// them. A fetch of every remote that fetched each in a git of its own knows which failed, as git's
+/// trace names them, and only those count. A submodule's server can say them too, as a fetch goes
+/// on to the submodules, and then they count for no remote.
+fn remote_without_repository<'a>(
     runner: &GitRunner,
     folder: &Path,
     invocation: &Invocation,
-    contacted: &Contacted,
+    contacted: &Contacted<'a>,
 ) -> Option<ExplainedMessage> {
-    // Each remote, by name, with its URL as the user knows it and the URL git uses.
-    let urls: Vec<(Option<&str>, String, String)> = match contacted {
+    let candidate = |remote: Option<&'a str>, url: String, used: &str| Candidate {
+        remote,
+        path: local_path(runner, folder, used),
+        url,
+    };
+    let failed = &invocation.failed_fetches;
+    let candidates: Vec<Candidate> = match contacted {
+        Contacted::Nothing => return None,
         Contacted::Remotes(remotes) => remotes
             .iter()
+            .filter(|remote| failed.is_empty() || failed.contains(remote))
             .filter_map(|remote| {
                 let url = url_of(runner, folder, remote)?;
-                Some((Some(remote.as_str()), url.clone(), url))
+                Some(candidate(Some(remote), url.clone(), &url))
             })
             .collect(),
         Contacted::Url(given) => {
-            let url = url_of(runner, folder, given).unwrap_or_else(|| (*given).to_owned());
-            vec![(None, (*given).to_owned(), url)]
+            let used = url_of(runner, folder, given).unwrap_or_else(|| (*given).to_owned());
+            vec![candidate(None, (*given).to_owned(), &used)]
         }
     };
-    let (local, on_servers): (Vec<_>, Vec<_>) = urls
+    let (local, on_servers): (Vec<_>, Vec<_>) = candidates
         .into_iter()
-        .map(|(remote, shown, url)| (remote, shown, local_path(runner, folder, &url)))
-        .partition(|(_, _, path)| path.is_some());
-    let without_repository = local
-        .into_iter()
-        .find(|(_, _, path)| path.as_deref().is_some_and(|path| !holds_repository(path)));
-    let (remote, shown, _) = match without_repository {
+        .partition(|candidate| candidate.path.is_some());
+    let without_repository = local.into_iter().find(|candidate| {
+        candidate
+            .path
+            .as_deref()
+            .is_some_and(|path| !holds_repository(path))
+    });
+    let found = match without_repository {
         Some(local) => local,
-        None if any_line(&invocation.stderr, is_repository_unknown_to_server) => {
-            // A fetch of every remote that fetched each in a git of its own knows which failed.
-            let failed = &invocation.failed_fetches;
-            let on_servers = on_servers.into_iter().filter(|(remote, _, _)| {
-                failed.is_empty() || failed.iter().any(|failed| Some(failed.as_str()) == *remote)
-            });
-            match <[_; 1]>::try_from(on_servers.collect::<Vec<_>>()) {
-                Ok([on_server]) => on_server,
-                Err(_) => return None,
-            }
+        None if !invocation.submodule_fetch_failed
+            && any_line(&invocation.stderr, is_repository_unknown_to_server) =>
+        {
+            let [on_server] = <[_; 1]>::try_from(on_servers).ok()?;
+            on_server
         }
         None => return None,
     };
     Some(ExplainedMessage::RemoteWithoutRepository {
-        remote: remote.map(str::to_owned),
-        url: hide_url_passwords(&shown),
+        remote: found.remote.map(str::to_owned),
+        url: hide_url_passwords(&found.url),
     })
 }
 
@@ -299,11 +316,7 @@ fn url_of(runner: &GitRunner, folder: &Path, remote: &str) -> Option<String> {
 fn local_path(runner: &GitRunner, folder: &Path, url: &str) -> Option<PathBuf> {
     let windows_paths = cfg!(windows) && runner.runs_natively();
     let path = match url.strip_prefix("file://") {
-        // `file:///C:/repo` names `C:/repo` on Windows.
-        Some(path) if windows_paths && has_drive(path.trim_start_matches('/')) => {
-            path.trim_start_matches('/')
-        }
-        Some(path) => path,
+        Some(rest) => file_url_path(&percent_decoded(rest), windows_paths)?,
         None if url.contains("://") => return None,
         None => {
             let local = match (url.find(':'), url.find('/')) {
@@ -314,36 +327,72 @@ fn local_path(runner: &GitRunner, folder: &Path, url: &str) -> Option<PathBuf> {
             if !local && !(windows_paths && has_drive(url)) {
                 return None;
             }
-            url
+            url.to_owned()
         }
     };
-    runner.path_on_this_machine(folder, path)
+    runner.path_on_this_machine(folder, &path)
 }
 
-/// Whether `path` starts with a drive, as `C:/` or `C:\` do.
+/// The path of a `file://` URL, from `rest`, what comes after `file://` once decoded, as git reads
+/// it. A drive stays, as in `file:///C:/repo` and `file://C:/repo` on Windows. A host before the
+/// path goes, unless git for Windows reads it as a share, as in `file://server/share/repo`.
+fn file_url_path(rest: &str, windows_paths: bool) -> Option<String> {
+    match rest.strip_prefix('/') {
+        Some(path) if windows_paths && has_drive(path) => Some(path.to_owned()),
+        Some(_) => Some(rest.to_owned()),
+        None if windows_paths && has_drive(rest) => Some(rest.to_owned()),
+        None if windows_paths => Some(format!("//{rest}")),
+        None => rest.find('/').map(|slash| rest[slash..].to_owned()),
+    }
+}
+
+/// `text` with each `%` and two hexadecimal digits turned into the byte they stand for, as git
+/// decodes a URL before it reads its path.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes
+            .get(index + 1..index + 3)
+            .filter(|_| bytes[index] == b'%')
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| u8::from_str_radix(digits, 16).ok());
+        match byte {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Whether `path` starts with a drive, as `C:` does, which git for Windows reads as a path.
 fn has_drive(path: &str) -> bool {
     let bytes = path.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'/' | b'\\')
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// Whether git finds something to fetch from at `path`, as it looks there: the path itself, its
 /// `.git` folder, the same with `.git` added to its name, and a bundle. Any file there counts: it
 /// can point to a git directory, or be a bundle, which git reads too.
 fn holds_repository(path: &Path) -> bool {
-    let mut with_suffix = path.as_os_str().to_owned();
-    with_suffix.push(".git");
-    let with_suffix = PathBuf::from(with_suffix);
-    let mut bundle = path.as_os_str().to_owned();
-    bundle.push(".bundle");
+    let with_suffix = |suffix: &str| {
+        let mut named = path.as_os_str().to_owned();
+        named.push(suffix);
+        PathBuf::from(named)
+    };
     [
         path.join(".git"),
         path.to_path_buf(),
-        with_suffix.join(".git"),
-        with_suffix,
-        PathBuf::from(bundle),
+        with_suffix(".git").join(".git"),
+        with_suffix(".git"),
+        with_suffix(".bundle"),
     ]
     .iter()
     .any(|candidate| candidate.is_file() || is_git_directory(candidate))
@@ -478,11 +527,11 @@ fn is_refused_by_http_server(line: &str) -> bool {
         })
 }
 
-/// What a server says of a repository it does not have, or that the user may not see, in words
-/// of its own that git passes on as they are: the text an HTTP server answers with, after
-/// `remote: `, which git writes without translating it, and what an SSH server writes, which ssh
-/// passes on, with `remote: ` in front when it comes through git's own channel. These are GitHub's
-/// and GitLab's.
+/// What a server says of a repository it does not have, or that the user may not see. These are
+/// GitHub's words and GitLab's, which each server writes in English whatever language git speaks,
+/// and which git passes on as they are: the text an HTTP server answers with, after `remote: `,
+/// which git does not translate, and what an SSH server writes, which ssh passes on, with
+/// `remote: ` in front when it comes through git's own channel.
 fn is_repository_unknown_to_server(line: &str) -> bool {
     let said = line.strip_prefix("remote: ").unwrap_or(line);
     matches!(

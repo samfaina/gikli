@@ -192,6 +192,8 @@ pub(crate) struct Invocation {
     /// The remotes this run fetched from in a git of its own each, as `git fetch --all` does, whose
     /// git failed, as git's trace of the run names them.
     pub failed_fetches: Vec<String>,
+    /// Whether this run fetched into a submodule, and that failed, as git's trace of the run says.
+    pub submodule_fetch_failed: bool,
     /// Whether a remote refused the credentials git gave it in this run.
     pub credentials_refused: bool,
     /// Whether the user cancelled this run, which ended it. It is not a failure of git's, whatever
@@ -535,6 +537,7 @@ fn finish_run(
         stderr,
         failed_hook: trace.failed_hook(),
         failed_fetches: trace.failed_fetches(),
+        submodule_fetch_failed: trace.submodule_fetch_failed(),
         credentials_refused: trace.refused_credentials_file.exists(),
         cancelled,
         last_hook: trace.last_hook().filter(|_| cancelled),
@@ -800,6 +803,7 @@ impl Invocation {
             stderr: kept,
             failed_hook: self.failed_hook.clone(),
             failed_fetches: self.failed_fetches.clone(),
+            submodule_fetch_failed: self.submodule_fetch_failed,
             credentials_refused: self.credentials_refused,
             cancelled: self.cancelled,
             last_hook: self.last_hook.clone(),
@@ -904,6 +908,11 @@ impl RunTrace {
     /// The remotes whose own git failed in the run, as the git gikli started saw it.
     fn failed_fetches(&self) -> Vec<String> {
         lock(&self.children).failed_fetches()
+    }
+
+    /// Whether a fetch into a submodule failed in the run, as the git gikli started saw it.
+    fn submodule_fetch_failed(&self) -> bool {
+        lock(&self.children).submodule_fetch_failed()
     }
 
     /// The hook running now, as the git gikli started sees it.
