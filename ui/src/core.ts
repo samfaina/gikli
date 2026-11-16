@@ -322,6 +322,7 @@ export type Failure =
   | { kind: "logChanged" }
   /** The Repository has no remote to fetch the rest of its history from. */
   | { kind: "noRemoteToFetchFrom"; folder: string }
+  /** git could not fetch the rest of the history from `remote`: the operation log shows why. */
   | { kind: "historyNotFetched"; folder: string; remote: string }
   /** No commit goes by `revision`: no hash, branch, tag or other name git knows. */
   | { kind: "revisionNotFound"; revision: string }

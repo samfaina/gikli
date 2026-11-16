@@ -1,41 +1,63 @@
 //! A shallow clone: a Repository whose history is cut, as `git clone --depth` leaves it, and the
 //! fetch that brings the rest.
 
-use crate::git::GitRunner;
+use std::collections::BTreeSet;
+use std::io;
+
+use crate::git::{GitRunner, Invocation};
 use crate::{Failure, Repository, git_failed_to_start};
 
-/// The commits where the history of `repository` is cut, one hash a line, as git keeps them in the
-/// `shallow` file of its git directory. Nothing when the history is whole, and git keeps no file.
-pub(crate) fn cut_commits(runner: &GitRunner, repository: &Repository) -> Result<String, Failure> {
-    let unreadable = || Failure::LogUnreadable {
-        folder: repository.root.clone(),
-    };
+/// The hashes of the commits where the history of `repository` is cut, as git keeps them in the
+/// `shallow` file of its git directory, one a line. Empty when the history is whole, and git
+/// keeps no file. A git that cannot say where its git directory is fails with [`io::ErrorKind::NotFound`].
+pub(crate) fn cut_commits(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> io::Result<BTreeSet<String>> {
     let path = runner
-        .relative_git_path(&repository.root, "shallow")
-        .map_err(git_failed_to_start)?
-        .ok_or_else(unreadable)?;
+        .relative_git_path(&repository.root, "shallow")?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git names no git directory"))?;
     match std::fs::read_to_string(repository.root.join(path)) {
-        Ok(cut) => Ok(cut),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(_) => Err(unreadable()),
+        Ok(cut) => Ok(cut.split_whitespace().map(str::to_owned).collect()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+        Err(error) => Err(error),
     }
 }
 
-/// The arguments of the git that fetches the rest of the history of a Repository from `remote`.
-/// It fetches every branch of the remote into its remote branches, whatever branches the remote's
-/// configuration names: `git clone --depth` tracks a single branch, and `git fetch --unshallow`
-/// alone keeps it that way. The configuration stays as it is.
-pub(crate) fn fetch_rest_args(remote: &str) -> Vec<String> {
+/// The arguments of the git that fetches the rest of the history of a Repository from `remote`,
+/// into the remote branches its configuration names.
+pub(crate) fn fetch_rest_args(remote: &str) -> [&str; 5] {
     [
         "fetch",
         "--progress",
         "--unshallow",
         "--end-of-options",
         remote,
-        &format!("+refs/heads/*:refs/remotes/{remote}/*"),
     ]
-    .map(str::to_owned)
-    .to_vec()
+}
+
+/// Has `remote` of `repository` fetch every branch of the remote from now on, as `git remote
+/// set-branches <remote> '*'` does, unless its configuration already names its branches with a
+/// pattern. `git clone --depth` tracks a single branch, and `git fetch --unshallow` alone keeps it
+/// that way, so the other branches would not come, or would go stale. Returns the run of git that
+/// failed, if one did.
+pub(crate) fn track_every_branch(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote: &str,
+) -> Result<Option<Invocation>, Failure> {
+    let root = &repository.root;
+    let key = format!("remote.{remote}.fetch");
+    let configured = runner
+        .run(root, &["config", "--get-all", &key])
+        .map_err(git_failed_to_start)?;
+    if configured.stdout_text().contains('*') {
+        return Ok(None);
+    }
+    let tracked = runner
+        .run(root, &["remote", "set-branches", "--", remote, "*"])
+        .map_err(git_failed_to_start)?;
+    Ok((!tracked.success).then_some(tracked))
 }
 
 /// The remote git fetches from in `repository` when it is given none: the one the current branch

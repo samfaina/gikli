@@ -104,7 +104,7 @@ fn every_page_of_a_shallow_log_says_the_history_is_cut_so_gikli_offers_the_rest(
     let second = gikli.read_log(&root, Some(next), 1).expect("read on");
 
     assert_eq!(cut(&first.rows), Vec::<&str>::new());
-    assert!(first.history_cut, "the first page shows no cut commit");
+    assert!(first.history_cut);
     assert!(second.history_cut);
     let whole_page = gikli
         .read_log(&opened(&gikli, &whole), None, 50)
@@ -147,14 +147,13 @@ fn fetching_the_rest_of_a_single_branch_shallow_clone_brings_the_whole_history_o
     assert_eq!(remote_branches(&after.rows), ["origin/main", "origin/side"]);
     assert_eq!(
         clone.git(&["rev-parse", "--is-shallow-repository"]),
-        "false
-",
+        "false\n",
         "git agrees the history is whole"
     );
 }
 
 #[test]
-fn fetching_the_rest_runs_as_a_long_operation_the_user_sees_advance() {
+fn fetching_the_rest_runs_as_a_long_operation_from_the_remote_it_names() {
     let sandbox = Sandbox::new();
     let remote = remote_with_history(&sandbox);
     let clone = shallow_clone(&sandbox, &remote, "1", &[]);
@@ -266,4 +265,106 @@ fn a_page_read_before_the_rest_was_fetched_finds_the_history_changed() {
         gikli.read_log(&root, Some(next), 1),
         Err(Failure::LogChanged)
     );
+}
+
+#[test]
+fn after_the_rest_is_fetched_a_later_fetch_keeps_every_remote_branch_up_to_date() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_history(&sandbox);
+    let clone = shallow_clone(&sandbox, &remote, "1", &[]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &clone);
+    gikli
+        .fetch_rest_of_history(&root)
+        .expect("fetch the rest of the history");
+
+    let work = sandbox.existing_repository(&sandbox.root().join("work"));
+    work.git(&["switch", "--quiet", "side"]);
+    work.commit_at(5, "Later on side");
+    work.git(&["push", "--quiet", "origin", "side"]);
+    clone.git(&["fetch", "--quiet"]);
+
+    assert_eq!(
+        clone.git(&["log", "-1", "--format=%s", "origin/side"]),
+        "Later on side\n"
+    );
+}
+
+#[test]
+fn a_remote_that_already_fetches_every_branch_elsewhere_keeps_its_own_remote_branches() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_history(&sandbox);
+    let clone = shallow_clone(&sandbox, &remote, "1", &["--no-single-branch"]);
+    clone.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/mirror/*",
+    ]);
+    clone.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    clone.git(&["update-ref", "-d", "refs/remotes/origin/side"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &clone);
+
+    gikli
+        .fetch_rest_of_history(&root)
+        .expect("fetch the rest of the history");
+
+    let after = gikli.read_log(&root, None, 50).expect("read the log");
+    assert!(!after.history_cut);
+    assert_eq!(remote_branches(&after.rows), ["mirror/main", "mirror/side"]);
+    assert_eq!(
+        clone.git(&["config", "--get-all", "remote.origin.fetch"]),
+        "+refs/heads/*:refs/remotes/mirror/*\n"
+    );
+}
+
+#[test]
+fn a_linked_worktree_of_a_shallow_clone_shows_the_cut_and_fetches_the_rest() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_history(&sandbox);
+    let clone = shallow_clone(&sandbox, &remote, "2", &["--no-single-branch"]);
+    let worktree = clone.linked_worktree("feature");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &worktree);
+
+    let before = gikli.read_log(&root, None, 50).expect("read the log");
+    gikli
+        .fetch_rest_of_history(&root)
+        .expect("fetch the rest of the history");
+    let after = gikli.read_log(&root, None, 50).expect("read the log again");
+
+    assert_eq!(cut(&before.rows), ["Second"]);
+    assert!(before.history_cut);
+    assert!(!after.history_cut);
+    assert_eq!(after.rows.last().expect("a commit").subject, "First");
+}
+
+#[test]
+fn on_a_detached_head_the_rest_comes_from_origin() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_history(&sandbox);
+    let clone = shallow_clone(&sandbox, &remote, "1", &[]);
+    clone.git(&["switch", "--quiet", "--detach"]);
+    let elsewhere = sandbox.bare_remote("elsewhere.git");
+    clone.add_remote("another", &elsewhere);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &clone);
+    let events = gikli.subscribe();
+
+    gikli
+        .fetch_rest_of_history(&root)
+        .expect("fetch the rest of the history");
+
+    let started = events.try_iter().find_map(|event| match event {
+        Event::OperationStarted { operation, .. } => Some(operation),
+        _ => None,
+    });
+    assert_eq!(
+        started,
+        Some(LongOperation::FetchRestOfHistory {
+            repository: root.clone(),
+            remote: "origin".to_owned(),
+        })
+    );
+    assert!(!gikli.read_log(&root, None, 50).expect("read").history_cut);
 }

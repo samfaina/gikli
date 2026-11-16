@@ -1,6 +1,6 @@
 //! The log: the history of a Repository as a commit list with a graph, read a page at a time.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -320,10 +320,10 @@ impl Walk {
     }
 
     /// Goes past the commit git printed as `fields`: returns its row, and leaves the walk as the
-    /// next row finds it, labelled with `references`. `user_email` is the email of the user's Commit identity, if they have
-    /// one, and `is_long` tells whether the edge to a parent is cut. Unless `with_graph`, the row
-    /// has no lines of the graph, only its node, as in a search, whose commits do not follow one
-    /// another.
+    /// next row finds it, labelled from `references`. `user_email` is the email of the user's
+    /// Commit identity, if they have one, and `is_long` tells whether the edge to a parent is cut.
+    /// Unless `with_graph`, the row has no lines of the graph, only its node, as in a search, whose
+    /// commits do not follow one another.
     fn row(
         &mut self,
         fields: &[&str; FIELDS],
@@ -767,7 +767,7 @@ struct References {
     /// The labels of each commit, in the order they show.
     labels: HashMap<String, Vec<RefLabel>>,
     /// The commits where the history is cut, whose parents the Repository does not hold.
-    cut: HashSet<String>,
+    cut: BTreeSet<String>,
     /// A digest of the references, which tells whether the history moved since.
     tips: String,
 }
@@ -823,7 +823,11 @@ impl References {
     fn read(runner: &GitRunner, repository: &Repository) -> Result<Self, Failure> {
         let (head, listed, cut) = std::thread::scope(|scope| {
             let listed = scope.spawn(|| list_references(runner, repository));
-            let cut = scope.spawn(|| shallow::cut_commits(runner, repository));
+            let cut = scope.spawn(|| {
+                shallow::cut_commits(runner, repository).map_err(|_| Failure::LogUnreadable {
+                    folder: repository.root.clone(),
+                })
+            });
             let head = head_commit(runner, repository);
             (
                 head,
@@ -832,12 +836,12 @@ impl References {
                     .expect("reading where the history is cut panicked"),
             )
         });
-        Ok(Self::new(head?, &listed?, &cut?))
+        Ok(Self::new(head?, &listed?, cut?))
     }
 
     /// The references with HEAD at `head`, and the others as [`list_references`] `listed` them, in
     /// a history cut where [`shallow::cut_commits`] says.
-    fn new(head: Option<String>, listed: &[u8], cut: &str) -> Self {
+    fn new(head: Option<String>, listed: &[u8], cut: BTreeSet<String>) -> Self {
         let mut labels: HashMap<String, Vec<RefLabel>> = HashMap::new();
         if let Some(head) = &head {
             labels.entry(head.clone()).or_default().push(RefLabel {
@@ -878,7 +882,7 @@ impl References {
         Self {
             head,
             labels,
-            cut: cut.split_whitespace().map(str::to_owned).collect(),
+            cut,
             tips: format!("{:x}", digest.finish()),
         }
     }
