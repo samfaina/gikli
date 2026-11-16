@@ -1,7 +1,8 @@
 //! git's trace of one run, read as git writes it and kept in memory.
 //!
-//! The trace is the only place that tells which hook runs or failed, in every language. git also
-//! writes every command line to it, which can hold a password in a URL that git does not hide
+//! The trace is the only place that tells which hook runs or failed, in every language, and which
+//! fetch failed when git fetches in gits of its own: each remote, as `git fetch --all` does, or
+//! each submodule. git also writes every command line to it, which can hold a password in a URL that git does not hide
 //! (an older git hides none, and no git hides one that reads as a port). So no file ever holds
 //! the trace, and git writes it to something that keeps no data.
 //!
@@ -43,18 +44,46 @@ pub(crate) fn new_run_name() -> String {
     format!("gikli-trace-{}-{number}", std::process::id())
 }
 
-/// The hooks the git gikli started has run so far. Of the trace, gikli keeps only this: the rest
-/// holds command lines.
+/// The hooks the git gikli started has run so far, and the gits it started to fetch, from one
+/// remote each, as `git fetch --all` does, or into a submodule. Of the trace, gikli keeps only
+/// this: the names of the hooks and of the remotes, and how each run ended. The rest holds command
+/// lines.
 #[derive(Default)]
-pub(crate) struct HookRuns(Vec<HookRun>);
+pub(crate) struct ChildRuns(Vec<ChildRun>);
 
-struct HookRun {
+/// One process the git gikli started that gikli keeps track of.
+struct ChildRun {
     child_id: i64,
-    name: String,
+    kind: ChildKind,
     exit_code: Option<i64>,
 }
 
-impl HookRuns {
+/// What a [`ChildRun`] does.
+enum ChildKind {
+    /// Runs the hook of this name.
+    Hook(String),
+    /// Fetches from the remote of this name.
+    Fetch(String),
+    /// Fetches into a submodule.
+    SubmoduleFetch,
+}
+
+impl ChildRun {
+    /// Whether it ended with an error.
+    fn failed(&self) -> bool {
+        self.exit_code.is_some_and(|code| code != 0)
+    }
+
+    /// The name of the hook it runs, if it runs one.
+    fn hook(&self) -> Option<&str> {
+        match &self.kind {
+            ChildKind::Hook(name) => Some(name),
+            _ => None,
+        }
+    }
+}
+
+impl ChildRuns {
     /// Takes in one line of the trace. A git a hook started would write under a session nested with
     /// `/`, should it have connected before the path went away.
     fn add_event(&mut self, line: &[u8]) {
@@ -69,46 +98,104 @@ impl HookRuns {
         };
         match event["event"].as_str() {
             Some("child_start") => {
-                if let Some(name) = event["hook_name"].as_str() {
-                    self.0.push(HookRun {
+                if let Some(kind) = kind_of_child(&event) {
+                    self.0.push(ChildRun {
                         child_id,
-                        name: name.to_owned(),
+                        kind,
                         exit_code: None,
                     });
                 }
             }
             Some("child_exit") => {
-                if let Some(hook) = self.0.iter_mut().find(|hook| hook.child_id == child_id) {
-                    hook.exit_code = event["code"].as_i64();
+                if let Some(child) = self.0.iter_mut().find(|child| child.child_id == child_id) {
+                    child.exit_code = event["code"].as_i64();
                 }
             }
             _ => {}
         }
     }
 
+    /// The hooks started, in order, each with its run.
+    fn hooks(&self) -> impl DoubleEndedIterator<Item = (&str, &ChildRun)> {
+        self.0
+            .iter()
+            .filter_map(|child| Some((child.hook()?, child)))
+    }
+
     /// The hook that ended with an error.
-    pub fn failed(&self) -> Option<String> {
-        let failed = |hook: &&HookRun| hook.exit_code.is_some_and(|code| code != 0);
-        self.0.iter().find(failed).map(|hook| hook.name.clone())
+    pub fn failed_hook(&self) -> Option<String> {
+        let (hook, _) = self.hooks().find(|(_, run)| run.failed())?;
+        Some(hook.to_owned())
     }
 
     /// The hook running now: the last one started that has not ended.
-    pub fn running(&self) -> Option<String> {
-        let running = |hook: &&HookRun| hook.exit_code.is_none();
-        self.0
-            .iter()
-            .rev()
-            .find(running)
-            .map(|hook| hook.name.clone())
+    pub fn running_hook(&self) -> Option<String> {
+        let running = |(_, run): &(&str, &ChildRun)| run.exit_code.is_none();
+        let (hook, _) = self.hooks().rev().find(running)?;
+        Some(hook.to_owned())
     }
 
     /// The last hook started, running or not.
-    pub fn last(&self) -> Option<String> {
-        self.0.last().map(|hook| hook.name.clone())
+    pub fn last_hook(&self) -> Option<String> {
+        let (hook, _) = self.hooks().last()?;
+        Some(hook.to_owned())
+    }
+
+    /// The remotes whose own git ended with an error, in the order git fetched them.
+    pub fn failed_fetches(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .filter(|child| child.failed())
+            .filter_map(|child| match &child.kind {
+                ChildKind::Fetch(remote) => Some(remote.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether the git of a submodule's fetch ended with an error.
+    pub fn submodule_fetch_failed(&self) -> bool {
+        self.0
+            .iter()
+            .any(|child| matches!(child.kind, ChildKind::SubmoduleFetch) && child.failed())
     }
 }
 
-/// Reads the trace of a git on this machine, on a thread of its own, into [`HookRuns`].
+/// What the child that `event` starts does, when gikli keeps track of it: a hook, which the trace
+/// names, or a git that fetches. One that `git fetch --all` started appends to what the others
+/// fetched, and gets the remote last, as in `git -c fetch.bundleURI= fetch --append --no-auto-gc
+/// origin`. One that fetches into a submodule gets the submodule's folder, with
+/// `--submodule-prefix`. The git inside WSL forwards only the remote, as `fetched`, or that it is
+/// a submodule's, as `submodule`.
+fn kind_of_child(event: &serde_json::Value) -> Option<ChildKind> {
+    if let Some(hook) = event["hook_name"].as_str() {
+        return Some(ChildKind::Hook(hook.to_owned()));
+    }
+    if let Some(remote) = event["fetched"].as_str() {
+        return Some(ChildKind::Fetch(remote.to_owned()));
+    }
+    if event["submodule"].as_bool() == Some(true) {
+        return Some(ChildKind::SubmoduleFetch);
+    }
+    let argv: Vec<&str> = event["argv"]
+        .as_array()?
+        .iter()
+        .map(|argument| argument.as_str())
+        .collect::<Option<_>>()?;
+    if argv.first() != Some(&"git") || !argv.contains(&"fetch") {
+        return None;
+    }
+    if argv
+        .iter()
+        .any(|argument| argument.starts_with("--submodule-prefix"))
+    {
+        return Some(ChildKind::SubmoduleFetch);
+    }
+    let remote = argv.last().filter(|_| argv.contains(&"--append"))?;
+    Some(ChildKind::Fetch((*remote).to_owned()))
+}
+
+/// Reads the trace of a git on this machine, on a thread of its own, into [`ChildRuns`].
 pub(crate) struct TraceReader {
     stop: Option<Sender<()>>,
     thread: Option<JoinHandle<()>>,
@@ -116,7 +203,7 @@ pub(crate) struct TraceReader {
 
 impl TraceReader {
     /// A reader ready for a git to connect, with where that git must write its trace.
-    pub fn start(hooks: Arc<Mutex<HookRuns>>) -> io::Result<(Self, OsString)> {
+    pub fn start(children: Arc<Mutex<ChildRuns>>) -> io::Result<(Self, OsString)> {
         let (mut pipe, target) = platform::TracePipe::open(&new_run_name())?;
         let (stop, stopped) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
@@ -124,7 +211,7 @@ impl TraceReader {
             .spawn(move || {
                 let mut last_pass = false;
                 loop {
-                    pipe.take_events(&hooks);
+                    pipe.take_events(&children);
                     if last_pass {
                         return;
                     }
@@ -161,17 +248,17 @@ impl Drop for TraceReader {
 struct UnfinishedLine(Vec<u8>);
 
 impl UnfinishedLine {
-    /// Takes in `bytes`, the next ones read, and hands `hooks` the lines they finish.
-    fn add(&mut self, bytes: &[u8], hooks: &Mutex<HookRuns>) {
+    /// Takes in `bytes`, the next ones read, and hands `children` the lines they finish.
+    fn add(&mut self, bytes: &[u8], children: &Mutex<ChildRuns>) {
         self.0.extend_from_slice(bytes);
         let Some(end) = self.0.iter().rposition(|byte| *byte == b'\n') else {
             return;
         };
-        let mut hooks = lock(hooks);
+        let mut children = lock(children);
         for line in self.0[..end].split(|byte| *byte == b'\n') {
-            hooks.add_event(line);
+            children.add_event(line);
         }
-        drop(hooks);
+        drop(children);
         self.0.drain(..=end);
     }
 }
@@ -181,8 +268,10 @@ const CHUNK_SIZE: usize = 16 * 1024;
 
 /// Runs inside WSL in front of git, as `sh -c <this> sh <marker> git <arguments>`, as nothing
 /// inside WSL can reach a pipe of Windows, and the error output is what reaches gikli. It forwards
-/// there only what names a hook of the git gikli started, each with the marker in front, and never
-/// a command line. It runs git without a trace when it cannot make the FIFO.
+/// there only what names a hook of the git gikli started, or what a git it started fetches from,
+/// each with the marker in front, and never a command line: the remote of a git that fetches from
+/// one remote goes as `fetched`, its last argument, and a git that fetches into a submodule goes as
+/// `submodule`. It runs git without a trace when it cannot make the FIFO.
 ///
 /// The folder goes as soon as git has connected, which it does before it starts anything, so a git
 /// a hook starts can neither connect nor create a file there. It moves first, as removing it leaves
@@ -190,8 +279,8 @@ const CHUNK_SIZE: usize = 16 * 1024;
 /// on the FIFO tells the forwarder that git ended, as a process a hook started can keep the FIFO
 /// open.
 ///
-/// A trace whose fields came in another order would lose the name of a hook here, or fail to parse,
-/// and never carry a command line.
+/// A trace whose fields came in another order would lose the name of a hook or a remote here, or
+/// fail to parse, and never carry a command line.
 pub(crate) const WSL_FORWARDER: &str = r#"marker=$1; shift
 dir=$(mktemp -d 2>/dev/null) && mkfifo "$dir/trace" 2>/dev/null && exec 3<>"$dir/trace" || {
   [ -z "$dir" ] || rm -rf "$dir"
@@ -208,6 +297,13 @@ dir=$(mktemp -d 2>/dev/null) && mkfifo "$dir/trace" 2>/dev/null && exec 3<>"$dir
       '{"event":"child_start"'*'"hook_name":"'*)
         event=${line%%,\"argv\":*}
         printf '%s%s}\n' "$marker" "$event" >&2 ;;
+      '{"event":"child_start"'*'"argv":["git",'*'"fetch",'*'"--submodule-prefix'*)
+        event=${line%%,\"argv\":*}
+        printf '%s%s,"submodule":true}\n' "$marker" "$event" >&2 ;;
+      '{"event":"child_start"'*'"argv":["git",'*'"fetch",'*'"--append",'*)
+        event=${line%%,\"argv\":*}
+        remote=${line##*,\"}
+        printf '%s%s,"fetched":"%s}\n' "$marker" "$event" "${remote%]\}}" >&2 ;;
       '{"event":"child_exit"'*)
         printf '%s%s\n' "$marker" "$line" >&2 ;;
     esac
@@ -227,16 +323,16 @@ pub(crate) struct ForwardedEvents {
     marker: String,
     /// What may still turn out to be an event, as output comes in pieces.
     held: Vec<u8>,
-    hooks: Arc<Mutex<HookRuns>>,
+    children: Arc<Mutex<ChildRuns>>,
 }
 
 impl ForwardedEvents {
     /// The marker is new for each run, so what a hook writes cannot read as an event.
-    pub fn new(hooks: Arc<Mutex<HookRuns>>) -> io::Result<Self> {
+    pub fn new(children: Arc<Mutex<ChildRuns>>) -> io::Result<Self> {
         Ok(Self {
             marker: format!("gikli-trace-{}:", new_token()?),
             held: Vec::new(),
-            hooks,
+            children,
         })
     }
 
@@ -263,7 +359,7 @@ impl ForwardedEvents {
             let Some(end) = self.held.iter().position(|byte| *byte == b'\n') else {
                 return kept;
             };
-            lock(&self.hooks).add_event(&self.held[marker.len()..end]);
+            lock(&self.children).add_event(&self.held[marker.len()..end]);
             self.held.drain(..=end);
         }
     }
@@ -306,7 +402,7 @@ mod platform {
         PIPE_WAIT, PeekNamedPipe,
     };
 
-    use super::{CHUNK_SIZE, HookRuns, UnfinishedLine};
+    use super::{CHUNK_SIZE, ChildRuns, UnfinishedLine};
 
     /// How many instances of the pipe there are. git 2.51 uses up two: it asks whether its target
     /// is a folder, which connects and leaves that instance unusable, and then connects for good.
@@ -373,7 +469,7 @@ mod platform {
         }
 
         /// Takes in all the pipe holds now, without waiting.
-        pub fn take_events(&mut self, hooks: &Mutex<HookRuns>) {
+        pub fn take_events(&mut self, children: &Mutex<ChildRuns>) {
             let mut chunk = [0; CHUNK_SIZE];
             for instance in &mut self.0 {
                 loop {
@@ -384,7 +480,7 @@ mod platform {
                     let Ok(read) = instance.pipe.read(&mut chunk[..length]) else {
                         break;
                     };
-                    instance.line.add(&chunk[..read], hooks);
+                    instance.line.add(&chunk[..read], children);
                 }
             }
         }
@@ -418,7 +514,7 @@ mod platform {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
-    use super::{CHUNK_SIZE, HookRuns, UnfinishedLine};
+    use super::{CHUNK_SIZE, ChildRuns, UnfinishedLine};
 
     /// A socket in a folder only this user can enter. It goes as soon as a git has connected, and
     /// that is the git gikli started, so any other finds no path and creates nothing.
@@ -449,7 +545,7 @@ mod platform {
         }
 
         /// Takes in all the socket holds now, without waiting.
-        pub fn take_events(&mut self, hooks: &Mutex<HookRuns>) {
+        pub fn take_events(&mut self, children: &Mutex<ChildRuns>) {
             if self.connection.is_none() {
                 self.take_connection();
             }
@@ -460,7 +556,7 @@ mod platform {
             while let Ok(read) = connection.read(&mut chunk)
                 && read > 0
             {
-                self.line.add(&chunk[..read], hooks);
+                self.line.add(&chunk[..read], children);
             }
         }
 

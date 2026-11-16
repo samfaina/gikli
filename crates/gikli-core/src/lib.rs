@@ -1025,12 +1025,8 @@ impl Gikli {
             return self.end_cancelled_clone(&destination, invocation);
         }
         if !invocation.success {
-            let explanation = explainer::explain_failed_clone(
-                &runner,
-                parent,
-                &destination,
-                &invocation.without_clone_reports(),
-            );
+            let explanation =
+                explainer::explain_failed_clone(&runner, parent, &destination, url, &invocation);
             return Err(match explanation {
                 Some(explanation) => Failure::Explained { explanation },
                 None => Failure::CloneFailed {
@@ -1801,22 +1797,27 @@ impl Gikli {
             repository: repository.clone(),
             remote: remote.clone(),
         };
-        let failed = match shallow::track_every_branch(&runner, repository, &remote)? {
-            Some(failed) => failed,
-            None => {
-                let args = shallow::fetch_rest_args(&remote);
-                let invocation = self.run_operation(&runner, operation, root, &args)?;
-                if invocation.success {
-                    return Ok(());
-                }
-                invocation
-            }
-        };
         let fallback = Failure::HistoryNotFetched {
             folder: root.clone(),
-            remote,
+            remote: remote.clone(),
         };
-        Err(failure_of(&runner, root, &failed, fallback))
+        if let Some(failed) = shallow::track_every_branch(&runner, repository, &remote)? {
+            return Err(failure_of(&runner, root, &failed, fallback));
+        }
+        let args = shallow::fetch_rest_args(&remote);
+        let invocation = self.run_operation(&runner, operation, root, &args)?;
+        if invocation.success {
+            return Ok(());
+        }
+        let remotes = [remote];
+        let contacted = explainer::Contacted::Remotes(&remotes);
+        Err(failure_of_contacting(
+            &runner,
+            root,
+            &invocation,
+            &contacted,
+            fallback,
+        ))
     }
 
     /// Fetches every remote of `repository`, and prunes the remote branches that are gone from
@@ -1838,6 +1839,7 @@ impl Gikli {
             repository,
             operation,
             &sync::fetch_all_args(&remotes),
+            &remotes,
         )
     }
 
@@ -1854,16 +1856,25 @@ impl Gikli {
             remote: source.remote.clone(),
             branch: branch.name.clone(),
         };
-        self.fetch(&runner, repository, operation, &source.fetch_args())
+        let remotes = [source.remote.clone()];
+        self.fetch(
+            &runner,
+            repository,
+            operation,
+            &source.fetch_args(),
+            &remotes,
+        )
     }
 
-    /// Runs git with `args`, a fetch, in `repository` as `operation`, and explains its failure.
+    /// Runs git with `args`, a fetch from `remotes`, in `repository` as `operation`, and explains
+    /// its failure.
     fn fetch(
         &self,
         runner: &GitRunner,
         repository: &Repository,
         operation: LongOperation,
         args: &[&str],
+        remotes: &[String],
     ) -> Result<(), Failure> {
         let root = &repository.root;
         let invocation = self.run_operation(runner, operation, root, args)?;
@@ -1873,7 +1884,14 @@ impl Gikli {
         let fallback = Failure::FetchFailed {
             folder: root.clone(),
         };
-        Err(failure_of(runner, root, &invocation, fallback))
+        let contacted = explainer::Contacted::Remotes(remotes);
+        Err(failure_of_contacting(
+            runner,
+            root,
+            &invocation,
+            &contacted,
+            fallback,
+        ))
     }
 
     /// The local branches of `repository`, by name, each with how far it is from its upstream.
@@ -2383,12 +2401,30 @@ fn failure_of(
     invocation: &Invocation,
     otherwise: Failure,
 ) -> Failure {
+    failure_of_contacting(
+        runner,
+        folder,
+        invocation,
+        &explainer::Contacted::Nothing,
+        otherwise,
+    )
+}
+
+/// The failure of `invocation`, which failed in `folder` and reached out to what `contacted` names,
+/// as [`failure_of`] tells it.
+fn failure_of_contacting(
+    runner: &GitRunner,
+    folder: &Path,
+    invocation: &Invocation,
+    contacted: &explainer::Contacted,
+    otherwise: Failure,
+) -> Failure {
     if invocation.cancelled {
         return Failure::OperationCancelled {
             left_behind: explainer::left_behind_by_cancelled_run(runner, folder),
         };
     }
-    match explainer::explain(runner, folder, invocation) {
+    match explainer::explain_contacting(runner, folder, invocation, contacted) {
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,
     }

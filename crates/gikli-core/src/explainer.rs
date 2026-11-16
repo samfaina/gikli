@@ -4,15 +4,17 @@
 //! Classification never reads git's translated sentences. It relies on what stays the same in
 //! every language: what git records in its trace of the run, the file names and the commands it
 //! quotes, the sentences git never translates and those of programs that have no translations,
-//! such as ssh and curl, the sentences of a run git was told not to translate, and the state of the
-//! repository. ADR-0001 pins what gikli parses, but git's error output has no format to pin, which
-//! is why only these fixed parts of it count.
+//! such as ssh and curl, what a server says in words of its own, which git passes on as they are,
+//! the sentences of a run git was told not to translate, the state of the repository and what is
+//! at the path of a local URL. ADR-0001 pins what gikli parses, but git's error output has no
+//! format to pin, which is why only these fixed parts of it count.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, Invocation};
+use crate::url_passwords::hide_url_passwords;
 use crate::{CloneTarget, Failure, Repository, canonicalize, processes};
 
 /// A failure explained in plain words. The UI words the message and the next step.
@@ -50,6 +52,11 @@ pub enum ExplainedMessage {
     HostKeyChanged,
     /// git could not get to the server: its name does not resolve, or it does not answer.
     ServerUnreachable,
+    /// `url` holds no repository git can reach: nothing is at its path, or the server says it has
+    /// none, which a server also says of a repository the user may not see. `remote` is the remote
+    /// whose URL it is, and None for a clone, which has no remote yet. A password in `url` is
+    /// hidden.
+    RemoteWithoutRepository { remote: Option<String>, url: String },
     /// The target of a clone, `folder`, already holds something, so git refused to clone into it.
     CloneTargetNotEmpty { folder: PathBuf },
     /// The clone into `folder` got its files, and git could not clone its submodules. git leaves
@@ -87,6 +94,10 @@ pub enum NextStep {
     CheckChangedHostKey,
     /// Check the URL and the connection to the server, then try again.
     CheckConnection,
+    /// Check the URL, and that the user has access to the repository there, then try again: the
+    /// URL given to a clone, or the one in the configuration of the remote. gikli only points
+    /// there, and changes no URL.
+    CheckRemoteUrl,
     /// Choose an empty folder, or empty this one.
     ChooseEmptyFolder,
     /// See in the operation log why the submodules failed. The clone can be opened from its folder
@@ -183,12 +194,225 @@ pub(crate) fn explain(
     None
 }
 
-/// The explanation of the failure of `invocation`, a `git clone` run in `parent` into `target`,
-/// when gikli knows this failure.
+/// What a run of git reached out to, which the failure explainer checks for a repository.
+pub(crate) enum Contacted<'a> {
+    /// Nothing outside the Repository.
+    Nothing,
+    /// These remotes of the Repository, by name, as a fetch does.
+    Remotes(&'a [String]),
+    /// The URL given to a clone, which has no remote yet.
+    Url(&'a str),
+}
+
+/// The explanation of the failure of `invocation`, run in `folder`, which reached out to what
+/// `contacted` names, when gikli knows this failure. A remote without a repository comes last,
+/// after what else a run that reached it can fail with: the credentials a server refused above all,
+/// as a server can say it has no repository to someone it does not let in.
+pub(crate) fn explain_contacting(
+    runner: &GitRunner,
+    folder: &Path,
+    invocation: &Invocation,
+    contacted: &Contacted,
+) -> Option<Explanation> {
+    explain(runner, folder, invocation)
+        .or_else(|| explain_remote_without_repository(runner, folder, invocation, contacted))
+}
+
+/// The explanation of a remote without a repository, of those `contacted` names, as
+/// [`remote_without_repository`] tells it.
+fn explain_remote_without_repository(
+    runner: &GitRunner,
+    folder: &Path,
+    invocation: &Invocation,
+    contacted: &Contacted,
+) -> Option<Explanation> {
+    let message = remote_without_repository(runner, folder, invocation, contacted)?;
+    Some(explained(message, NextStep::CheckRemoteUrl))
+}
+
+/// A remote, or the URL of a clone, that may be the one without a repository.
+struct Candidate<'a> {
+    /// The name of the remote, and None for a clone.
+    remote: Option<&'a str>,
+    /// The URL to show: the one git uses for a remote, the one given for a clone.
+    url: String,
+    /// The folder the URL names, when git reads it as a path on its own machine.
+    path: Option<PathBuf>,
+}
+
+/// The remote of those `contacted` names whose URL holds no repository, when gikli can tell. A
+/// local URL tells by what is at its path, whatever git said about it. A server tells in words of
+/// its own, which name no remote, so they count for the one remote on a server that can have said
+/// them. A fetch of every remote that fetched each in a git of its own knows which failed, as git's
+/// trace names them, and only those count. A submodule's server can say them too, as a fetch goes
+/// on to the submodules, and then they count for no remote.
+fn remote_without_repository<'a>(
+    runner: &GitRunner,
+    folder: &Path,
+    invocation: &Invocation,
+    contacted: &Contacted<'a>,
+) -> Option<ExplainedMessage> {
+    let candidate = |remote: Option<&'a str>, url: String, used: &str| Candidate {
+        remote,
+        path: local_path(runner, folder, used),
+        url,
+    };
+    let failed = &invocation.failed_fetches;
+    let candidates: Vec<Candidate> = match contacted {
+        Contacted::Nothing => return None,
+        Contacted::Remotes(remotes) => remotes
+            .iter()
+            .filter(|remote| failed.is_empty() || failed.contains(remote))
+            .filter_map(|remote| {
+                let url = url_of(runner, folder, remote)?;
+                Some(candidate(Some(remote), url.clone(), &url))
+            })
+            .collect(),
+        Contacted::Url(given) => {
+            let used = url_of(runner, folder, given).unwrap_or_else(|| (*given).to_owned());
+            vec![candidate(None, (*given).to_owned(), &used)]
+        }
+    };
+    let (local, on_servers): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|candidate| candidate.path.is_some());
+    let without_repository = local.into_iter().find(|candidate| {
+        candidate
+            .path
+            .as_deref()
+            .is_some_and(|path| !holds_repository(path))
+    });
+    let found = match without_repository {
+        Some(local) => local,
+        None if !invocation.submodule_fetch_failed
+            && any_line(&invocation.stderr, is_repository_unknown_to_server) =>
+        {
+            let [on_server] = <[_; 1]>::try_from(on_servers).ok()?;
+            on_server
+        }
+        None => return None,
+    };
+    Some(ExplainedMessage::RemoteWithoutRepository {
+        remote: found.remote.map(str::to_owned),
+        url: hide_url_passwords(&found.url),
+    })
+}
+
+/// The URL git uses for `remote`, a remote's name or a URL, run in `folder`: with what the user's
+/// `url.<base>.insteadOf` rewrites in it.
+fn url_of(runner: &GitRunner, folder: &Path, remote: &str) -> Option<String> {
+    let read = runner
+        .run(folder, &["ls-remote", "--get-url", "--", remote])
+        .ok()?;
+    let url = read.stdout_text();
+    let url = url.trim_end();
+    (read.success && !url.is_empty()).then(|| url.to_owned())
+}
+
+/// The folder `url` names, as this machine sees it, when git run in `folder` reads `url` as a path
+/// on its own machine rather than as a server's. That is a `file://` URL, and what has no `:`
+/// before its first `/`, as `host:path` is an SSH address. git for Windows also reads a drive, as
+/// in `C:/repo`, as a path.
+fn local_path(runner: &GitRunner, folder: &Path, url: &str) -> Option<PathBuf> {
+    let windows_paths = cfg!(windows) && runner.runs_natively();
+    let path = match url.strip_prefix("file://") {
+        Some(rest) => file_url_path(&percent_decoded(rest), windows_paths)?,
+        None if url.contains("://") => return None,
+        None => {
+            let local = match (url.find(':'), url.find('/')) {
+                (None, _) => true,
+                (Some(colon), Some(slash)) => slash < colon,
+                (Some(_), None) => false,
+            };
+            if !local && !(windows_paths && has_drive(url)) {
+                return None;
+            }
+            url.to_owned()
+        }
+    };
+    runner.path_on_this_machine(folder, &path)
+}
+
+/// The path of a `file://` URL, from `rest`, what comes after `file://` once decoded, as git reads
+/// it. A drive stays, as in `file:///C:/repo` and `file://C:/repo` on Windows. A host before the
+/// path goes, unless git for Windows reads it as a share, as in `file://server/share/repo`.
+fn file_url_path(rest: &str, windows_paths: bool) -> Option<String> {
+    match rest.strip_prefix('/') {
+        Some(path) if windows_paths && has_drive(path) => Some(path.to_owned()),
+        Some(_) => Some(rest.to_owned()),
+        None if windows_paths && has_drive(rest) => Some(rest.to_owned()),
+        None if windows_paths => Some(format!("//{rest}")),
+        None => rest.find('/').map(|slash| rest[slash..].to_owned()),
+    }
+}
+
+/// `text` with each `%` and two hexadecimal digits turned into the byte they stand for, as git
+/// decodes a URL before it reads its path.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes
+            .get(index + 1..index + 3)
+            .filter(|_| bytes[index] == b'%')
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| u8::from_str_radix(digits, 16).ok());
+        match byte {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Whether `path` starts with a drive, as `C:` does, which git for Windows reads as a path.
+fn has_drive(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// Whether git finds something to fetch from at `path`, as it looks there: the path itself, its
+/// `.git` folder, the same with `.git` added to its name, and a bundle. Any file there counts: it
+/// can point to a git directory, or be a bundle, which git reads too.
+fn holds_repository(path: &Path) -> bool {
+    let with_suffix = |suffix: &str| {
+        let mut named = path.as_os_str().to_owned();
+        named.push(suffix);
+        PathBuf::from(named)
+    };
+    [
+        path.join(".git"),
+        path.to_path_buf(),
+        with_suffix(".git").join(".git"),
+        with_suffix(".git"),
+        with_suffix(".bundle"),
+    ]
+    .iter()
+    .any(|candidate| candidate.is_file() || is_git_directory(candidate))
+}
+
+/// Whether `folder` is a git directory, by what git checks: `HEAD`, and the folders of its objects
+/// and its references.
+fn is_git_directory(folder: &Path) -> bool {
+    folder.join("HEAD").exists() && folder.join("objects").is_dir() && folder.join("refs").is_dir()
+}
+
+/// The explanation of the failure of `invocation`, a `git clone` of `url` run in `parent` into
+/// `target`, when gikli knows this failure. What git and the remote report as they clone is no
+/// part of what a hook wrote, so only what a server says of its repository is read in it. A clone
+/// that has its files got them from `url`, so a server's words are about a submodule's.
 pub(crate) fn explain_failed_clone(
     runner: &GitRunner,
     parent: &Path,
     target: &CloneTarget,
+    url: &str,
     invocation: &Invocation,
 ) -> Option<Explanation> {
     if target.was_in_use() {
@@ -199,11 +423,18 @@ pub(crate) fn explain_failed_clone(
             NextStep::ChooseEmptyFolder,
         ));
     }
-    let explanation = explain(runner, parent, invocation);
-    // git removes a clone that fails before it has its files, and goes on to the submodules once it
-    // has them, unless a hook or a path too long stopped it first.
+    // git removes a clone that fails before it has its files.
+    let has_files = target.folder.join(".git").exists();
+    let explanation = explain(runner, parent, &invocation.without_clone_reports()).or_else(|| {
+        if has_files {
+            return None;
+        }
+        explain_remote_without_repository(runner, parent, invocation, &Contacted::Url(url))
+    });
+    // git goes on to the submodules once the clone has its files, unless a hook or a path too long
+    // stopped it first.
     let reached_submodules = target.has_submodules_to_clone()
-        && target.folder.join(".git").exists()
+        && has_files
         && !explanation.as_ref().is_some_and(|explanation| {
             matches!(
                 explanation.message,
@@ -294,6 +525,19 @@ fn is_refused_by_http_server(line: &str) -> bool {
                     .next()
                     .is_some_and(|status| FORBIDDING_STATUSES.contains(&status))
         })
+}
+
+/// What a server says of a repository it does not have, or that the user may not see. These are
+/// GitHub's words and GitLab's, which each server writes in English whatever language git speaks,
+/// and which git passes on as they are: the text an HTTP server answers with, after `remote: `,
+/// which git does not translate, and what an SSH server writes, which ssh passes on, with
+/// `remote: ` in front when it comes through git's own channel.
+fn is_repository_unknown_to_server(line: &str) -> bool {
+    let said = line.strip_prefix("remote: ").unwrap_or(line);
+    matches!(
+        said,
+        "Repository not found." | "ERROR: Repository not found."
+    ) || said.starts_with("ERROR: The project you were looking for could not be found")
 }
 
 /// What ssh and curl write when they cannot get to a server, which neither translates. What a server

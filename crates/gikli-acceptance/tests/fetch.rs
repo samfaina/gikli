@@ -450,7 +450,8 @@ fn a_fetch_git_cannot_explain_says_it_failed() {
     let sandbox = Sandbox::new();
     let (remote, _work) = remote_with_work(&sandbox);
     let mine = sandbox.clone_of(&remote, "mine");
-    std::fs::remove_dir_all(remote.root()).expect("remove the remote");
+    let server = sandbox.http_remote_answering(&remote, "500 Internal Server Error");
+    mine.git(&["remote", "set-url", "origin", &server.url()]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
     let before = remote_branches_by_git(&mine);

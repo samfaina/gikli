@@ -251,7 +251,28 @@ impl Sandbox {
         HttpRemote::serve(
             remote.root.clone(),
             self.git_environment(),
-            Refusal::Always(status.to_owned()),
+            Refusal::Always {
+                status: status.to_owned(),
+                text: None,
+            },
+        )
+    }
+
+    /// Serves the bare repository `remote` over HTTP until the result is dropped, answering every
+    /// request with `status` and `text`, a plain text body, as a hosting service words why.
+    pub fn http_remote_saying(
+        &self,
+        remote: &TestRepository,
+        status: &str,
+        text: &str,
+    ) -> HttpRemote {
+        HttpRemote::serve(
+            remote.root.clone(),
+            self.git_environment(),
+            Refusal::Always {
+                status: status.to_owned(),
+                text: Some(text.to_owned()),
+            },
         )
     }
 

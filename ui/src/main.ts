@@ -1706,6 +1706,10 @@ function describeExplainedMessage(message: ExplainedMessage): string {
       return t("failureHostKeyChanged");
     case "serverUnreachable":
       return t("failureServerUnreachable");
+    case "remoteWithoutRepository":
+      return message.remote === null
+        ? t("failureUrlWithoutRepository", { url: message.url })
+        : t("failureRemoteWithoutRepository", { remote: message.remote, url: message.url });
     case "cloneTargetNotEmpty":
       return t("failureCloneTargetNotEmpty", { folder: message.folder });
     case "submodulesNotCloned": {
@@ -1727,6 +1731,7 @@ const NEXT_STEPS: Record<NextStep, StringKey> = {
   verifyHostKey: "nextStepVerifyHostKey",
   checkChangedHostKey: "nextStepCheckChangedHostKey",
   checkConnection: "nextStepCheckConnection",
+  checkRemoteUrl: "nextStepCheckRemoteUrl",
   chooseEmptyFolder: "nextStepChooseEmptyFolder",
   useOrDeleteClone: "nextStepUseOrDeleteClone",
 };
