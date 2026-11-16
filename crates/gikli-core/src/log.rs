@@ -898,7 +898,10 @@ fn list_references(runner: &GitRunner, repository: &Repository) -> Result<Vec<u8
 /// The local branches, remote branches and tags of `repository`, each kind by name, as the log
 /// labels them. A symbolic ref, such as `origin/HEAD`, only repeats the branch it leads to, so it
 /// is not among them.
-fn references(runner: &GitRunner, repository: &Repository) -> Result<Vec<RefLabel>, Failure> {
+pub(crate) fn references(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<Vec<RefLabel>, Failure> {
     Ok(labels_of(&list_references(runner, repository)?))
 }
 

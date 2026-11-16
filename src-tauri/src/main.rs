@@ -11,12 +11,13 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use gikli_core::{
-    CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges, CommitDetails,
-    CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck,
-    HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget, Notification,
-    NotificationAction, NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt,
-    PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository, RevisionFileDiff,
-    RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
+    Branches, CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges,
+    CommitDetails, CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory,
+    Gikli, GitCheck, HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget,
+    Notification, NotificationAction, NotificationOutcome, OperationLogEntry, Project,
+    ProjectWindow, Prompt, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository,
+    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch,
+    answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -104,6 +105,27 @@ fn set_file_history_row_limit(gikli: State<'_, Gikli>, limit: usize) -> Result<S
 #[tauri::command]
 fn set_show_long_edges(gikli: State<'_, Gikli>, show: bool) -> Result<Settings, Failure> {
     gikli.set_show_long_edges(show)
+}
+
+#[tauri::command]
+fn set_group_branches_by_directory(
+    gikli: State<'_, Gikli>,
+    group: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_group_branches_by_directory(group)
+}
+
+#[tauri::command]
+fn set_show_recent_branches(gikli: State<'_, Gikli>, show: bool) -> Result<Settings, Failure> {
+    gikli.set_show_recent_branches(show)
+}
+
+#[tauri::command]
+fn set_show_tags_in_branch_selector(
+    gikli: State<'_, Gikli>,
+    show: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_show_tags_in_branch_selector(show)
 }
 
 #[tauri::command]
@@ -685,6 +707,24 @@ fn log_branches(gikli: State<'_, Gikli>, repository: Repository) -> Result<Vec<R
 }
 
 #[tauri::command(async)]
+fn branches(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    search: String,
+) -> Result<Branches, Failure> {
+    gikli.branches(&repository, &search)
+}
+
+#[tauri::command(async)]
+fn go_to_branch(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    branch: RefLabel,
+) -> Result<String, Failure> {
+    gikli.go_to_branch(&repository, &branch)
+}
+
+#[tauri::command(async)]
 fn go_to(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -835,6 +875,9 @@ fn main() {
             set_change_grouping,
             set_operation_log_soft_wrap,
             set_show_long_edges,
+            set_group_branches_by_directory,
+            set_show_recent_branches,
+            set_show_tags_in_branch_selector,
             set_commit_changes_grouping,
             set_use_credential_helper,
             set_clone_submodules_recursively,
@@ -901,6 +944,8 @@ fn main() {
             end_log_read,
             log_search_history,
             log_branches,
+            branches,
+            go_to_branch,
             go_to,
             filtered_log_reaches,
             go_to_suggestions,

@@ -1,5 +1,6 @@
 // The status area: always in view, it shows what HEAD of each Repository shown is on, and how far
-// the current branch is from its upstream. The core reads both; this only draws them.
+// the current branch is from its upstream. The core reads both; this only draws them. What HEAD is
+// on opens the branch selector.
 
 import { currentBranch, type CurrentBranch, type Repository, type Upstream } from "./core";
 import { element, folderName } from "./dom";
@@ -20,7 +21,10 @@ interface ShownRepository {
   latestRead: number;
 }
 
-export function createStatusArea(describeError: (error: unknown) => string): StatusArea {
+export function createStatusArea(
+  describeError: (error: unknown) => string,
+  openBranches: (repository: Repository) => void,
+): StatusArea {
   const view = element<HTMLElement>("status-area");
   /** Each Repository shown, by root. */
   let shown = new Map<string, ShownRepository>();
@@ -54,7 +58,7 @@ export function createStatusArea(describeError: (error: unknown) => string): Sta
     const reading = ++entry.latestRead;
     let parts: HTMLElement[];
     try {
-      parts = describe(await currentBranch(entry.repository));
+      parts = describe(await currentBranch(entry.repository), () => openBranches(entry.repository));
     } catch (error) {
       parts = [part("status-error", describeError(error))];
     }
@@ -69,12 +73,22 @@ export function createStatusArea(describeError: (error: unknown) => string): Sta
   return { show, refresh };
 }
 
-/** The current branch, or the commit of a detached HEAD, and how far the branch is from its upstream. */
-function describe(head: CurrentBranch): HTMLElement[] {
-  if (head.kind === "detached") {
-    return [part("status-branch", t("statusDetached", { hash: head.hash.slice(0, SHORT_HASH_LENGTH) }))];
-  }
-  return [part("status-branch", head.name), upstreamPart(head.upstream)];
+/**
+ * The current branch, or the commit of a detached HEAD, as a button that opens the branch selector
+ * with `open`, and how far the branch is from its upstream.
+ */
+function describe(head: CurrentBranch, open: () => void): HTMLElement[] {
+  const name = head.kind === "detached" ? t("statusDetached", { hash: head.hash.slice(0, SHORT_HASH_LENGTH) }) : head.name;
+  const branch = document.createElement("button");
+  branch.type = "button";
+  branch.className = "status-branch";
+  branch.dataset.testid = "status-branch";
+  branch.textContent = name;
+  branch.title = t("statusOpenBranches");
+  branch.setAttribute("aria-haspopup", "dialog");
+  branch.setAttribute("aria-controls", "branch-selector");
+  branch.addEventListener("click", open);
+  return head.kind === "detached" ? [branch] : [branch, upstreamPart(head.upstream)];
 }
 
 function upstreamPart(upstream: Upstream | null): HTMLElement {

@@ -3,6 +3,7 @@
 //! The core owns all behavior. [`Gikli`] is its application interface: the commands the UI sends
 //! and the events it listens to. The UI and the tests use this same interface.
 
+mod branches;
 mod capability;
 mod changelists;
 mod clone_url;
@@ -43,6 +44,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
+pub use branches::{Branch, BranchNode, Branches};
 pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
 pub use clone_url::CloneUrlForms;
@@ -667,6 +669,22 @@ impl Gikli {
     /// Sets the most revisions a file history lists, newest first. A limit below 1 is 1.
     pub fn set_file_history_row_limit(&self, limit: usize) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.file_history_row_limit = limit.max(1))
+    }
+
+    /// Groups the branches the branch selector and the branches pane list, such as
+    /// `feature/login`, under their directory, or lists them by their whole name.
+    pub fn set_group_branches_by_directory(&self, group: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.group_branches_by_directory = group)
+    }
+
+    /// Shows or hides Recent, the local branches checked out last, in the branch selector.
+    pub fn set_show_recent_branches(&self, show: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.show_recent_branches = show)
+    }
+
+    /// Shows or hides the tags in the branch selector.
+    pub fn set_show_tags_in_branch_selector(&self, show: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.show_tags_in_branch_selector = show)
     }
 
     /// Turns soft wrap of the operation log on or off.
@@ -2104,6 +2122,18 @@ impl Gikli {
         sync::current_branch(&self.runner(&repository.root)?, repository)
     }
 
+    /// The branches of `repository` as the branch selector lists them: what HEAD is on, then the
+    /// local branches, the remote branches and the tags.
+    pub fn branches(&self, repository: &Repository, search: &str) -> Result<Branches, Failure> {
+        let settings = self.settings();
+        branches::list(
+            &self.runner(&repository.root)?,
+            repository,
+            &settings,
+            search,
+        )
+    }
+
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer
     /// needs it, as when the user closes it or it starts over. That page can still be read, only
     /// more slowly.
@@ -2127,6 +2157,28 @@ impl Gikli {
     /// [`Failure::RevisionNotFound`].
     pub fn go_to(&self, repository: &Repository, revision: &str) -> Result<String, Failure> {
         details::resolve(&self.runner(&repository.root)?, repository, revision)
+    }
+
+    /// The full hash of the latest commit of `branch` in `repository`, as the branches pane goes
+    /// to it: the commit a local branch, a remote branch or a tag points at, even when a reference
+    /// of another kind has the same name. A branch that no longer exists returns
+    /// [`Failure::RevisionNotFound`] with its name.
+    pub fn go_to_branch(
+        &self,
+        repository: &Repository,
+        branch: &RefLabel,
+    ) -> Result<String, Failure> {
+        details::resolve(
+            &self.runner(&repository.root)?,
+            repository,
+            &branch.full_name(),
+        )
+        .map_err(|failure| match failure {
+            Failure::RevisionNotFound { .. } => Failure::RevisionNotFound {
+                revision: branch.name.clone(),
+            },
+            failure => failure,
+        })
     }
 
     /// Whether the log of `repository` filtered by `filter` reaches the commit `hash`, which

@@ -421,7 +421,7 @@ fn read_branches(
     Ok(invocation.stdout_text())
 }
 
-fn branches_unreadable(repository: &Repository) -> Failure {
+pub(crate) fn branches_unreadable(repository: &Repository) -> Failure {
     Failure::BranchesUnreadable {
         folder: repository.root.clone(),
     }

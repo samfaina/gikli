@@ -86,6 +86,7 @@ import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
 import { createPushDialog } from "./push-dialog";
 import { createLogView } from "./log-view";
+import { createBranchSelector } from "./branch-selector";
 import { createStatusArea } from "./status-area";
 import { t, type StringKey } from "./strings";
 
@@ -181,7 +182,7 @@ const diffView = createDiffView({
 
 const logSection = element<HTMLElement>("log");
 
-const statusArea = createStatusArea(describeError);
+const statusArea = createStatusArea(describeError, (repository) => branchSelector.toggle(repository));
 
 const logView = createLogView({
   errorView,
@@ -192,6 +193,11 @@ const logView = createLogView({
     projectView.hidden = false;
   },
   showFileHistory: (repository, path) => fileHistoryView.open(repository, path),
+});
+
+const branchSelector = createBranchSelector({
+  errorView,
+  showBranch: (repository, branch) => logView.showBranch(repository, branch.label),
 });
 
 /** The views the file history took the place of, which come back when it closes. */
@@ -641,6 +647,7 @@ function showProject(project: Project): void {
   if (project.folder !== shownFolder) {
     void diffView.close();
     logView.close();
+    branchSelector.close();
   }
   shownFolder = project.folder;
   showNotifications();

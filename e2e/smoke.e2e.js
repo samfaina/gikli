@@ -702,6 +702,49 @@ describe("gikli", () => {
       await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
     });
 
+    it("finds a branch in the selector, shows its latest commit, and filters the log by it in the branches pane", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      runGit(repository, gitconfig, "branch", "feature/smoke", "HEAD~1");
+      const latest = runGit(repository, gitconfig, "rev-parse", "feature/smoke").trim();
+      const latestSubject = runGit(repository, gitconfig, "log", "-1", "--format=%s", "feature/smoke").trim();
+      const headSubject = runGit(repository, gitconfig, "log", "-1", "--format=%s", "HEAD").trim();
+      // Not getText for the subjects: WebKitWebDriver answers "" for an element with overflow: hidden.
+      const subject = async (selector) => (await $(`${selector} .log-subject`)).getProperty("textContent");
+      const firstSubject = async () => subject('[data-testid="log-row"]');
+      const expectFirst = async (text) =>
+        browser.waitUntil(async () => (await firstSubject()) === text, { timeout: 30000, timeoutMsg: `the log did not start at ${text}` });
+
+      await $('[data-testid="status-branch"]').click();
+      const selector = $('[data-testid="branch-selector"]');
+      await selector.waitForDisplayed({ timeout: 30000 });
+      await browser.waitUntil(async () => /main/.test(await $('[data-testid="branch-selector-current"]').getText()), {
+        timeout: 30000,
+        timeoutMsg: "the selector did not show the current branch",
+      });
+      await $('[data-testid="branch-selector-search"]').setValue("smoke");
+      const found = $('[data-testid="branch-group-local"] [data-testid="branch-directory"][data-path="feature"] [data-testid="branch"][data-name="feature/smoke"]');
+      await found.waitForDisplayed({ timeout: 30000 });
+      await browser.waitUntil(async () => (await $$('[data-testid="branch-selector-groups"] [data-testid="branch"]')).length === 1, {
+        timeout: 30000,
+        timeoutMsg: "the search kept other branches",
+      });
+      await found.click();
+      await selector.waitForDisplayed({ timeout: 30000, reverse: true });
+      const selected = $(`[data-testid="log-row"].selected[data-hash="${latest}"]`);
+      await selected.waitForDisplayed({ timeout: 30000 });
+      assert.equal(await subject(`[data-testid="log-row"][data-hash="${latest}"]`), latestSubject);
+
+      await $('[data-testid="log-branches-list"] [data-testid="branch"][data-name="feature/smoke"]').click();
+      await expectFirst(latestSubject);
+      await $('[data-testid="log-all-branches"]').click();
+      await expectFirst(headSubject);
+
+      await $('[data-testid="log-close"]').click();
+      await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+      runGit(repository, gitconfig, "branch", "--delete", "--force", "feature/smoke");
+    });
+
     it("works with the index in Staging mode, and brings the Changelists back", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
