@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{ImportedHistory, Sandbox};
+use gikli_acceptance::{ImportedHistory, Sandbox, on_ci};
 use gikli_core::{LogFilter, RefKind, RefLabel};
 
 /// The commits of the generated history.
@@ -16,12 +16,6 @@ const COMMITS: usize = 300_000;
 /// The budget of going to a commit the filtered log does not show, from the revision the user
 /// typed to the answer that the log does not show it.
 const NOT_SHOWN_BUDGET: Duration = Duration::from_secs(1);
-
-/// Whether the test runs on a CI runner, which sets this variable, and not on the development
-/// machine.
-fn on_ci() -> bool {
-    std::env::var_os("CI").is_some()
-}
 
 #[test]
 fn going_to_a_commit_the_filtered_log_does_not_show_answers_within_its_budget() {

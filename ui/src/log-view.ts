@@ -284,16 +284,19 @@ export function createLogView(host: LogViewHost): LogView {
    */
   async function goToCommit(hash: string, revision: string): Promise<void> {
     const shown = repository;
+    const asked = filter;
     if (shown === null) {
       return;
     }
+    // The answer is of no use once the log shows another repository or filters by something else.
+    const stillAsked = () => repository === shown && filter === asked;
     try {
-      const reached = await filteredLogReaches(shown, filter, hash);
-      if (repository === shown && (!reached || !(await select(hash)))) {
+      const reached = await filteredLogReaches(shown, asked, hash);
+      if (stillAsked() && (!reached || !(await select(hash))) && stillAsked()) {
         message.replaceChildren(t("logNotShown", { revision }));
       }
     } catch (error) {
-      if (repository === shown) {
+      if (stillAsked()) {
         message.replaceChildren(host.errorView(error));
       }
     }

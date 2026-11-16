@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository};
+use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository, on_ci};
 use gikli_core::{Gikli, LogPage, Repository};
 
 /// The commits of the generated history.
@@ -20,12 +20,6 @@ const LATER_PAGE_BUDGET: Duration = Duration::from_millis(200);
 const PAGE_SIZE: usize = 200;
 /// The later pages measured.
 const LATER_PAGES: usize = 25;
-
-/// Whether the test runs on a CI runner, which sets this variable, and not on the development
-/// machine.
-fn on_ci() -> bool {
-    std::env::var_os("CI").is_some()
-}
 
 /// Opens the repository's folder as a Project and returns its Repository.
 fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {

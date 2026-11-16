@@ -931,17 +931,16 @@ pub(crate) fn filtered_log_reaches(
             hash,
             commit,
         ];
-        let root = &repository.root;
-        let invocation = runner.run(root, &args).map_err(git_failed_to_start)?;
+        let invocation = runner
+            .run(&repository.root, &args)
+            .map_err(git_failed_to_start)?;
         if invocation.success {
             return Ok(true);
         }
-        // git fails with nothing to say when the branch does not reach the commit.
+        // git fails with nothing to say when the branch does not reach the commit, and says why
+        // when it cannot tell.
         if !invocation.stderr.trim().is_empty() {
-            let unreadable = Failure::LogUnreadable {
-                folder: root.clone(),
-            };
-            return Err(failure_of(runner, root, &invocation, unreadable));
+            return Err(unreadable(runner, repository, &invocation));
         }
     }
     Ok(false)
@@ -1001,15 +1000,23 @@ pub(crate) fn run_git(
     repository: &Repository,
     args: &[&str],
 ) -> Result<Invocation, Failure> {
-    let root = &repository.root;
-    let invocation = runner.run(root, args).map_err(git_failed_to_start)?;
+    let invocation = runner
+        .run(&repository.root, args)
+        .map_err(git_failed_to_start)?;
     if !invocation.success {
-        let unreadable = Failure::LogUnreadable {
-            folder: root.clone(),
-        };
-        return Err(failure_of(runner, root, &invocation, unreadable));
+        return Err(unreadable(runner, repository, &invocation));
     }
     Ok(invocation)
+}
+
+/// The failure of the run of git in `repository` that `invocation` tells of, which could not
+/// read what the log or a commit holds.
+fn unreadable(runner: &GitRunner, repository: &Repository, invocation: &Invocation) -> Failure {
+    let root = &repository.root;
+    let unreadable = Failure::LogUnreadable {
+        folder: root.clone(),
+    };
+    failure_of(runner, root, invocation, unreadable)
 }
 
 /// An arrow to each of `targets` from the node in `column`, each in the first column from there on

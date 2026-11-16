@@ -45,6 +45,12 @@ pub fn minute_as_seconds(minute: i64) -> i64 {
     FIRST_MINUTE + minute * 60
 }
 
+/// Whether the test runs on a CI runner, which sets this variable, and not on the development
+/// machine, where the tests of speed check their budgets.
+pub fn on_ci() -> bool {
+    std::env::var_os("CI").is_some()
+}
+
 /// A temporary folder with its own git configuration, holding the repositories of one test.
 pub struct Sandbox {
     dir: Option<TempDir>,
@@ -543,9 +549,10 @@ impl ImportedHistory {
             .push_str(&format!("reset {name}\nfrom :{mark}\n\n"));
     }
 
-    /// A history of `commits` commits, as the tests of the log's speed read it: a main line that a topic branch
-    /// of three commits is merged into every twentieth commit, a release line beside it the whole way
-    /// that the main line merges every five hundredth, a tag every thousandth and a remote branch.
+    /// A history of `commits` commits, as `git fast-import` reads it: a main line that a topic
+    /// branch of three commits is merged into every twentieth commit, a release line beside it the
+    /// whole way that the main line merges every five hundredth, a tag every thousandth and a remote
+    /// branch. The tests of the log's speed write it.
     pub fn generated(commits: usize) -> Self {
         let mut history = Self::default();
         let mut main: Option<usize> = None;
