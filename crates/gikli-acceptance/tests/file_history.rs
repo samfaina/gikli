@@ -314,6 +314,11 @@ fn the_preview_of_a_rename_compares_with_the_file_at_its_old_path() {
         .expect("read the diff of the rename");
 
     assert_eq!(diff.original_path, Some(PathBuf::from("notes.txt")));
+    assert_eq!(
+        repository.git(&["diff", "--summary", "-M", "HEAD~1", "HEAD"]),
+        " rename notes.txt => docs.txt (79%)\n",
+        "git finds the same rename"
+    );
     let text = text_of(&diff.content);
     assert_eq!(text.head.as_deref(), Some("one\ntwo\nthree\nfour\n"));
     assert_eq!(text.local.as_deref(), Some("one\ntwo\nthree\nfour\nfive\n"));
@@ -343,6 +348,11 @@ fn the_preview_of_the_revision_that_added_the_file_has_no_older_side() {
     assert_eq!(diff.parent, None);
     let text = text_of(&diff.content);
     assert_eq!(text.head, None);
+    assert_eq!(
+        repository.git(&["show", "--format=", "--name-status", "HEAD"]),
+        "A\tnotes.txt\n",
+        "git agrees the commit added the file"
+    );
     assert_eq!(text.local.as_deref(), Some("one\ntwo\n"));
     assert_eq!(
         text.differences,
@@ -374,6 +384,18 @@ fn the_preview_of_the_revision_that_deleted_the_file_has_no_newer_side() {
     let text = text_of(&diff.content);
     assert_eq!(text.head.as_deref(), Some("one\n"));
     assert_eq!(text.local, None);
+    assert_eq!(
+        repository.git(&[
+            "show",
+            "--format=",
+            "--name-status",
+            "HEAD",
+            "--",
+            "notes.txt"
+        ]),
+        "D\tnotes.txt\n",
+        "git agrees the commit deleted the file"
+    );
     assert_eq!(
         text.differences,
         vec![Difference {
@@ -462,6 +484,21 @@ fn get_a_file_version_restores_the_file_as_it_was_at_the_revision_and_nothing_el
     assert_eq!(
         std::fs::read_to_string(repository.root().join("other.txt")).expect("read other"),
         "other, edited\n"
+    );
+    let left_in_git_dir: Vec<String> = std::fs::read_dir(repository.root().join(".git"))
+        .expect("list the git directory")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.starts_with("gikli-"))
+        .collect();
+    assert!(
+        left_in_git_dir.is_empty(),
+        "left behind: {left_in_git_dir:?}"
     );
 }
 
@@ -572,4 +609,141 @@ fn file_history_and_get_a_file_version_work_with_unicode_and_spaces_in_paths() {
         "uno\n"
     );
     assert_eq!(repository.status_by_git(), vec![" M notas/[año] 2.txt"]);
+}
+
+#[test]
+fn get_a_file_version_from_before_a_rename_converts_it_as_a_checkout_of_its_path_now_would() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.git(&["config", "core.autocrlf", "true"]);
+    repository.write("notes.txt", "one\ntwo\n");
+    repository.commit_all("Add notes");
+    repository.git(&["mv", "notes.txt", "docs.txt"]);
+    repository.commit_all("Rename notes");
+    repository.write("docs.txt", "changed\r\n");
+    repository.commit_all("Change docs");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let added = hash_of(&repository, "HEAD~2");
+
+    gikli
+        .get_file_version(&root, &added, "notes.txt", "docs.txt")
+        .expect("get the version");
+
+    assert_eq!(
+        repository.git(&["cat-file", "blob", &format!("{added}:notes.txt")]),
+        "one\ntwo\n",
+        "git keeps the version with LF"
+    );
+    assert_eq!(
+        std::fs::read(repository.root().join("docs.txt")).expect("read docs"),
+        b"one\r\ntwo\r\n",
+        "and writes it on disk with the CRLF core.autocrlf asks for"
+    );
+    assert_eq!(repository.status_by_git(), vec![" M docs.txt"]);
+}
+
+#[test]
+fn get_a_file_version_of_the_revision_that_deleted_the_file_deletes_it_also_when_git_does_not_track_it()
+ {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("notes.txt", "one\n");
+    repository.write("other.txt", "other\n");
+    repository.commit_all("Add notes");
+    repository.delete("notes.txt");
+    repository.commit_all("Delete notes");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let added = hash_of(&repository, "HEAD~1");
+    let deleted = hash_of(&repository, "HEAD");
+    gikli
+        .get_file_version(&root, &added, "notes.txt", "notes.txt")
+        .expect("get the version that has the file");
+    assert_eq!(repository.status_by_git(), vec!["?? notes.txt"]);
+
+    gikli
+        .get_file_version(&root, &deleted, "notes.txt", "notes.txt")
+        .expect("get the version that deleted the file");
+
+    assert!(!repository.root().join("notes.txt").exists());
+    assert!(repository.status_by_git().is_empty());
+}
+
+#[test]
+fn get_a_file_version_writes_nothing_outside_the_repository() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("notes.txt", "one\n");
+    repository.commit_all("Add notes");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let head = hash_of(&repository, "HEAD");
+
+    let result = gikli.get_file_version(&root, &head, "notes.txt", "../outside.txt");
+
+    assert_eq!(
+        result,
+        Err(Failure::FileVersionNotRestored {
+            path: PathBuf::from("../outside.txt")
+        })
+    );
+    assert!(!sandbox.root().join("outside.txt").exists());
+    assert!(repository.status_by_git().is_empty());
+}
+
+#[test]
+fn file_history_filtered_by_a_branch_follows_the_renames_on_that_branch() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("notes.txt", "one\n");
+    repository.git_at(1, &["add", "--all"]);
+    repository.git_at(1, &["commit", "--quiet", "--message", "Add notes"]);
+    repository.git(&["switch", "--quiet", "--create", "feature"]);
+    repository.git(&["mv", "notes.txt", "docs.txt"]);
+    repository.git_at(
+        2,
+        &["commit", "--quiet", "--message", "Rename notes on feature"],
+    );
+    repository.git(&["switch", "--quiet", "main"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let feature = RefLabel {
+        name: "feature".to_owned(),
+        kind: RefKind::Local,
+    };
+
+    let history = gikli
+        .file_history(&root, "docs.txt", std::slice::from_ref(&feature))
+        .expect("read the history on feature");
+
+    let revisions: Vec<_> = history.revisions.iter().map(described).collect();
+    assert_eq!(
+        revisions,
+        vec![
+            (
+                "Rename notes on feature",
+                PathBuf::from("docs.txt"),
+                Some(PathBuf::from("notes.txt")),
+                ChangeStatus::Renamed,
+            ),
+            (
+                "Add notes",
+                PathBuf::from("notes.txt"),
+                None,
+                ChangeStatus::Added,
+            ),
+        ]
+    );
+    assert_eq!(
+        repository.git(&[
+            "log",
+            "--follow",
+            "--format=%s",
+            "feature",
+            "--",
+            "docs.txt"
+        ]),
+        "Rename notes on feature\nAdd notes\n"
+    );
 }

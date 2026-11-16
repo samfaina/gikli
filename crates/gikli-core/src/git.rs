@@ -155,6 +155,7 @@ impl GitProgram {
 }
 
 /// Runs the user's git and records each run in the operation log.
+#[derive(Clone)]
 pub(crate) struct GitRunner {
     program: GitProgram,
     host: HostEnvironment,
@@ -244,6 +245,20 @@ impl GitRunner {
     pub fn without_credential_helpers(mut self) -> Self {
         self.use_credential_helpers = false;
         self
+    }
+
+    /// This runner, where git reads and writes the index at `index` instead of the Repository's,
+    /// for a write that must leave the user's index as it is. `index` is relative to the folder
+    /// git runs in, so the git inside WSL can be given it too.
+    pub fn with_index_file(&self, index: &str) -> Self {
+        let mut runner = self.clone();
+        runner.host.set("GIT_INDEX_FILE", index);
+        if matches!(runner.program, GitProgram::Wsl { .. }) {
+            let mut shared: OsString = runner.host.get("WSLENV").unwrap_or_default().to_owned();
+            shared.push(":GIT_INDEX_FILE");
+            runner.host.set("WSLENV", shared);
+        }
+        runner
     }
 
     /// Whether git runs as a process of this machine, one gikli can see. The git inside WSL does

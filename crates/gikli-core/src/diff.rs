@@ -413,12 +413,11 @@ impl LocalFile {
     }
 }
 
-/// The arguments after `git` that compare two versions of one file. git's settings for how a diff
-/// looks, or for a program to make it, such as `diff.context` or `diff.external`, have no say.
-/// `diff.algorithm` does: it only changes which lines git pairs, and that is the user's to choose.
-const DIFF_ARGS: &[&str] = &[
-    "--literal-pathspecs",
-    "diff",
+/// The options of `git diff` and `git show` that compare two versions of one file. git's settings
+/// for how a diff looks, or for a program to make it, such as `diff.context` or `diff.external`,
+/// have no say. `diff.algorithm` does: it only changes which lines git pairs, and that is the
+/// user's to choose.
+const DIFF_OPTIONS: &[&str] = &[
     "--numstat",
     "--patch",
     "--unified=0",
@@ -568,7 +567,7 @@ impl<'a> ComparedFile<'a> {
                     "--format=",
                     "--diff-merges=first-parent",
                 ];
-                args.extend(&DIFF_ARGS[2..]);
+                args.extend(DIFF_OPTIONS);
                 args.extend([hash, "--", present]);
                 self.compare_args(&args)?
             }
@@ -671,7 +670,8 @@ impl<'a> ComparedFile<'a> {
     }
 
     fn compare_targets(&self, targets: &[&str]) -> Result<Comparison, Failure> {
-        let mut args = DIFF_ARGS.to_vec();
+        let mut args = vec!["--literal-pathspecs", "diff"];
+        args.extend(DIFF_OPTIONS);
         args.extend(targets);
         self.compare_args(&args)
     }

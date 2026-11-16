@@ -231,7 +231,7 @@ function field(list: HTMLElement, name: string, value: string | Node): void {
 }
 
 /** A line of `text` that stands in a pane for what it has nothing of. */
-function note(text: string): HTMLElement {
+export function note(text: string): HTMLElement {
   const view = document.createElement("p");
   view.className = "log-side-note";
   view.textContent = text;

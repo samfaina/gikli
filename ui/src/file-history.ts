@@ -22,7 +22,7 @@ import {
 } from "./core";
 import { createDiffPreview } from "./diff-view";
 import { element } from "./dom";
-import { SHORT_HASH_LENGTH } from "./log-details";
+import { note, SHORT_HASH_LENGTH } from "./log-details";
 import { t } from "./strings";
 
 /** What the file history needs from the window around it. */
@@ -275,7 +275,9 @@ export function createFileHistoryView(host: FileHistoryViewHost): FileHistoryVie
     } else {
       merge = createDiffPreview(preview, diff.value.content);
     }
-    files.replaceChildren(changes.status === "fulfilled" ? filesView(changes.value[0], revision.path) : host.errorView(changes.reason));
+    // The core lists the changes against the first parent first.
+    const againstFirstParent = changes.status === "fulfilled" ? changes.value[0] : undefined;
+    files.replaceChildren(changes.status === "fulfilled" ? filesView(againstFirstParent, revision.path) : host.errorView(changes.reason));
   }
 
   /** Brings the file back to its version in the selected revision, once the user confirmed it. */
@@ -324,12 +326,4 @@ function filesView(changes: CommitChanges | undefined, path: string): HTMLElemen
   };
   add(changes.group.nodes);
   return listed;
-}
-
-/** A line of `text` that stands in a pane for what it has nothing of. */
-function note(text: string): HTMLElement {
-  const view = document.createElement("p");
-  view.className = "log-side-note";
-  view.textContent = text;
-  return view;
 }

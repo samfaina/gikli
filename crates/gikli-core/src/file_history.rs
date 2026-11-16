@@ -2,6 +2,7 @@
 //! back as it was in one of them.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 
@@ -114,37 +115,40 @@ fn tips(
     Ok(tips)
 }
 
-/// The revisions in what `git log --name-status -z` printed with [`FORMAT`].
+/// The revisions in what `git log --follow --name-status -z` printed with [`FORMAT`]. Each commit
+/// comes with the file on a line of its own: its status, then its path, or for a rename or a copy
+/// the path it came from and its new path. `--follow` lists no merge commit, so every commit has it.
 fn parse(listed: &[u8]) -> Vec<FileRevision> {
     let mut revisions = Vec::new();
     let mut fields = listed.split(|byte| *byte == 0).peekable();
     while let Some(first) = fields.next() {
-        let Some(hash) = first.strip_prefix(b"\x01") else {
+        let Some(hash) = first.strip_prefix(b"") else {
             continue;
         };
         let mut header = || String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
         let (parents, author, committed_at, subject) = (header(), header(), header(), header());
-        // The files of the commit follow on a line of their own: its status, then its path, or for
-        // a rename or a copy the path it came from and its new path. A merge may list none.
-        let status_field = fields
-            .next_if(|field| !field.starts_with(b"\x01"))
-            .map(|field| field.strip_prefix(b"\n").unwrap_or(field).to_vec());
-        let (status, moved) = match status_field.as_deref().and_then(|status| status.first()) {
-            Some(b'A') => (ChangeStatus::Added, false),
-            Some(b'D') => (ChangeStatus::Deleted, false),
-            Some(b'R') => (ChangeStatus::Renamed, true),
-            Some(b'C') => (ChangeStatus::Copied, true),
-            _ => (ChangeStatus::Modified, false),
+        let Some(&letter) = fields
+            .next_if(|field| !field.starts_with(b""))
+            .and_then(|field| {
+                field
+                    .strip_prefix(
+                        b"
+",
+                    )
+                    .unwrap_or(field)
+                    .first()
+            })
+        else {
+            continue;
         };
+        let (status, moved) = details::name_status(letter);
         let original_path = if moved {
             fields.next().map(path_from_bytes)
         } else {
             None
         };
-        let path = if status_field.is_some() {
-            fields.next().map(path_from_bytes)
-        } else {
-            None
+        let Some(path) = fields.next().map(path_from_bytes) else {
+            continue;
         };
         revisions.push(FileRevision {
             hash: String::from_utf8_lossy(hash).into_owned(),
@@ -152,7 +156,7 @@ fn parse(listed: &[u8]) -> Vec<FileRevision> {
             subject,
             author,
             committed_at: committed_at.parse().unwrap_or_default(),
-            path: path.unwrap_or_default(),
+            path,
             original_path,
             status,
         });
@@ -161,7 +165,9 @@ fn parse(listed: &[u8]) -> Vec<FileRevision> {
 }
 
 /// Brings the file at `path` in `repository` back to what the commit `revision` names had at
-/// `revision_path`, on disk alone, or deletes it when the commit has no such file.
+/// `revision_path`, on disk alone, or deletes it when the commit has no such file. git writes it
+/// (ADR-0001), as a checkout of `path` would: with its mode, as a symbolic link if it is one, and
+/// through the filters and line endings of `path`.
 pub(crate) fn get_version(
     runner: &GitRunner,
     repository: &Repository,
@@ -182,45 +188,103 @@ pub(crate) fn get_version(
     if !inside_root(path) || !inside_root(revision_path) {
         return Err(not_restored());
     }
-    let run = |args: &[&str]| runner.run(root, args).map_err(git_failed_to_start);
-    if revision_path == path {
-        // git writes the file as a checkout would, with its mode and the user's filters, and
-        // deletes it when the commit has none.
-        let source = format!("--source={hash}");
-        let restored = run(&[
-            "--literal-pathspecs",
-            "restore",
-            &source,
-            "--worktree",
-            "--",
-            path,
-        ])?;
-        if !restored.success {
-            return Err(failure_of(runner, root, &restored, not_restored()));
+    // What git prints, or why it could not do what it was asked.
+    let output = |runner: &GitRunner, args: &[&str]| -> Result<Vec<u8>, Failure> {
+        let invocation = runner.run(root, args).map_err(git_failed_to_start)?;
+        if invocation.success {
+            Ok(invocation.stdout)
+        } else {
+            Err(failure_of(runner, root, &invocation, not_restored()))
         }
-        return Ok(());
-    }
-    // The file had another path in the commit, which `restore` would write to. git converts what
-    // the commit holds as for a file at `path`.
-    let blob = format!("{hash}:{revision_path}");
-    let file = root.join(path);
-    let not_saved = |error: std::io::Error| Failure::LocalFileNotSaved {
-        path: PathBuf::from(path),
-        message: error.to_string(),
     };
-    if !run(&["cat-file", "-e", &blob])?.success {
-        return match std::fs::remove_file(&file) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(not_saved(error)),
-            _ => Ok(()),
+    let run = |runner: &GitRunner, args: &[&str]| output(runner, args).map(drop);
+    let listed = output(
+        runner,
+        &[
+            "--literal-pathspecs",
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            "--end-of-options",
+            &hash,
+            "--",
+            revision_path,
+        ],
+    )?;
+    let Some((mode, id)) = entry_of(&listed, revision_path) else {
+        // The commit has no such file. git deletes one it tracks as a restore from the commit, and
+        // one it does not track as a clean of that one path.
+        let tracked = !output(
+            runner,
+            &["--literal-pathspecs", "ls-files", "-z", "--", path],
+        )?
+        .is_empty();
+        let source = format!("--source={hash}");
+        return if tracked {
+            run(
+                runner,
+                &[
+                    "--literal-pathspecs",
+                    "restore",
+                    &source,
+                    "--worktree",
+                    "--",
+                    path,
+                ],
+            )
+        } else {
+            run(
+                runner,
+                &[
+                    "--literal-pathspecs",
+                    "clean",
+                    "--force",
+                    "--quiet",
+                    "-x",
+                    "--",
+                    path,
+                ],
+            )
         };
+    };
+    // An index of its own holds the version at `path`, which it may not have had in the commit,
+    // so the user's index stays as it is, and git checks the file out from there.
+    let git_dir = runner
+        .relative_git_dir(root)
+        .map_err(git_failed_to_start)?
+        .ok_or_else(not_restored)?;
+    let index = format!(
+        "{git_dir}/gikli-get-version-{}-{}.index",
+        std::process::id(),
+        NEXT_INDEX.fetch_add(1, Ordering::Relaxed)
+    );
+    let own_index = runner.with_index_file(&index);
+    let checked_out = run(
+        &own_index,
+        &["update-index", "--add", "--cacheinfo", &mode, &id, path],
+    )
+    .and_then(|()| run(&own_index, &["checkout-index", "--force", "--", path]));
+    // The index was only for this, and git leaves no lock behind once it ends.
+    let _ = std::fs::remove_file(root.join(&index));
+    checked_out
+}
+
+/// Tells apart the indexes of Get a file version that run at once.
+static NEXT_INDEX: AtomicU64 = AtomicU64::new(0);
+
+/// The mode and object of the file at `path` in what `git ls-tree -z` `listed`, if it is there.
+fn entry_of(listed: &[u8], path: &str) -> Option<(String, String)> {
+    // `mode type object`, a tab, and the path. A folder with the name of the file matches too.
+    let entry = listed.split(|byte| *byte == 0).find_map(|line| {
+        let tab = line.iter().position(|byte| *byte == b'\t')?;
+        (&line[tab + 1..] == path.as_bytes()).then_some(&line[..tab])
+    });
+    let mut fields = entry
+        .unwrap_or_default()
+        .split(|byte| *byte == b' ')
+        .map(|field| String::from_utf8_lossy(field).into_owned());
+    match (fields.next(), fields.next(), fields.next()) {
+        (Some(mode), Some(kind), Some(id)) if kind != "tree" => Some((mode, id)),
+        _ => None,
     }
-    let as_path = format!("--path={path}");
-    let version = run(&["cat-file", "--filters", &as_path, &blob])?;
-    if !version.success {
-        return Err(failure_of(runner, root, &version, not_restored()));
-    }
-    if let Some(folder) = file.parent() {
-        std::fs::create_dir_all(folder).map_err(not_saved)?;
-    }
-    std::fs::write(&file, &version.stdout).map_err(not_saved)
 }
