@@ -201,16 +201,21 @@ export function createLogView(host: LogViewHost): LogView {
     searches = await logSearchHistory().catch(() => [] as TextSearch[]);
     const prompt = new Option(t("logRecentSearches"), "");
     prompt.disabled = true;
-    searchHistory.replaceChildren(prompt, ...searches.map((search, index) => new Option(describe(search), String(index))));
+    searchHistory.replaceChildren(prompt, ...searches.map((search, index) => new Option(recentSearchLabel(search), String(index))));
     searchHistory.value = "";
     searchHistory.disabled = searches.length === 0;
   }
 
   /** The search as the recent searches name it: its text, and the options it has on. */
-  function describe(search: TextSearch): string {
-    const options = [search.regex ? t("logSearchRegex") : null, search.matchCase ? t("logSearchMatchCase") : null];
-    const on = options.filter((option) => option !== null);
-    return on.length === 0 ? search.text : t("logRecentSearch", { text: search.text, options: on.join(", ") });
+  function recentSearchLabel(search: TextSearch): string {
+    const options: string[] = [];
+    if (search.regex) {
+      options.push(t("logSearchRegex"));
+    }
+    if (search.matchCase) {
+      options.push(t("logSearchMatchCase"));
+    }
+    return options.length === 0 ? search.text : t("logRecentSearch", { text: search.text, options: options.join(", ") });
   }
 
   /** Runs again the search the user picked from the recent searches, with its text and options. */
