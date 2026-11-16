@@ -51,6 +51,13 @@ pub struct Settings {
     pub commit_changes_grouping: ChangeGrouping,
     /// The most revisions a file history lists, newest first. It is at least 1.
     pub file_history_row_limit: usize,
+    /// Whether the branch selector and the branches pane group branches such as `feature/login`
+    /// under their directory, `feature`.
+    pub group_branches_by_directory: bool,
+    /// Whether the branch selector shows Recent, the local branches checked out last.
+    pub show_recent_branches: bool,
+    /// Whether the branch selector shows the tags.
+    pub show_tags_in_branch_selector: bool,
 }
 
 /// How many revisions a file history lists until the user sets another limit.
@@ -75,6 +82,9 @@ impl Default for Settings {
             show_long_edges: false,
             commit_changes_grouping: ChangeGrouping::default(),
             file_history_row_limit: DEFAULT_FILE_HISTORY_ROW_LIMIT,
+            group_branches_by_directory: true,
+            show_recent_branches: true,
+            show_tags_in_branch_selector: true,
         }
     }
 }

@@ -1,27 +1,28 @@
-// The log: the commit list with its graph, the search, filter and go-to above it, and what the
-// selected commit changed and its details beside it. The core reads the commits and lays out the
-// graph a page at a time; this draws only the rows in view, and asks for the next page as the user
-// nears the end.
+// The log: the commit list with its graph, the search, filter and go-to above it, the branches
+// pane before it, and what the selected commit changed and its details beside it. The core reads
+// the commits and lays out the graph a page at a time; this draws only the rows in view, and asks
+// for the next page as the user nears the end.
 
+import { branchList, type BranchActions } from "./branch-tree";
 import { createCommitMenu } from "./commit-menu";
 import {
+  branches as readBranches,
   endLogRead,
   fetchAll,
   fetchBranch,
   fetchRestOfHistory,
   filteredLogReaches,
   goTo,
+  goToBranch,
   goToSuggestions,
-  localBranches,
-  logBranches,
   logSearchHistory,
   readLog,
   isFailure,
   settings,
   setShowLongEdges,
+  type BranchNode,
   type GraphArrow,
   type GraphLine,
-  type LocalBranch,
   type LogCursor,
   type LogFilter,
   type LogRow,
@@ -48,6 +49,8 @@ export interface LogViewHost {
 export interface LogView {
   /** Shows the log of `repository` from its newest commit. */
   open(repository: Repository): void;
+  /** Shows the log of `repository`, opening it if it is not shown, at the latest commit of `branch`. */
+  showBranch(repository: Repository, branch: RefLabel): void;
   /** Goes back to the changes view. */
   close(): void;
 }
@@ -90,7 +93,8 @@ export function createLogView(host: LogViewHost): LogView {
   const searchHistory = element<HTMLSelectElement>("log-search-history");
   const regexInput = element<HTMLInputElement>("log-search-regex");
   const matchCaseInput = element<HTMLInputElement>("log-search-match-case");
-  const branchSelect = element<HTMLSelectElement>("log-branch-filter");
+  const branchesPane = element<HTMLElement>("log-branches-list");
+  const goToBranchButton = element<HTMLButtonElement>("log-go-to-branch");
   const goToInput = element<HTMLInputElement>("log-go-to");
   const goToList = element<HTMLDataListElement>("log-go-to-suggestions");
 
@@ -107,8 +111,10 @@ export function createLogView(host: LogViewHost): LogView {
   let selected: string | null = null;
   /** What the log shows, as the search and the branch filter set it. */
   let filter: LogFilter = { branches: [], text: null };
-  /** The branches the log can be filtered by, as the branch filter lists them. */
-  let branches: RefLabel[] = [];
+  /** The branch the user chose in the branches pane to filter the log by, if any. */
+  let chosen: RefLabel | null = null;
+  /** The local and remote branches the branches pane lists, as the core grouped them. */
+  let listed: { local: BranchNode[]; remote: BranchNode[] } = { local: [], remote: [] };
   /** The searches the user ran, newest first, as the recent searches list them. */
   let searches: TextSearch[] = [];
   let suggestionTimer: number | undefined;
@@ -123,7 +129,14 @@ export function createLogView(host: LogViewHost): LogView {
   element<HTMLElement>("log-long-edges-label").textContent = t("logLongEdges");
   element<HTMLElement>("log-search-regex-label").textContent = t("logSearchRegex");
   element<HTMLElement>("log-search-match-case-label").textContent = t("logSearchMatchCase");
-  element<HTMLElement>("log-branch-filter-label").textContent = t("logBranchFilter");
+  element<HTMLElement>("log-branches-title").textContent = t("logBranchesTitle");
+  goToBranchButton.textContent = t("logGoToBranch");
+  goToBranchButton.title = t("logGoToBranchTitle");
+  goToBranchButton.addEventListener("click", () => {
+    if (chosen !== null) {
+      void goToBranchTip(chosen);
+    }
+  });
   searchInput.placeholder = t("logSearch");
   searchInput.setAttribute("aria-label", t("logSearch"));
   searchHistory.setAttribute("aria-label", t("logRecentSearches"));
@@ -153,10 +166,6 @@ export function createLogView(host: LogViewHost): LogView {
   regexInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
   matchCaseInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
   searchHistory.addEventListener("change", runRecentSearch);
-  branchSelect.addEventListener("change", () => {
-    labelFetchButton();
-    applyFilter();
-  });
   goToInput.addEventListener("input", scheduleSuggestions);
   goToInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && goToInput.value.trim() !== "") {
@@ -174,6 +183,10 @@ export function createLogView(host: LogViewHost): LogView {
     selected = null;
     panes.show(null, null);
     filter = { branches: [], text: null };
+    chosen = null;
+    listed = { local: [], remote: [] };
+    drawBranches();
+    labelFetchButton();
     searchInput.value = "";
     goToInput.value = "";
     title.textContent = t("logTitle", { root: toShow.root });
@@ -190,6 +203,13 @@ export function createLogView(host: LogViewHost): LogView {
     list.focus();
   }
 
+  function showBranch(toShow: Repository, branch: RefLabel): void {
+    if (repository?.root !== toShow.root || view.hidden) {
+      open(toShow);
+    }
+    void goToBranchTip(branch);
+  }
+
   /** Reads the log again, and the branches it can be filtered by, which may have changed. */
   function refresh(): void {
     if (repository !== null) {
@@ -199,35 +219,100 @@ export function createLogView(host: LogViewHost): LogView {
   }
 
   /**
-   * Lists the branches of `shown` in the branch filter, with every branch first, keeping the one
-   * chosen. Each local branch says how far it is from its upstream.
+   * Lists the local and remote branches of `shown` in the branches pane, after every branch,
+   * keeping the one chosen. Each local branch says how far it is from its upstream.
    */
   async function listBranches(shown: Repository): Promise<void> {
-    const chosen = chosenBranch();
-    // Without the branches, the filter offers every branch only; the log says why they cannot be
-    // read. Without how far they are from their upstreams, it lists them by name alone.
-    const [listed, locals] = await Promise.all([
-      logBranches(shown).catch((): RefLabel[] => []),
-      localBranches(shown).catch((): LocalBranch[] => []),
-    ]);
+    let read: { local: BranchNode[]; remote: BranchNode[] };
+    try {
+      read = await readBranches(shown, "");
+    } catch (error) {
+      // Without the branches, the pane offers every branch only, and says why.
+      if (repository === shown) {
+        listed = { local: [], remote: [] };
+        drawBranches(host.errorView(error));
+      }
+      return;
+    }
     if (repository !== shown) {
       return;
     }
-    branches = listed;
-    const upstreams = new Map(locals.map((local) => [local.name, local.upstream]));
-    const every = new Option(t("logAllBranches"), "");
-    branchSelect.replaceChildren(
-      every,
-      ...branches.map((branch, index) => new Option(branchLabel(branch, upstreams), String(index))),
-    );
-    const still = branches.findIndex((branch) => branch.name === chosen?.name && branch.kind === chosen.kind);
-    branchSelect.value = still < 0 ? "" : String(still);
+    listed = read;
+    const labels = [...labelsOf(listed.local), ...labelsOf(listed.remote)];
+    const kept = chosen;
+    if (kept !== null && !labels.some((label) => sameLabel(label, kept))) {
+      chosen = null;
+    }
+    drawBranches();
     labelFetchButton();
   }
 
-  /** The branch chosen in the branch filter, if any. */
+  /** Draws the branches pane: every branch, then the local and remote branches, with the chosen one marked. */
+  function drawBranches(failure?: HTMLElement): void {
+    const actions: BranchActions = {
+      pick: (branch) => chooseBranch(branch.label),
+      open: (branch) => void goToBranchTip(branch.label),
+      chosen,
+    };
+    const every = document.createElement("button");
+    every.type = "button";
+    every.className = "branch-item";
+    every.dataset.testid = "log-all-branches";
+    every.textContent = t("logAllBranches");
+    every.classList.toggle("chosen", chosen === null);
+    every.setAttribute("aria-pressed", String(chosen === null));
+    every.addEventListener("click", () => chooseBranch(null));
+    const groups = [
+      { id: "local", heading: t("branchesLocal"), nodes: listed.local },
+      { id: "remote", heading: t("branchesRemote"), nodes: listed.remote },
+    ]
+      .filter((group) => group.nodes.length > 0)
+      .map((group) => {
+        const section = document.createElement("section");
+        section.className = "branch-group";
+        section.dataset.testid = `log-branch-group-${group.id}`;
+        const heading = document.createElement("h4");
+        heading.textContent = group.heading;
+        section.append(heading, branchList(group.nodes, actions));
+        return section;
+      });
+    branchesPane.replaceChildren(every, ...groups, ...(failure === undefined ? [] : [failure]));
+    goToBranchButton.disabled = chosen === null;
+  }
+
+  /** Filters the log by `branch`, or shows every branch again for null. Choosing it again, as a double-click does, changes nothing. */
+  function chooseBranch(branch: RefLabel | null): void {
+    const same = branch === null || chosen === null ? branch === chosen : sameLabel(branch, chosen);
+    if (same) {
+      return;
+    }
+    chosen = branch;
+    drawBranches();
+    labelFetchButton();
+    applyFilter();
+  }
+
+  /** Selects the latest commit of `branch`, or says why it cannot. */
+  async function goToBranchTip(branch: RefLabel): Promise<void> {
+    const shown = repository;
+    if (shown === null) {
+      return;
+    }
+    try {
+      const hash = await goToBranch(shown, branch);
+      if (repository === shown) {
+        await goToCommit(hash, branch.name);
+      }
+    } catch (error) {
+      if (repository === shown) {
+        message.replaceChildren(host.errorView(error));
+      }
+    }
+  }
+
+  /** The branch chosen in the branches pane, if any. */
   function chosenBranch(): RefLabel | undefined {
-    return branchSelect.value === "" ? undefined : branches[Number(branchSelect.value)];
+    return chosen ?? undefined;
   }
 
   /** Says on the fetch button what it fetches: the branch chosen in the filter, or every remote. */
@@ -602,7 +687,7 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  return { open, close };
+  return { open, showBranch, close };
 }
 
 /** Lets the core go of the read that the page at `cursor` goes on with, which the log does not read, if any. Nothing depends on it. */
@@ -764,18 +849,11 @@ function laneColor(column: number): string {
   return `log-lane-${column % LANE_COLORS}`;
 }
 
-/** The name of `branch` in the branch filter: a local branch with how far it is from its upstream, if it has one. */
-function branchLabel(branch: RefLabel, upstreams: Map<string, LocalBranch["upstream"]>): string {
-  const upstream = branch.kind === "local" ? upstreams.get(branch.name) : undefined;
-  if (upstream === undefined || upstream === null) {
-    return branch.name;
-  }
-  if (upstream.commits === null) {
-    return t("logBranchUpstreamGone", { branch: branch.name });
-  }
-  return t("logBranchWithCounts", {
-    branch: branch.name,
-    incoming: String(upstream.commits.incoming),
-    outgoing: String(upstream.commits.outgoing),
-  });
+/** Every branch `nodes` hold, in their directories or not. */
+function labelsOf(nodes: BranchNode[]): RefLabel[] {
+  return nodes.flatMap((node) => (node.kind === "directory" ? labelsOf(node.children) : [node.label]));
+}
+
+function sameLabel(a: RefLabel, b: RefLabel): boolean {
+  return a.name === b.name && a.kind === b.kind;
 }

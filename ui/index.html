@@ -93,7 +93,6 @@
           <select id="log-search-history" class="log-search-history" data-testid="log-search-history"></select>
           <label><input id="log-search-regex" type="checkbox" data-testid="log-search-regex" /><span id="log-search-regex-label"></span></label>
           <label><input id="log-search-match-case" type="checkbox" data-testid="log-search-match-case" /><span id="log-search-match-case-label"></span></label>
-          <label><span id="log-branch-filter-label"></span><select id="log-branch-filter" data-testid="log-branch-filter"></select></label>
           <input id="log-go-to" class="log-go-to" type="text" list="log-go-to-suggestions" autocomplete="off" data-testid="log-go-to" />
           <datalist id="log-go-to-suggestions"></datalist>
         </div>
@@ -103,6 +102,13 @@
           <button id="log-fetch-rest" type="button" data-testid="log-fetch-rest"></button>
         </div>
         <div class="log-body">
+          <aside class="log-branches" data-testid="log-branches">
+            <div class="log-pane-header">
+              <h3 id="log-branches-title"></h3>
+              <button id="log-go-to-branch" type="button" data-testid="log-go-to-branch"></button>
+            </div>
+            <div id="log-branches-list" class="log-branches-list" data-testid="log-branches-list"></div>
+          </aside>
           <div id="log-list" class="log-list" data-testid="log-list" tabindex="0">
             <div id="log-rows" class="log-rows" data-testid="log-rows"></div>
           </div>
@@ -202,6 +208,20 @@
       </section>
     </div>
     <footer class="window-foot">
+      <section id="branch-selector" class="branch-selector" data-testid="branch-selector" role="dialog" aria-labelledby="branch-selector-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="branch-selector-title"></h2>
+          <button id="branch-selector-close" type="button" data-testid="branch-selector-close"></button>
+        </div>
+        <div id="branch-selector-current" class="branch-selector-current" data-testid="branch-selector-current"></div>
+        <input id="branch-selector-search" class="branch-selector-search" type="search" autocomplete="off" spellcheck="false" data-testid="branch-selector-search" />
+        <div class="branch-selector-options">
+          <label><input id="branch-selector-show-recent" type="checkbox" data-testid="branch-selector-show-recent" /><span id="branch-selector-show-recent-label"></span></label>
+          <label><input id="branch-selector-show-tags" type="checkbox" data-testid="branch-selector-show-tags" /><span id="branch-selector-show-tags-label"></span></label>
+          <label><input id="branch-selector-group-by-directory" type="checkbox" data-testid="branch-selector-group-by-directory" /><span id="branch-selector-group-by-directory-label"></span></label>
+        </div>
+        <div id="branch-selector-groups" class="branch-selector-groups" data-testid="branch-selector-groups"></div>
+      </section>
       <div id="operations" class="operations" data-testid="operations" role="status" hidden></div>
       <div id="status-area" class="status-area" data-testid="status-area" role="status" hidden></div>
     </footer>

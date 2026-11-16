@@ -52,6 +52,12 @@ export interface Settings {
   commitChangesGrouping: ChangeGrouping;
   /** The most revisions a file history lists, newest first. At least 1. */
   fileHistoryRowLimit: number;
+  /** Whether the branch selector and the branches pane group branches such as `feature/login` under their directory. */
+  groupBranchesByDirectory: boolean;
+  /** Whether the branch selector shows Recent, the local branches checked out last. */
+  showRecentBranches: boolean;
+  /** Whether the branch selector shows the tags. */
+  showTagsInBranchSelector: boolean;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -544,6 +550,21 @@ export function setShowLongEdges(show: boolean): Promise<Settings> {
   return invoke("set_show_long_edges", { show });
 }
 
+/** Groups the branches the branch selector and the branches pane list under their directory, or lists them by their whole name. Rejects with a {@link Failure}. */
+export function setGroupBranchesByDirectory(group: boolean): Promise<Settings> {
+  return invoke("set_group_branches_by_directory", { group });
+}
+
+/** Shows or hides Recent in the branch selector. Rejects with a {@link Failure}. */
+export function setShowRecentBranches(show: boolean): Promise<Settings> {
+  return invoke("set_show_recent_branches", { show });
+}
+
+/** Shows or hides the tags in the branch selector. Rejects with a {@link Failure}. */
+export function setShowTagsInBranchSelector(show: boolean): Promise<Settings> {
+  return invoke("set_show_tags_in_branch_selector", { show });
+}
+
 /** Turns soft wrap of the operation log on or off. Rejects with a {@link Failure}. */
 export function setOperationLogSoftWrap(softWrap: boolean): Promise<Settings> {
   return invoke("set_operation_log_soft_wrap", { softWrap });
@@ -1011,6 +1032,46 @@ export type CurrentBranch =
 /** The local branches of `repository`, by name, each with how far it is from its upstream. Rejects with a {@link Failure}. */
 export function localBranches(repository: Repository): Promise<LocalBranch[]> {
   return invoke("local_branches", { repository });
+}
+
+/** A branch or a tag in the branch selector and the branches pane. */
+export interface Branch {
+  /** Its whole name, such as `feature/login` or `origin/main`, and its kind. */
+  label: RefLabel;
+  /** The upstream of a local branch, with its incoming and outgoing commits; null for one without, and for remote branches and tags. */
+  upstream: Upstream | null;
+}
+
+/** One entry of a group of branches: a directory, when they are grouped by directory, or a branch. */
+export type BranchNode =
+  | { kind: "directory"; path: string; children: BranchNode[] }
+  | ({ kind: "branch" } & Branch);
+
+/** The branches of a Repository, in the groups the branch selector shows. */
+export interface Branches {
+  repository: Repository;
+  /** What HEAD is on. */
+  current: CurrentBranch;
+  /** The local branches checked out last, newest first, other than the current one; empty when hidden. */
+  recent: Branch[];
+  local: BranchNode[];
+  remote: BranchNode[];
+  /** Empty when hidden. */
+  tags: BranchNode[];
+}
+
+/**
+ * The branches of `repository` that `search` finds, in every group: those whose whole name holds it,
+ * ignoring case. Grouped by directory, and with Recent and the tags, as the settings say. Rejects with
+ * a {@link Failure}.
+ */
+export function branches(repository: Repository, search: string): Promise<Branches> {
+  return invoke("branches", { repository, search });
+}
+
+/** The full hash of the latest commit of `branch`. Rejects with a {@link Failure}, a branch that no longer exists with `revisionNotFound`. */
+export function goToBranch(repository: Repository, branch: RefLabel): Promise<string> {
+  return invoke("go_to_branch", { repository, branch });
 }
 
 /** What HEAD of `repository` is on. Rejects with a {@link Failure}. */

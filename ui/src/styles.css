@@ -801,9 +801,139 @@ button:disabled {
   min-width: 0;
 }
 
-.status-repository [data-testid="status-branch"] {
+/* What HEAD is on opens the branch selector. */
+.status-repository .status-branch {
+  padding: 0 6px;
+  border-color: transparent;
+  background: transparent;
   font-weight: 600;
   overflow-wrap: anywhere;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-repository .status-branch:hover {
+  border-color: var(--border);
+  background: var(--background);
+}
+
+/* The branch selector opens above the status area, and scrolls within itself. */
+.branch-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 50vh;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.branch-selector[hidden] {
+  display: none;
+}
+
+.branch-selector-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.branch-selector-header h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 1em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-selector-current {
+  display: flex;
+  gap: 8px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.branch-selector-search {
+  font: inherit;
+  min-width: 0;
+}
+
+.branch-selector-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: var(--muted);
+}
+
+.branch-selector-groups {
+  min-height: 0;
+  overflow: auto;
+}
+
+.branch-selector-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.branch-group h3,
+.branch-group h4 {
+  margin: 8px 0 2px;
+  color: var(--muted);
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+/* A group of branches: its directories open, each branch a row to pick. */
+.branch-list {
+  margin: 0;
+  padding-left: 16px;
+  list-style: none;
+}
+
+.branch-group > .branch-list {
+  padding-left: 0;
+}
+
+.branch-directory-name {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.branch-item {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 1px 6px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.branch-item:hover {
+  background: var(--surface);
+}
+
+.branch-item.chosen {
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.branch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-marks {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .status-repository [data-testid="status-upstream"] {
@@ -931,6 +1061,23 @@ button:disabled {
   display: flex;
   flex: 1 1 0;
   min-height: 0;
+}
+
+/* The branches pane, before the commit list. */
+.log-branches {
+  display: flex;
+  flex: 0 0 220px;
+  flex-direction: column;
+  min-width: 0;
+  padding: 8px 12px;
+  border-right: 1px solid var(--border);
+}
+
+.log-branches-list {
+  flex: 1 1 0;
+  min-height: 0;
+  margin-top: 4px;
+  overflow: auto;
 }
 
 .log-side {
