@@ -45,6 +45,12 @@ pub fn minute_as_seconds(minute: i64) -> i64 {
     FIRST_MINUTE + minute * 60
 }
 
+/// Whether the test runs on a CI runner, which sets this variable, and not on the development
+/// machine, where the tests of speed check their budgets.
+pub fn on_ci() -> bool {
+    std::env::var_os("CI").is_some()
+}
+
 /// A temporary folder with its own git configuration, holding the repositories of one test.
 pub struct Sandbox {
     dir: Option<TempDir>,
@@ -541,6 +547,48 @@ impl ImportedHistory {
     pub fn reset(&mut self, name: &str, mark: usize) {
         self.stream
             .push_str(&format!("reset {name}\nfrom :{mark}\n\n"));
+    }
+
+    /// A history of `commits` commits, as `git fast-import` reads it: a main line that a topic
+    /// branch of three commits is merged into every twentieth commit, a release line beside it the
+    /// whole way that the main line merges every five hundredth, a tag every thousandth and a remote
+    /// branch. The tests of the log's speed write it.
+    pub fn generated(commits: usize) -> Self {
+        let mut history = Self::default();
+        let mut main: Option<usize> = None;
+        let mut release: Option<usize> = None;
+        while history.commits() < commits {
+            let step = history.commits() + 1;
+            let room = commits - history.commits();
+            if step % 500 == 0
+                && let (Some(tip), Some(line)) = (main, release)
+            {
+                main = Some(history.commit("main", &[tip, line]));
+            } else if step % 20 == 0
+                && room > 4
+                && let Some(tip) = main
+            {
+                let mut topic = tip;
+                for _ in 0..3 {
+                    topic = history.commit("topic", &[topic]);
+                }
+                main = Some(history.commit("main", &[tip, topic]));
+            } else if step % 7 == 0 {
+                let parents: Vec<usize> = release.or(main).into_iter().collect();
+                release = Some(history.commit("release", &parents));
+            } else {
+                let parents: Vec<usize> = main.into_iter().collect();
+                main = Some(history.commit("main", &parents));
+            }
+            if history.commits() % 1000 == 0 {
+                let tag = format!("refs/tags/v{}", history.commits() / 1000);
+                history.reset(&tag, history.commits());
+            }
+        }
+        if let Some(tip) = main {
+            history.reset("refs/remotes/origin/main", tip);
+        }
+        history
     }
 
     /// How many commits it holds.

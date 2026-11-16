@@ -600,6 +600,16 @@ fn go_to(
 }
 
 #[tauri::command(async)]
+fn filtered_log_reaches(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    filter: LogFilter,
+    hash: String,
+) -> Result<bool, Failure> {
+    gikli.filtered_log_reaches(&repository, &filter, &hash)
+}
+
+#[tauri::command(async)]
 fn go_to_suggestions(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -758,6 +768,7 @@ fn main() {
             log_search_history,
             log_branches,
             go_to,
+            filtered_log_reaches,
             go_to_suggestions,
             commit_details,
             commit_changes,

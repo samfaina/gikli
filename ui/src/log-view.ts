@@ -6,6 +6,7 @@
 import { createCommitMenu } from "./commit-menu";
 import {
   endLogRead,
+  filteredLogReaches,
   goTo,
   goToSuggestions,
   logBranches,
@@ -277,10 +278,27 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  /** Selects the commit `hash`, which the user knows as `revision`, or says the log does not show it. */
+  /**
+   * Selects the commit `hash`, which the user knows as `revision`, or says the log does not show it:
+   * at once when none of the branches it is filtered by reach it, and otherwise once it is read.
+   */
   async function goToCommit(hash: string, revision: string): Promise<void> {
-    if (!(await select(hash))) {
-      message.replaceChildren(t("logNotShown", { revision }));
+    const shown = repository;
+    const asked = filter;
+    if (shown === null) {
+      return;
+    }
+    // The answer is of no use once the log shows another repository or filters by something else.
+    const stillAsked = () => repository === shown && filter === asked;
+    try {
+      const reached = await filteredLogReaches(shown, asked, hash);
+      if (stillAsked() && (!reached || !(await select(hash))) && stillAsked()) {
+        message.replaceChildren(t("logNotShown", { revision }));
+      }
+    } catch (error) {
+      if (stillAsked()) {
+        message.replaceChildren(host.errorView(error));
+      }
     }
   }
 

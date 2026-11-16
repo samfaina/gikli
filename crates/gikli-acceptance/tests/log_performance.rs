@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository};
+use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository, on_ci};
 use gikli_core::{Gikli, LogPage, Repository};
 
 /// The commits of the generated history.
@@ -20,53 +20,6 @@ const LATER_PAGE_BUDGET: Duration = Duration::from_millis(200);
 const PAGE_SIZE: usize = 200;
 /// The later pages measured.
 const LATER_PAGES: usize = 25;
-
-/// Whether the test runs on a CI runner, which sets this variable, and not on the development
-/// machine.
-fn on_ci() -> bool {
-    std::env::var_os("CI").is_some()
-}
-
-/// A history of `commits` commits, as `git fast-import` reads it: a main line that a topic branch
-/// of three commits is merged into every twentieth commit, a release line beside it the whole way
-/// that the main line merges every five hundredth, a tag every thousandth and a remote branch.
-fn generated_history(commits: usize) -> ImportedHistory {
-    let mut history = ImportedHistory::default();
-    let mut main: Option<usize> = None;
-    let mut release: Option<usize> = None;
-    while history.commits() < commits {
-        let step = history.commits() + 1;
-        let room = commits - history.commits();
-        if step % 500 == 0
-            && let (Some(tip), Some(line)) = (main, release)
-        {
-            main = Some(history.commit("main", &[tip, line]));
-        } else if step % 20 == 0
-            && room > 4
-            && let Some(tip) = main
-        {
-            let mut topic = tip;
-            for _ in 0..3 {
-                topic = history.commit("topic", &[topic]);
-            }
-            main = Some(history.commit("main", &[tip, topic]));
-        } else if step % 7 == 0 {
-            let parents: Vec<usize> = release.or(main).into_iter().collect();
-            release = Some(history.commit("release", &parents));
-        } else {
-            let parents: Vec<usize> = main.into_iter().collect();
-            main = Some(history.commit("main", &parents));
-        }
-        if history.commits() % 1000 == 0 {
-            let tag = format!("refs/tags/v{}", history.commits() / 1000);
-            history.reset(&tag, history.commits());
-        }
-    }
-    if let Some(tip) = main {
-        history.reset("refs/remotes/origin/main", tip);
-    }
-    history
-}
 
 /// Opens the repository's folder as a Project and returns its Repository.
 fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
@@ -94,7 +47,7 @@ fn timed_read(
 fn the_log_of_several_hundred_thousand_commits_reads_each_page_within_its_budget() {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("large");
-    repository.fast_import(&generated_history(COMMITS));
+    repository.fast_import(&ImportedHistory::generated(COMMITS));
     repository.git(&["checkout", "--quiet", "main"]);
     let counted = repository.git(&["rev-list", "--count", "--all"]);
     assert_eq!(
