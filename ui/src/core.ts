@@ -331,6 +331,24 @@ export type Failure =
   | { kind: "fetchFailed"; folder: string }
   /** git could not read the branches or how far they are from their upstreams: the operation log shows why. */
   | { kind: "branchesUnreadable"; folder: string }
+  /** The Repository has no remote called `remote`. */
+  | { kind: "remoteNotFound"; remote: string }
+  /** `name` is no name git takes for a branch. */
+  | { kind: "branchNameInvalid"; name: string }
+  /** HEAD is detached, so there is no current branch to push. */
+  | { kind: "detachedHeadNotPushed" }
+  /** The current branch has no commit yet, so there is nothing to push. */
+  | { kind: "branchWithoutCommits"; branch: string }
+  /** git could not push: the operation log shows why. */
+  | { kind: "pushFailed"; folder: string }
+  /** Another remote is already called `name`. */
+  | { kind: "remoteNameTaken"; name: string }
+  /** `name` is no name git takes for a remote. */
+  | { kind: "remoteNameInvalid"; name: string }
+  /** A remote needs a URL. */
+  | { kind: "remoteUrlEmpty" }
+  /** git could not define the remote `name`: the operation log shows why. */
+  | { kind: "remoteNotAdded"; folder: string; name: string }
   /** git could not fetch the rest of the history from `remote`: the operation log shows why. */
   | { kind: "historyNotFetched"; folder: string; remote: string }
   /** No commit goes by `revision`: no hash, branch, tag or other name git knows. */
@@ -426,7 +444,11 @@ export type LongOperation =
   | { kind: "commitFiles"; repository: Repository }
   | { kind: "fetchAll"; repository: Repository }
   | { kind: "fetchBranch"; repository: Repository; remote: string; branch: string }
-  | { kind: "fetchRestOfHistory"; repository: Repository; remote: string };
+  | { kind: "fetchRestOfHistory"; repository: Repository; remote: string }
+  /** Fetching a remote the user just defined. */
+  | { kind: "fetchRemote"; repository: Repository; remote: string }
+  /** Pushing the current branch to the branch `branch` of `remote`. */
+  | { kind: "push"; repository: Repository; remote: string; branch: string };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -1044,6 +1066,66 @@ export interface CommitChanges {
   /** The parent, or null for a commit with none. */
   parent: string | null;
   group: ChangeGroup;
+}
+
+/** Where a push sends the current branch: the branch `branch` of the remote `remote`. */
+export interface PushTarget {
+  remote: string;
+  /** The name of the branch on the remote, such as `main`. */
+  branch: string;
+}
+
+/** Which tags a push sends besides the branch: none unless the user asks, every one, or those of the current branch (`--follow-tags`). */
+export type PushTags = "none" | "all" | "currentBranch";
+
+/** A commit a push would send. */
+export interface PushCommit {
+  hash: string;
+  subject: string;
+  author: string;
+  /** When it was committed, in seconds since the epoch. */
+  committedAt: number;
+  /** Whether someone other than the user wrote it. The dialog marks it with `*`. */
+  byOtherAuthor: boolean;
+}
+
+/** What the push dialog shows: the Repository, its current branch, where it goes and the commits it would send. */
+export interface PushPlan {
+  repository: Repository;
+  /** The current branch, the one that is pushed. */
+  branch: string;
+  /** The remotes the target can be on. */
+  remotes: string[];
+  /** null when the Repository has no remote, so the user has to define one first. */
+  target: PushTarget | null;
+  /** Whether the push creates the target. */
+  newBranch: boolean;
+  /** Newest first. */
+  commits: PushCommit[];
+}
+
+/**
+ * What a push of the current branch of `repository` would send to `target`, or to its upstream or a
+ * branch of the same name when `target` is null. Rejects with a {@link Failure}.
+ */
+export function pushPlan(repository: Repository, target: PushTarget | null): Promise<PushPlan> {
+  return invoke("push_plan", { repository, target });
+}
+
+/**
+ * Pushes the current branch of `repository` to `target` with `tags`, as a long operation. A target the
+ * push creates becomes the upstream of a branch that has none. Rejects with a {@link Failure}.
+ */
+export function push(repository: Repository, target: PushTarget, tags: PushTags): Promise<void> {
+  return invoke("push", { repository, target, tags });
+}
+
+/**
+ * Defines the remote `name` of `repository` at `url` and fetches it at once, as a long operation. A
+ * remote that cannot be fetched is not kept. Rejects with a {@link Failure}.
+ */
+export function addRemote(repository: Repository, name: string, url: string): Promise<void> {
+  return invoke("add_remote", { repository, name, url });
 }
 
 /** The details of the commit `revision` names. Rejects with a {@link Failure}. */

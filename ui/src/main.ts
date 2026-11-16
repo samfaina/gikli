@@ -82,6 +82,7 @@ import { element, hasShortcutKey } from "./dom";
 import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
+import { createPushDialog } from "./push-dialog";
 import { createLogView } from "./log-view";
 import { createStatusArea } from "./status-area";
 import { t, type StringKey } from "./strings";
@@ -204,6 +205,26 @@ const fileHistoryView = createFileHistoryView({
     }
     underFileHistory = [];
   },
+});
+
+/** The views the push dialog took the place of, which come back when it closes. */
+let underPushDialog: HTMLElement[] = [];
+
+const pushDialog = createPushDialog({
+  errorView,
+  opened: () => {
+    underPushDialog.push(...[projectView, logSection].filter((view) => !view.hidden));
+    for (const view of underPushDialog) {
+      view.hidden = true;
+    }
+  },
+  closed: () => {
+    for (const view of underPushDialog) {
+      view.hidden = false;
+    }
+    underPushDialog = [];
+  },
+  branchesMoved: (repository) => statusArea.refresh(repository.root),
 });
 
 // What the user edited in a diff is saved when the window closes. When it cannot be, the window
@@ -768,6 +789,11 @@ function repositoryView(repository: Repository): HTMLElement {
       statusArea.refresh(repository.root);
     }
   });
+  const pushButton = document.createElement("button");
+  pushButton.type = "button";
+  pushButton.dataset.testid = "open-push";
+  pushButton.textContent = t("pushOpen");
+  pushButton.addEventListener("click", () => pushDialog.open(repository));
   // Outside the rows, which are drawn again on every read: what the user is typing stays.
   const form = changelistForm(() => void refreshChanges());
   const changes = document.createElement("div");
@@ -810,7 +836,7 @@ function repositoryView(repository: Repository): HTMLElement {
       save: ({ name, description }) => createChangelist(repository, name, description),
     }),
   );
-  header.append(title, refresh, fetchButton, openLog, newChangelist);
+  header.append(title, refresh, fetchButton, pushButton, openLog, newChangelist);
   const watching = document.createElement("div");
   const features = document.createElement("div");
   const changesColumn = document.createElement("div");
@@ -1622,6 +1648,10 @@ function describeOperation(operation: LongOperation): string {
       return t("operationFetchAll", { root: operation.repository.root });
     case "fetchBranch":
       return t("operationFetchBranch", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
+    case "fetchRemote":
+      return t("operationFetchRemote", { root: operation.repository.root, remote: operation.remote });
+    case "push":
+      return t("operationPush", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
   }
 }
 
@@ -1861,6 +1891,24 @@ function describeFailure(failure: Failure): string {
       return t("failureNoUpstream", { branch: failure.branch });
     case "fetchFailed":
       return t("failureFetchFailed", { folder: failure.folder });
+    case "remoteNotFound":
+      return t("failureRemoteNotFound", { remote: failure.remote });
+    case "branchNameInvalid":
+      return t("failureBranchNameInvalid", { name: failure.name });
+    case "detachedHeadNotPushed":
+      return t("failureDetachedHeadNotPushed");
+    case "branchWithoutCommits":
+      return t("failureBranchWithoutCommits", { branch: failure.branch });
+    case "pushFailed":
+      return t("failurePushFailed", { folder: failure.folder });
+    case "remoteNameTaken":
+      return t("failureRemoteNameTaken", { name: failure.name });
+    case "remoteNameInvalid":
+      return t("failureRemoteNameInvalid", { name: failure.name });
+    case "remoteUrlEmpty":
+      return t("failureRemoteUrlEmpty");
+    case "remoteNotAdded":
+      return t("failureRemoteNotAdded", { folder: failure.folder, name: failure.name });
     case "branchesUnreadable":
       return t("failureBranchesUnreadable", { folder: failure.folder });
     case "revisionNotFound":

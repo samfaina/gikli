@@ -1276,3 +1276,137 @@ button:disabled {
   padding: 0 6px;
   font-size: 0.85em;
 }
+
+/* The push dialog: the tree of Repository, current branch and target, then the commits it sends. */
+.push-dialog {
+  --file-history-selected: #cfe0f7;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 240px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .push-dialog {
+    --file-history-selected: #2f4466;
+  }
+}
+
+.push-dialog[hidden] {
+  display: none;
+}
+
+.push-tree {
+  margin: 0;
+  padding: 8px 16px;
+  list-style: none;
+}
+
+.push-tree ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+  list-style: none;
+}
+
+.push-tree li > ul > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.push-repository {
+  font-weight: 600;
+}
+
+.push-branch {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+.push-arrow {
+  color: var(--muted);
+}
+
+.push-target,
+.push-define-remote {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.push-target[hidden],
+.push-define-remote[hidden],
+.push-new-branch[hidden] {
+  display: none;
+}
+
+.push-define-remote label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.push-define-url {
+  width: 24em;
+}
+
+.push-new-branch {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 0.85em;
+}
+
+.push-commit {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr) minmax(0, 220px) 110px;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 16px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.push-commit > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.push-commit.selected,
+.push-file.selected {
+  background: var(--file-history-selected);
+}
+
+.file-history-list:focus-visible .push-commit.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.push-files ul {
+  padding-left: 0;
+}
+
+.push-file {
+  cursor: default;
+}
+
+.push-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.push-footer label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.push-footer-gap {
+  flex: 1 1 auto;
+}

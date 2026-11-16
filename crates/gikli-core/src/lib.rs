@@ -22,6 +22,7 @@ mod process_tree;
 mod processes;
 mod project;
 mod prompts;
+mod push;
 mod rollback;
 mod search_history;
 mod settings;
@@ -63,6 +64,7 @@ pub use notifications::{Notification, NotificationAction, NotificationKind, Noti
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
+pub use push::{PushCommit, PushPlan, PushTags, PushTarget};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
 pub use status::{
@@ -387,6 +389,42 @@ pub enum Failure {
     /// git could not fetch into the Repository at `folder`. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     FetchFailed {
+        folder: PathBuf,
+    },
+    /// The Repository has no remote called `remote`.
+    RemoteNotFound {
+        remote: String,
+    },
+    /// `name` is no name git takes for a branch.
+    BranchNameInvalid {
+        name: String,
+    },
+    /// Another remote of the Repository is already called `name`, so no remote was defined.
+    RemoteNameTaken {
+        name: String,
+    },
+    /// `name` is no name git takes for a remote, so no remote was defined.
+    RemoteNameInvalid {
+        name: String,
+    },
+    /// A remote needs a URL, so no remote was defined.
+    RemoteUrlEmpty,
+    /// git could not define the remote `name` of the Repository at `folder`. The operation log
+    /// holds git's output.
+    #[serde(rename_all = "camelCase")]
+    RemoteNotAdded {
+        folder: PathBuf,
+        name: String,
+    },
+    /// HEAD is detached, so there is no current branch to push.
+    DetachedHeadNotPushed,
+    /// The current `branch` has no commit yet, so there is nothing to push.
+    BranchWithoutCommits {
+        branch: String,
+    },
+    /// git could not push from the Repository at `folder`. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    PushFailed {
         folder: PathBuf,
     },
     /// git could not read the branches of the Repository at `folder`, or how far they are from
@@ -1892,6 +1930,128 @@ impl Gikli {
             &contacted,
             fallback,
         ))
+    }
+
+    /// What the push dialog shows for `repository`: its current branch, which is the one pushed,
+    /// where it goes and the commits it would send there. The target is `target` when the user
+    /// chose one, and otherwise the upstream of the branch when that is on a remote.
+    pub fn push_plan(
+        &self,
+        repository: &Repository,
+        target: Option<&PushTarget>,
+    ) -> Result<PushPlan, Failure> {
+        push::plan(&self.runner(&repository.root)?, repository, target)
+    }
+
+    /// Pushes the current branch of `repository` to `target`, with the tags `tags` asks for. The
+    /// push runs as a [`LongOperation`] that reports its progress and that the user can cancel.
+    pub fn push(
+        &self,
+        repository: &Repository,
+        target: &PushTarget,
+        tags: PushTags,
+    ) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        let root = &repository.root;
+        let branch = push::current_branch(&runner, repository)?;
+        push::check(
+            &runner,
+            repository,
+            target,
+            &sync::remotes(&runner, repository)?,
+        )?;
+        let operation = LongOperation::Push {
+            repository: repository.clone(),
+            remote: target.remote.clone(),
+            branch: target.branch.clone(),
+        };
+        let set_upstream = push::sets_upstream(&runner, repository, &branch, target)?;
+        let args = push::push_args(&branch, target, tags, set_upstream);
+        let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
+        if invocation.success {
+            return Ok(());
+        }
+        let remotes = [target.remote.clone()];
+        let contacted = explainer::Contacted::Remotes(&remotes);
+        Err(failure_of_contacting(
+            &runner,
+            root,
+            &invocation,
+            &contacted,
+            Failure::PushFailed {
+                folder: root.clone(),
+            },
+        ))
+    }
+
+    /// Defines the remote `name` of `repository` at `url`, as the push dialog offers when there is
+    /// none, and fetches it at once, as a [`LongOperation`] that reports its progress and that the
+    /// user can cancel. A remote that cannot be fetched is not kept, so the user can correct its
+    /// URL and define it again. A name another remote has returns [`Failure::RemoteNameTaken`],
+    /// one git does not take for a remote [`Failure::RemoteNameInvalid`], and an empty URL
+    /// [`Failure::RemoteUrlEmpty`].
+    pub fn add_remote(
+        &self,
+        repository: &Repository,
+        name: &str,
+        url: &str,
+    ) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        let root = &repository.root;
+        let url = url.trim();
+        if sync::remotes(&runner, repository)?
+            .iter()
+            .any(|remote| remote == name)
+        {
+            return Err(Failure::RemoteNameTaken {
+                name: name.to_owned(),
+            });
+        }
+        // git takes a name for a remote when its remote branches would have valid names.
+        let remote_branches = format!("refs/remotes/{name}/branch");
+        let checked = runner
+            .run(root, &["check-ref-format", &remote_branches])
+            .map_err(git_failed_to_start)?;
+        if !checked.success {
+            return Err(Failure::RemoteNameInvalid {
+                name: name.to_owned(),
+            });
+        }
+        if url.is_empty() {
+            return Err(Failure::RemoteUrlEmpty);
+        }
+        let added = runner
+            .run(root, &["remote", "add", "--", name, url])
+            .map_err(git_failed_to_start)?;
+        if !added.success {
+            return Err(failure_of(
+                &runner,
+                root,
+                &added,
+                Failure::RemoteNotAdded {
+                    folder: root.clone(),
+                    name: name.to_owned(),
+                },
+            ));
+        }
+        let operation = LongOperation::FetchRemote {
+            repository: repository.clone(),
+            remote: name.to_owned(),
+        };
+        let remotes = [name.to_owned()];
+        let fetched = self.fetch(
+            &runner,
+            repository,
+            operation,
+            &["fetch", "--progress", "--end-of-options", name],
+            &remotes,
+        );
+        if fetched.is_err() {
+            // Once the failure is explained, which reads the remote's URL. When this fails, the
+            // remote stays, and the operation log says why.
+            let _ = runner.run(root, &["remote", "remove", "--", name]);
+        }
+        fetched
     }
 
     /// The local branches of `repository`, by name, each with how far it is from its upstream.
