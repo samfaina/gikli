@@ -49,13 +49,28 @@
   box-sizing: border-box;
 }
 
+/* The window foot stays below what scrolls, so it never covers any of it. */
 body {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
   margin: 0;
+  overflow: hidden;
   background: var(--background);
   color: var(--text);
+}
+
+.window-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* As in a page that scrolls, nothing is squeezed to fit; the views that fill the room grow into it. */
+.window-body > * {
+  flex-shrink: 0;
 }
 
 .toolbar {
@@ -744,8 +759,7 @@ button:disabled {
 
 /* The long operations with their progress, and the status area under them: always in view and never in the way. */
 .window-foot {
-  position: sticky;
-  bottom: 0;
+  flex: none;
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
