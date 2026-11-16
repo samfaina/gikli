@@ -2045,8 +2045,13 @@ impl Gikli {
         );
         if fetched.is_err() {
             // Once the failure is explained, which reads the remote's URL. When this fails, the
-            // remote stays, and the operation log says why.
-            let _ = runner.run(root, &["remote", "remove", "--", name]);
+            // remote stays, and the operation log says why. git before 2.38 takes the name of
+            // `remote remove` as it is, so `--` would be the name, and later git takes a name that
+            // starts with `-` for an option unless `--` comes first.
+            let removed = runner.run(root, &["remote", "remove", name]);
+            if name.starts_with('-') && !removed.is_ok_and(|removed| removed.success) {
+                let _ = runner.run(root, &["remote", "remove", "--", name]);
+            }
         }
         fetched
     }

@@ -470,6 +470,25 @@ fn a_remote_whose_url_holds_no_repository_is_explained_and_not_kept() {
 }
 
 #[test]
+fn a_remote_named_like_an_option_is_not_kept_either_when_it_cannot_be_fetched() {
+    let sandbox = Sandbox::new();
+    let mine = sandbox.repository("mine");
+    mine.commit_at(1, "First");
+    let missing = sandbox.folder("missing.git");
+    let url = missing.to_string_lossy().into_owned();
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+
+    let defined = gikli.add_remote(&root, "-f", &url);
+
+    assert!(
+        matches!(defined, Err(Failure::Explained { .. })),
+        "{defined:?}"
+    );
+    assert_eq!(mine.git(&["remote"]), "", "git has no remote left");
+}
+
+#[test]
 fn a_remote_needs_a_free_valid_name_and_a_url() {
     let sandbox = Sandbox::new();
     let (remote, mine) = remote_and_clone(&sandbox);
