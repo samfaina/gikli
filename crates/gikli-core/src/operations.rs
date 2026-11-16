@@ -28,6 +28,14 @@ pub enum LongOperation {
     RollbackFiles { repository: Repository },
     /// Committing files of `repository`, where a hook can take as long as it likes.
     CommitFiles { repository: Repository },
+    /// Fetching every remote of `repository`, pruning the remote branches gone from them.
+    FetchAll { repository: Repository },
+    /// Fetching `branch` of `repository` alone, as the user named it, from `remote`.
+    FetchBranch {
+        repository: Repository,
+        remote: String,
+        branch: String,
+    },
     /// Fetching the rest of the history of `repository`, whose history is cut, from `remote`.
     FetchRestOfHistory {
         repository: Repository,

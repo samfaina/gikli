@@ -50,6 +50,24 @@ _Avoid_: Stash (that is git's own mechanism), drafts
 The uncommitted changes that gikli puts aside before an operation that needs a clean working tree and restores when the operation finishes, together with their Changelists.
 _Avoid_: Auto-stash, temporary shelf
 
+## Synchronization
+
+**Upstream**:
+The branch a local branch is compared with and pulls from, usually a remote branch such as `origin/main`. It is gone when it is configured and no longer exists.
+_Avoid_: Tracking branch, remote (that is the repository it comes from)
+
+**Incoming commits**:
+The commits of the upstream that the local branch does not have yet: what a pull would bring.
+_Avoid_: Behind (git's word for it)
+
+**Outgoing commits**:
+The commits of the local branch that its upstream does not have yet: what a push would send.
+_Avoid_: Ahead (git's word for it), unpushed
+
+**Status area**:
+The strip at the foot of every window that always shows what HEAD of each Repository is on, with the incoming and outgoing commits of the current branch.
+_Avoid_: Status bar, footer
+
 ## Authentication
 
 **Prompt**:

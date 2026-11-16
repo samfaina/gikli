@@ -320,8 +320,14 @@ export type Failure =
   | { kind: "logUnreadable"; folder: string }
   /** The history changed since the page before: the log starts over from the first page. */
   | { kind: "logChanged" }
-  /** The Repository has no remote to fetch the rest of its history from. */
+  /** The Repository has no remote to fetch from. */
   | { kind: "noRemoteToFetchFrom"; folder: string }
+  /** The local `branch` has no upstream on a remote, so there is nothing to fetch for it alone. */
+  | { kind: "noUpstream"; branch: string }
+  /** git could not fetch: the operation log shows why. */
+  | { kind: "fetchFailed"; folder: string }
+  /** git could not read the branches or how far they are from their upstreams: the operation log shows why. */
+  | { kind: "branchesUnreadable"; folder: string }
   /** git could not fetch the rest of the history from `remote`: the operation log shows why. */
   | { kind: "historyNotFetched"; folder: string; remote: string }
   /** No commit goes by `revision`: no hash, branch, tag or other name git knows. */
@@ -415,6 +421,8 @@ export type LongOperation =
   | { kind: "unstageFiles"; repository: Repository }
   | { kind: "rollbackFiles"; repository: Repository }
   | { kind: "commitFiles"; repository: Repository }
+  | { kind: "fetchAll"; repository: Repository }
+  | { kind: "fetchBranch"; repository: Repository; remote: string; branch: string }
   | { kind: "fetchRestOfHistory"; repository: Repository; remote: string };
 
 /** How far one phase of a long operation has come. */
@@ -916,6 +924,59 @@ export function readLog(
  */
 export function fetchRestOfHistory(repository: Repository): Promise<void> {
   return invoke("fetch_rest_of_history", { repository });
+}
+
+/**
+ * Fetches every remote of `repository`, pruning the remote branches gone from them, as a long
+ * operation. Rejects with a {@link Failure}.
+ */
+export function fetchAll(repository: Repository): Promise<void> {
+  return invoke("fetch_all", { repository });
+}
+
+/**
+ * Fetches `branch` of `repository` alone: a local branch from its upstream, a remote branch from its
+ * remote, as a long operation. Rejects with a {@link Failure}.
+ */
+export function fetchBranch(repository: Repository, branch: RefLabel): Promise<void> {
+  return invoke("fetch_branch", { repository, branch });
+}
+
+/** How far a local branch is from its upstream. */
+export interface IncomingOutgoing {
+  /** The commits of the upstream the branch does not have. */
+  incoming: number;
+  /** The commits of the branch its upstream does not have. */
+  outgoing: number;
+}
+
+/** The branch a local branch is compared with. */
+export interface Upstream {
+  /** Its name as the user knows it, such as `origin/main`. */
+  name: string;
+  /** null when it is gone, as when it was deleted on the remote and a fetch pruned it. */
+  commits: IncomingOutgoing | null;
+}
+
+/** A local branch, with its upstream if it has one. */
+export interface LocalBranch {
+  name: string;
+  upstream: Upstream | null;
+}
+
+/** What HEAD is on, as the status area shows it. */
+export type CurrentBranch =
+  | { kind: "branch"; name: string; upstream: Upstream | null }
+  | { kind: "detached"; hash: string };
+
+/** The local branches of `repository`, by name, each with how far it is from its upstream. Rejects with a {@link Failure}. */
+export function localBranches(repository: Repository): Promise<LocalBranch[]> {
+  return invoke("local_branches", { repository });
+}
+
+/** What HEAD of `repository` is on. Rejects with a {@link Failure}. */
+export function currentBranch(repository: Repository): Promise<CurrentBranch> {
+  return invoke("current_branch", { repository });
 }
 
 /** The searches of the log the user ran, newest first, each with its regex and match-case options. */

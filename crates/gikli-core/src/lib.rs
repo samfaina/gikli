@@ -27,6 +27,7 @@ mod search_history;
 mod settings;
 mod shallow;
 mod status;
+mod sync;
 mod trace;
 mod url_passwords;
 mod version;
@@ -68,6 +69,7 @@ pub use status::{
     Change, ChangeGroup, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, Changelist,
     ConflictKind, StagingArea, StagingSide, SubmoduleState,
 };
+pub use sync::{CurrentBranch, IncomingOutgoing, LocalBranch, Upstream};
 pub use version::GitVersion;
 pub use window::ProjectWindow;
 
@@ -366,7 +368,7 @@ pub enum Failure {
     /// The history changed since the page of the log before this one, so this one would not follow
     /// from it. The log starts over from the first page.
     LogChanged,
-    /// The Repository at `folder` has no remote to fetch the rest of its history from.
+    /// The Repository at `folder` has no remote to fetch from.
     #[serde(rename_all = "camelCase")]
     NoRemoteToFetchFrom {
         folder: PathBuf,
@@ -377,6 +379,21 @@ pub enum Failure {
     HistoryNotFetched {
         folder: PathBuf,
         remote: String,
+    },
+    /// The local `branch` has no upstream on a remote, so there is nothing to fetch for it alone.
+    NoUpstream {
+        branch: String,
+    },
+    /// git could not fetch into the Repository at `folder`. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    FetchFailed {
+        folder: PathBuf,
+    },
+    /// git could not read the branches of the Repository at `folder`, or how far they are from
+    /// their upstreams. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    BranchesUnreadable {
+        folder: PathBuf,
     },
     /// No commit of the Repository goes by `revision`, as a hash, a branch, a tag or any other
     /// name git knows.
@@ -1800,6 +1817,74 @@ impl Gikli {
             remote,
         };
         Err(failure_of(&runner, root, &failed, fallback))
+    }
+
+    /// Fetches every remote of `repository`, and prunes the remote branches that are gone from
+    /// them. The fetch runs as a [`LongOperation`] that reports its progress and that the user can
+    /// cancel. A Repository without a remote returns [`Failure::NoRemoteToFetchFrom`].
+    pub fn fetch_all(&self, repository: &Repository) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        let remotes = sync::remotes(&runner, repository)?;
+        if remotes.is_empty() {
+            return Err(Failure::NoRemoteToFetchFrom {
+                folder: repository.root.clone(),
+            });
+        }
+        let operation = LongOperation::FetchAll {
+            repository: repository.clone(),
+        };
+        self.fetch(
+            &runner,
+            repository,
+            operation,
+            &sync::fetch_all_args(&remotes),
+        )
+    }
+
+    /// Fetches `branch` of `repository` alone: a local branch from the remote branch its upstream
+    /// is, a remote branch from its remote. Only the remote branch it updates changes. The fetch
+    /// runs as a [`LongOperation`] that reports its progress and that the user can cancel. A local
+    /// branch without an upstream on a remote returns [`Failure::NoUpstream`], and a remote branch
+    /// no remote fetches into [`Failure::NoRemoteToFetchFrom`].
+    pub fn fetch_branch(&self, repository: &Repository, branch: &RefLabel) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        let source = sync::branch_source(&runner, repository, branch)?;
+        let operation = LongOperation::FetchBranch {
+            repository: repository.clone(),
+            remote: source.remote.clone(),
+            branch: branch.name.clone(),
+        };
+        self.fetch(&runner, repository, operation, &source.fetch_args())
+    }
+
+    /// Runs git with `args`, a fetch, in `repository` as `operation`, and explains its failure.
+    fn fetch(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        operation: LongOperation,
+        args: &[&str],
+    ) -> Result<(), Failure> {
+        let root = &repository.root;
+        let invocation = self.run_operation(runner, operation, root, args)?;
+        if invocation.success {
+            return Ok(());
+        }
+        let fallback = Failure::FetchFailed {
+            folder: root.clone(),
+        };
+        Err(failure_of(runner, root, &invocation, fallback))
+    }
+
+    /// The local branches of `repository`, by name, each with how far it is from its upstream.
+    pub fn local_branches(&self, repository: &Repository) -> Result<Vec<LocalBranch>, Failure> {
+        sync::local_branches(&self.runner(&repository.root)?, repository)
+    }
+
+    /// What HEAD of `repository` is on, as the status area shows it at all times: the current
+    /// branch with how far it is from its upstream, or the commit of a detached HEAD.
+    pub fn current_branch(&self, repository: &Repository) -> Result<CurrentBranch, Failure> {
+        sync::current_branch(&self.runner(&repository.root)?, repository)
     }
 
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer
