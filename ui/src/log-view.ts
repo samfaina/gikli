@@ -280,7 +280,8 @@ export function createLogView(host: LogViewHost): LogView {
 
   /**
    * Selects the commit `hash`, which the user knows as `revision`, or says the log does not show it:
-   * at once when none of the branches it is filtered by reach it, and otherwise once it is read.
+   * at once when none of the branches it is filtered by reach it or the search does not match it,
+   * and otherwise once it is read.
    */
   async function goToCommit(hash: string, revision: string): Promise<void> {
     const shown = repository;

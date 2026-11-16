@@ -693,6 +693,195 @@ fn going_to_a_commit_the_filtered_log_shows_still_goes_to_it() {
     );
 }
 
+#[test]
+fn going_to_a_commit_the_search_does_not_match_says_it_is_not_shown() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base fix");
+    repository.git(&["switch", "--quiet", "--create", "feature"]);
+    repository.commit_at(2, "Feature work");
+    repository.git(&["switch", "--quiet", "main"]);
+    repository.commit_at(3, "Main fix");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let whole_log = search("fix");
+    let mut of_feature = search("fix");
+    of_feature.branches = vec![branch("feature", RefKind::Local)];
+    let feature = gikli.go_to(&root, "feature").expect("go to the feature");
+
+    assert_eq!(
+        gikli.filtered_log_reaches(&root, &whole_log, &feature),
+        Ok(false)
+    );
+    assert_eq!(
+        gikli.filtered_log_reaches(&root, &of_feature, &feature),
+        Ok(false)
+    );
+    assert!(
+        gikli.log_search_history().is_empty(),
+        "going to a commit runs no search the user keeps"
+    );
+    assert!(
+        !repository
+            .git(&["log", "--format=%H", "-i", "--grep=fix", "--all"])
+            .contains(&feature),
+        "git agrees the search does not find the feature"
+    );
+    assert!(
+        !filtered_rows(&gikli, &root, &of_feature, 1)
+            .iter()
+            .any(|row| row.hash == feature),
+        "the pages of the log do not show it"
+    );
+}
+
+#[test]
+fn going_to_a_commit_tells_a_match_by_the_rules_of_the_search() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base");
+    repository.git_at(
+        2,
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "--author",
+            "Ada Lovelace <ada@example.com>",
+            "--message",
+            "Fix the parser\n\nThe LEXER was wrong.",
+        ],
+    );
+    repository.commit_at(3, "Later");
+    let target = hash_of(&repository, "HEAD~1");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let with = |text: &str, regex: bool, match_case: bool| TextSearch {
+        text: text.to_owned(),
+        regex,
+        match_case,
+    };
+    let inside_the_hash = &target[5..15];
+    let cases = [
+        (
+            with("lexer", false, false),
+            true,
+            "the whole message, any case",
+        ),
+        (
+            with("lexer", false, true),
+            false,
+            "the message in another case",
+        ),
+        (with("LEXER", false, true), true, "the message in its case"),
+        (with("lovelace", false, false), true, "the author's name"),
+        (
+            with("ada@example.com", false, false),
+            false,
+            "the author's email",
+        ),
+        (
+            with(&target[..9].to_uppercase(), false, false),
+            true,
+            "the start of the hash",
+        ),
+        (
+            with(inside_the_hash, false, false),
+            false,
+            "inside the hash, as text",
+        ),
+        (
+            with(inside_the_hash, true, false),
+            true,
+            "inside the hash, as a regex",
+        ),
+        (
+            with("par.er", false, false),
+            false,
+            "a regex that is not one",
+        ),
+        (
+            with(r"^The lex\w+", true, false),
+            true,
+            "a regex at the start of a line",
+        ),
+        (
+            with("^Fix.*wrong", true, false),
+            false,
+            "a regex across lines",
+        ),
+        (with("", false, false), true, "no text"),
+    ];
+
+    for (search, expected, what) in cases {
+        let main_only = LogFilter {
+            branches: vec![branch("main", RefKind::Local)],
+            text: Some(search.clone()),
+        };
+        let reaches = gikli.filtered_log_reaches(&root, &main_only, &target);
+        let shown = filtered_rows(&gikli, &root, &main_only, 1)
+            .iter()
+            .any(|row| row.hash == target);
+
+        assert_eq!(reaches, Ok(expected), "{what}: {search:?}");
+        assert_eq!(shown, expected, "the pages agree on {what}: {search:?}");
+    }
+    // git's own search of the message agrees where its rules are gikli's. `\w` is a GNU extension
+    // that the regular expressions of macOS lack, so git is asked the same in plain POSIX.
+    let found_by_git = |args: &[&str]| {
+        let args = [&["log", "--format=%H"][..], args, &["main"]].concat();
+        repository.git(&args).lines().any(|listed| listed == target)
+    };
+    assert!(
+        found_by_git(&["-i", "--grep=lexer"]),
+        "git finds the message in any case"
+    );
+    assert!(!found_by_git(&["--grep=lexer"]), "git keeps to the case");
+    assert!(found_by_git(&["--grep=LEXER"]), "git finds it in its case");
+    assert!(
+        found_by_git(&["-E", "-i", "--grep=^The lex[[:alnum:]_]+"]),
+        "git matches `^` at the start of a line"
+    );
+    assert!(
+        found_by_git(&["-i", "--author=lovelace"]),
+        "git finds the author"
+    );
+}
+
+#[test]
+fn going_to_a_commit_with_a_search_that_is_no_regular_expression_fails_as_the_search_does() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let mut filter = searching(TextSearch {
+        text: "fix(".to_owned(),
+        regex: true,
+        match_case: false,
+    });
+    let base = gikli.go_to(&root, "main").expect("go to the base");
+
+    let read = gikli.read_filtered_log(&root, &filter, None, 50);
+    let reaches = gikli.filtered_log_reaches(&root, &filter, &base);
+    filter.branches = vec![branch("main", RefKind::Local)];
+    let reaches_on_main = gikli.filtered_log_reaches(&root, &filter, &base);
+
+    let Err(failure @ Failure::SearchPatternInvalid { .. }) = read else {
+        panic!("the search fails on the pattern: {read:?}");
+    };
+    assert_eq!(
+        reaches,
+        Err(failure.clone()),
+        "the same failure as the search"
+    );
+    assert_eq!(reaches_on_main, Err(failure), "with a branch filter too");
+    assert!(
+        !repository.git_succeeds(&["log", "-E", "--grep=fix("]),
+        "git does not take it either"
+    );
+}
+
 /// A search of `text` with the regex and match-case options off.
 fn plain(text: &str) -> TextSearch {
     TextSearch {
