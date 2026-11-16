@@ -52,9 +52,16 @@ pub enum CurrentBranch {
     Detached { hash: String },
 }
 
-/// The arguments of the git that fetches every remote, pruning the remote branches that are gone
-/// from them.
-pub(crate) const FETCH_ALL_ARGS: [&str; 4] = ["fetch", "--progress", "--all", "--prune"];
+/// The arguments of the git that fetches every remote of those `remotes` lists, pruning the remote
+/// branches that are gone from them. A single remote is named: `git fetch --all` before git 2.37
+/// fetches each remote in a git of its own that reports no progress, even when there is only one.
+/// Several remotes go through `--all`.
+pub(crate) fn fetch_all_args(remotes: &[String]) -> Vec<&str> {
+    match remotes {
+        [remote] => vec!["fetch", "--progress", "--prune", "--end-of-options", remote],
+        _ => vec!["fetch", "--progress", "--all", "--prune"],
+    }
+}
 
 /// Where a branch the user fetches on its own comes from: the branch `reference` of `remote`.
 pub(crate) struct BranchSource {
@@ -169,10 +176,10 @@ fn fetched_into(
     }))
 }
 
-/// Whether `repository` has any remote.
-pub(crate) fn has_remote(runner: &GitRunner, repository: &Repository) -> Result<bool, Failure> {
+/// The names of the remotes of `repository`, as git lists them.
+pub(crate) fn remotes(runner: &GitRunner, repository: &Repository) -> Result<Vec<String>, Failure> {
     let listed = read_branches(runner, repository, &["remote"])?;
-    Ok(!listed.trim().is_empty())
+    Ok(listed.lines().map(str::to_owned).collect())
 }
 
 /// What `for-each-ref` writes of each local branch: its full name, and that of its upstream, empty

@@ -1824,7 +1824,8 @@ impl Gikli {
     /// cancel. A Repository without a remote returns [`Failure::NoRemoteToFetchFrom`].
     pub fn fetch_all(&self, repository: &Repository) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?;
-        if !sync::has_remote(&runner, repository)? {
+        let remotes = sync::remotes(&runner, repository)?;
+        if remotes.is_empty() {
             return Err(Failure::NoRemoteToFetchFrom {
                 folder: repository.root.clone(),
             });
@@ -1832,7 +1833,12 @@ impl Gikli {
         let operation = LongOperation::FetchAll {
             repository: repository.clone(),
         };
-        self.fetch(&runner, repository, operation, &sync::FETCH_ALL_ARGS)
+        self.fetch(
+            &runner,
+            repository,
+            operation,
+            &sync::fetch_all_args(&remotes),
+        )
     }
 
     /// Fetches `branch` of `repository` alone: a local branch from the remote branch its upstream
