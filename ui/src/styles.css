@@ -121,6 +121,12 @@ button:disabled {
   border-bottom: 1px solid var(--border);
 }
 
+/* The settings scroll on their own, so that while they are open the Project stays in view below them. */
+#settings {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
 .settings label {
   display: block;
   margin-bottom: 6px;
