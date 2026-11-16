@@ -68,6 +68,10 @@ _Avoid_: Ahead (git's word for it), unpushed
 The strip at the foot of every window that always shows what HEAD of each Repository is on, with the incoming and outgoing commits of the current branch.
 _Avoid_: Status bar, footer
 
+**Cut history**:
+The history of a Repository that stops short of its first commits, as after a shallow clone: git holds some commits without their parents, and the log marks each one. Fetching the rest of the history brings the older commits and makes the history whole.
+_Avoid_: Truncated history, partial history, grafts (an old git mechanism)
+
 ## Authentication
 
 **Prompt**:
