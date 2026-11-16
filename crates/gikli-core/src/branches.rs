@@ -15,6 +15,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Branches {
+    /// The Repository the branches are of.
     pub repository: Repository,
     /// What HEAD is on.
     pub current: CurrentBranch,
@@ -159,14 +160,14 @@ pub(crate) fn list(
 }
 
 /// How many branches Recent holds at most.
-const RECENT_BRANCHES: usize = 5;
+const MOST_RECENT_BRANCHES: usize = 5;
 
 /// How an entry of the reflog of HEAD for a checkout starts, as `git checkout` and `git switch`
 /// write it. The branch or commit HEAD left follows, then ` to ` and the one it went to.
-const CHECKOUT: &str = "checkout: moving from ";
+const CHECKOUT_ENTRY_START: &str = "checkout: moving from ";
 
 /// The local branches of `repository` HEAD was last checked out on, newest first, other than the
-/// `current` one, up to [`RECENT_BRANCHES`] of them, from the reflog of HEAD. `upstreams` holds
+/// `current` one, up to [`MOST_RECENT_BRANCHES`] of them, from the reflog of HEAD. `upstreams` holds
 /// the upstream of each local branch there is now, so a branch since deleted, or a commit HEAD
 /// was detached on, is left out.
 fn recent(
@@ -175,10 +176,11 @@ fn recent(
     current: &CurrentBranch,
     upstreams: &HashMap<String, Option<Upstream>>,
 ) -> Result<Vec<Branch>, Failure> {
-    let grep = format!("--grep-reflog={CHECKOUT}");
+    let grep = format!("--grep-reflog={CHECKOUT_ENTRY_START}");
     let args = [
         "log",
         "--walk-reflogs",
+        "--no-show-signature",
         "--fixed-strings",
         &grep,
         "--format=%gs",
@@ -204,7 +206,7 @@ fn recent(
     let mut recent: Vec<Branch> = Vec::new();
     for line in read.stdout_text().lines() {
         let Some((_, name)) = line
-            .strip_prefix(CHECKOUT)
+            .strip_prefix(CHECKOUT_ENTRY_START)
             .and_then(|moved| moved.rsplit_once(" to "))
         else {
             continue;
@@ -222,7 +224,7 @@ fn recent(
             },
             upstream: upstream.clone(),
         });
-        if recent.len() == RECENT_BRANCHES {
+        if recent.len() == MOST_RECENT_BRANCHES {
             break;
         }
     }

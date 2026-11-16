@@ -2,10 +2,27 @@
 // list, with its directories open, and each local branch with its incoming and outgoing commits.
 // The core lists, groups and searches the branches; this only draws them.
 
-import type { Branch, BranchNode, RefLabel, Upstream } from "./core";
+import type { Branch, BranchNode, Branches, RefLabel, Upstream } from "./core";
 import { t } from "./strings";
 
-/** What a drawn branch does when the user acts on it. */
+/** The local and remote branches, as the branches pane of the log lists them. */
+export type BranchGroups = Pick<Branches, "local" | "remote">;
+
+/** Whether `a` and `b` name the same reference: the same name of the same kind. */
+export function sameLabel(a: RefLabel, b: RefLabel): boolean {
+  return a.name === b.name && a.kind === b.kind;
+}
+
+/** A group of branches under its heading, its test id `testId`. */
+export function branchGroup(testId: string, heading: HTMLElement, list: HTMLElement): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "branch-group";
+  section.dataset.testid = testId;
+  section.append(heading, list);
+  return section;
+}
+
+/** What a drawn branch does when the user acts on it, and which one is chosen. */
 export interface BranchActions {
   /** The user clicked the branch, or pressed Enter on it. */
   pick(branch: Branch): void;
@@ -59,7 +76,7 @@ function branchButton(branch: Branch, shownName: string, actions: BranchActions)
   button.dataset.kind = branch.label.kind;
   button.title = branch.label.name;
   const chosen = actions.chosen;
-  const isChosen = chosen !== undefined && chosen !== null && chosen.name === branch.label.name && chosen.kind === branch.label.kind;
+  const isChosen = chosen !== undefined && chosen !== null && sameLabel(chosen, branch.label);
   button.classList.toggle("chosen", isChosen);
   button.setAttribute("aria-pressed", String(isChosen));
   const name = document.createElement("span");

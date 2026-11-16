@@ -407,7 +407,7 @@ fn count(
 
 /// The standard output of git run with `args` in `repository` to read its branches, which has to
 /// succeed. A failure the failure explainer does not know says the branches could not be read.
-pub(crate) fn read_branches(
+fn read_branches(
     runner: &GitRunner,
     repository: &Repository,
     args: &[&str],

@@ -72,6 +72,20 @@ _Avoid_: Status bar, footer
 The history of a Repository that stops short of its first commits, as after a shallow clone: git holds some commits without their parents, and the log marks each one. Fetching the rest of the history brings the older commits and makes the history whole.
 _Avoid_: Truncated history, partial history, grafts (an old git mechanism)
 
+## Branches
+
+**Branch selector**:
+The list that opens from what HEAD is on in the Status area, with every branch and tag of a Repository in the groups Recent, Local, Remote and Tags, and a search across them.
+_Avoid_: Branch popup, branch menu
+
+**Recent branches**:
+The local branches the user checked out last, up to 5, newest first, as the reflog of HEAD records the checkouts. The current branch is not among them.
+_Avoid_: Recently used, history
+
+**Branches pane**:
+The list of local and remote branches beside the log, where the user filters the log by a branch and goes to its latest commit.
+_Avoid_: Branch tree, sidebar
+
 ## Authentication
 
 **Prompt**:

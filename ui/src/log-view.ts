@@ -3,7 +3,7 @@
 // the commits and lays out the graph a page at a time; this draws only the rows in view, and asks
 // for the next page as the user nears the end.
 
-import { branchList, type BranchActions } from "./branch-tree";
+import { branchGroup, branchList, sameLabel, type BranchActions, type BranchGroups } from "./branch-tree";
 import { createCommitMenu } from "./commit-menu";
 import {
   branches as readBranches,
@@ -114,7 +114,7 @@ export function createLogView(host: LogViewHost): LogView {
   /** The branch the user chose in the branches pane to filter the log by, if any. */
   let chosen: RefLabel | null = null;
   /** The local and remote branches the branches pane lists, as the core grouped them. */
-  let listed: { local: BranchNode[]; remote: BranchNode[] } = { local: [], remote: [] };
+  let listed: BranchGroups = { local: [], remote: [] };
   /** The searches the user ran, newest first, as the recent searches list them. */
   let searches: TextSearch[] = [];
   let suggestionTimer: number | undefined;
@@ -206,6 +206,9 @@ export function createLogView(host: LogViewHost): LogView {
   function showBranch(toShow: Repository, branch: RefLabel): void {
     if (repository?.root !== toShow.root || view.hidden) {
       open(toShow);
+    } else if (chosen !== null) {
+      // A log filtered by another branch may not show the one asked for.
+      chooseBranch(null);
     }
     void goToBranchTip(branch);
   }
@@ -223,7 +226,7 @@ export function createLogView(host: LogViewHost): LogView {
    * keeping the one chosen. Each local branch says how far it is from its upstream.
    */
   async function listBranches(shown: Repository): Promise<void> {
-    let read: { local: BranchNode[]; remote: BranchNode[] };
+    let read: BranchGroups;
     try {
       read = await readBranches(shown, "");
     } catch (error) {
@@ -268,13 +271,9 @@ export function createLogView(host: LogViewHost): LogView {
     ]
       .filter((group) => group.nodes.length > 0)
       .map((group) => {
-        const section = document.createElement("section");
-        section.className = "branch-group";
-        section.dataset.testid = `log-branch-group-${group.id}`;
         const heading = document.createElement("h4");
         heading.textContent = group.heading;
-        section.append(heading, branchList(group.nodes, actions));
-        return section;
+        return branchGroup(`log-branch-group-${group.id}`, heading, branchList(group.nodes, actions));
       });
     branchesPane.replaceChildren(every, ...groups, ...(failure === undefined ? [] : [failure]));
     goToBranchButton.disabled = chosen === null;
@@ -310,15 +309,9 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  /** The branch chosen in the branches pane, if any. */
-  function chosenBranch(): RefLabel | undefined {
-    return chosen ?? undefined;
-  }
-
   /** Says on the fetch button what it fetches: the branch chosen in the filter, or every remote. */
   function labelFetchButton(): void {
-    const chosen = chosenBranch();
-    fetchButton.textContent = chosen === undefined ? t("logFetchAll") : t("logFetchBranch", { branch: chosen.name });
+    fetchButton.textContent = chosen === null ? t("logFetchAll") : t("logFetchBranch", { branch: chosen.name });
   }
 
   /** Fetches the branch chosen in the filter, or every remote when none is, and reads the log again. */
@@ -327,10 +320,11 @@ export function createLogView(host: LogViewHost): LogView {
     if (shown === null) {
       return;
     }
-    const chosen = chosenBranch();
+    // The branch chosen when the fetch starts, as the user may choose another while it runs.
+    const picked = chosen;
     fetchButton.disabled = true;
     try {
-      await (chosen === undefined ? fetchAll(shown) : fetchBranch(shown, chosen));
+      await (picked === null ? fetchAll(shown) : fetchBranch(shown, picked));
       if (repository === shown) {
         refresh();
       }
@@ -380,10 +374,9 @@ export function createLogView(host: LogViewHost): LogView {
 
   /** Reads the log again with the search and the branch filter as the user set them. */
   function applyFilter(): void {
-    const branch = chosenBranch();
     const text = searchInput.value;
     filter = {
-      branches: branch === undefined ? [] : [branch],
+      branches: chosen === null ? [] : [chosen],
       text: text === "" ? null : { text, regex: regexInput.checked, matchCase: matchCaseInput.checked },
     };
     list.scrollTop = 0;
@@ -854,6 +847,3 @@ function labelsOf(nodes: BranchNode[]): RefLabel[] {
   return nodes.flatMap((node) => (node.kind === "directory" ? labelsOf(node.children) : [node.label]));
 }
 
-function sameLabel(a: RefLabel, b: RefLabel): boolean {
-  return a.name === b.name && a.kind === b.kind;
-}

@@ -299,10 +299,26 @@ fn branches_are_grouped_by_directory_by_default() {
     );
 }
 
+/// The local branches, remote branches or tags under `prefix`, such as `refs/heads/`, by whole
+/// name, as plain git lists them.
+fn listed_by_git(repository: &TestRepository, prefix: &str) -> Vec<String> {
+    repository
+        .git(&["for-each-ref", "--format=%(refname)", prefix])
+        .lines()
+        .filter(|name| !name.ends_with("/HEAD"))
+        .map(|name| name[prefix.len()..].to_owned())
+        .collect()
+}
+
+/// The whole names of `nodes`, as a flat list holds them.
+fn names(nodes: &[BranchNode]) -> Vec<String> {
+    listed(nodes).into_iter().map(|label| label.name).collect()
+}
+
 #[test]
 fn branches_can_be_listed_without_their_directories() {
     let sandbox = Sandbox::new();
-    let (_work, gikli, root) = repository_with_directories(&sandbox);
+    let (work, gikli, root) = repository_with_directories(&sandbox);
 
     let settings = gikli
         .set_group_branches_by_directory(false)
@@ -327,6 +343,12 @@ fn branches_can_be_listed_without_their_directories() {
             branch("origin/main", RefKind::Remote),
         ]
     );
+    assert_eq!(names(&branches.local), listed_by_git(&work, "refs/heads/"));
+    assert_eq!(
+        names(&branches.remote),
+        listed_by_git(&work, "refs/remotes/")
+    );
+    assert_eq!(names(&branches.tags), listed_by_git(&work, "refs/tags/"));
     assert!(
         !sandbox.gikli().settings().group_branches_by_directory,
         "kept for the next start"

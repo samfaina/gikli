@@ -1049,14 +1049,17 @@ export type BranchNode =
 
 /** The branches of a Repository, in the groups the branch selector shows. */
 export interface Branches {
+  /** The Repository the branches are of. */
   repository: Repository;
   /** What HEAD is on. */
   current: CurrentBranch;
   /** The local branches checked out last, newest first, other than the current one; empty when hidden. */
   recent: Branch[];
+  /** The local branches, by name. */
   local: BranchNode[];
+  /** The remote branches, by name. */
   remote: BranchNode[];
-  /** Empty when hidden. */
+  /** The tags, by name; empty when hidden. */
   tags: BranchNode[];
 }
 

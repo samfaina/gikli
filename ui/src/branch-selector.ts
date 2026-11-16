@@ -2,7 +2,7 @@
 // on, and every branch and tag in the groups Recent, Local, Remote and Tags, with a search across
 // them. The core lists, groups and searches them; this draws them and keeps the options.
 
-import { flatBranchList, branchList, upstreamMark, type BranchActions } from "./branch-tree";
+import { branchGroup, branchList, flatBranchList, upstreamMark, type BranchActions } from "./branch-tree";
 import {
   branches as readBranches,
   setGroupBranchesByDirectory,
@@ -77,7 +77,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   closeButton.addEventListener("click", close);
   searchInput.addEventListener("input", () => {
     window.clearTimeout(searchTimer);
-    searchTimer = window.setTimeout(() => void read(), SEARCH_DELAY);
+    searchTimer = window.setTimeout(() => void listBranches(), SEARCH_DELAY);
   });
   view.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -106,7 +106,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
         option.input.checked = option.read(saved);
       }
     });
-    void read();
+    void listBranches();
     searchInput.focus();
   }
 
@@ -122,7 +122,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     option.input.disabled = true;
     try {
       option.input.checked = option.read(await option.save(option.input.checked));
-      await read();
+      await listBranches();
     } catch (error) {
       option.input.checked = !option.input.checked;
       groups.replaceChildren(host.errorView(error));
@@ -132,7 +132,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   }
 
   /** Lists the branches the search finds; an answer an earlier read gives late is dropped. */
-  async function read(): Promise<void> {
+  async function listBranches(): Promise<void> {
     const shown = repository;
     if (shown === null) {
       return;
@@ -187,13 +187,9 @@ function group(id: string, heading: string, list: HTMLElement | null): HTMLEleme
   if (list === null) {
     return null;
   }
-  const section = document.createElement("section");
-  section.className = "branch-group";
-  section.dataset.testid = `branch-group-${id}`;
   const title = document.createElement("h3");
   title.textContent = heading;
-  section.append(title, list);
-  return section;
+  return branchGroup(`branch-group-${id}`, title, list);
 }
 
 /** What HEAD is on, and the incoming and outgoing commits of the current branch. */
