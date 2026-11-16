@@ -460,6 +460,15 @@ impl GitRunner {
         self.relative_path(folder, &["--git-dir"])
     }
 
+    /// The git directory the repository `folder` is in shares with its other worktrees, where git
+    /// keeps its refs, or None when git cannot say. The git directory itself for most repositories
+    /// and submodules; the one of the main working tree for a linked worktree.
+    pub fn common_git_dir(&self, folder: &Path) -> std::io::Result<Option<PathBuf>> {
+        Ok(self
+            .relative_path(folder, &["--git-common-dir"])?
+            .map(|common_git_dir| folder.join(common_git_dir)))
+    }
+
     /// The path git keeps `name` at in the git directory of the repository `folder` is in, such as
     /// `shallow`, relative to `folder` as [`Self::relative_git_dir`] gives it, or None when git
     /// cannot say. For a linked worktree, a file all the worktrees share is in the common git

@@ -17,9 +17,10 @@ const QUIET_PERIOD: Duration = Duration::from_millis(250);
 /// The longest a burst that does not stop is held back before it is announced anyway.
 const LONGEST_WAIT: Duration = Duration::from_secs(2);
 
-/// Folders of a git directory whose changes never change the changes view: git's object store,
-/// its reflogs, and gikli's own files, which it writes when it reads the changes. They count at any
-/// depth, so those of submodules under `modules/` and worktrees under `worktrees/` count too.
+/// Folders of a git directory whose changes never change what gikli shows, in the changes view,
+/// the status area, the log or the branch filter: git's object store, its reflogs, and gikli's own
+/// files, which it writes when it reads the changes. They count at any depth, so those of
+/// submodules under `modules/` and worktrees under `worktrees/` count too.
 const UNWATCHED_GIT_FOLDERS: &[&str] = &["objects", "logs", "gikli"];
 
 /// Watches one Repository until dropped.
@@ -28,16 +29,34 @@ pub(crate) struct ChangesWatcher {
 }
 
 impl ChangesWatcher {
-    /// Starts watching the working tree of `repository` and its `git_dir`, when git named one,
-    /// and sends [`Event::FilesChanged`] to `events` after each burst of changes.
+    /// Starts watching the working tree of `repository`, its `git_dir` and its `common_git_dir`,
+    /// when git named them, and sends [`Event::FilesChanged`] to `events` after each burst of
+    /// changes.
     pub fn start(
         repository: Repository,
         git_dir: Option<PathBuf>,
+        common_git_dir: Option<PathBuf>,
         events: Arc<EventBus>,
     ) -> notify::Result<Self> {
         let inside = repository.root.join(".git");
-        let outside = git_dir.filter(|git_dir| !git_dir.starts_with(&repository.root));
-        let git_dirs: Vec<PathBuf> = std::iter::once(inside).chain(outside.clone()).collect();
+        let mut outside_root: Vec<PathBuf> = [git_dir, common_git_dir]
+            .into_iter()
+            .flatten()
+            .filter(|git_dir| !git_dir.starts_with(&repository.root))
+            .collect();
+        // For a submodule the two are one folder.
+        outside_root.dedup();
+        // A linked worktree's git directory sits inside its common one, watched with it.
+        let to_watch: Vec<PathBuf> = outside_root
+            .iter()
+            .filter(|git_dir| {
+                !outside_root
+                    .iter()
+                    .any(|other| other != *git_dir && git_dir.starts_with(other))
+            })
+            .cloned()
+            .collect();
+        let git_dirs: Vec<PathBuf> = std::iter::once(inside).chain(outside_root).collect();
         let (sender, receiver) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |result: notify::Result<_>| {
             // An error can mean lost events: count it as a change, so nothing goes unseen.
@@ -46,8 +65,9 @@ impl ChangesWatcher {
             }
         })?;
         watcher.watch(&repository.root, RecursiveMode::Recursive)?;
-        // A linked worktree or a submodule keeps its index and HEAD outside its working tree.
-        if let Some(git_dir) = &outside {
+        // A linked worktree or a submodule keeps its index and HEAD outside its working tree, and
+        // a linked worktree its refs in the common git directory, outside it as well.
+        for git_dir in &to_watch {
             watcher.watch(git_dir, RecursiveMode::Recursive)?;
         }
         std::thread::spawn(move || announce_bursts(&receiver, &repository, &events));
@@ -55,7 +75,7 @@ impl ChangesWatcher {
     }
 }
 
-/// Whether `event` is a change to a file that can change the changes view. Reading a file is
+/// Whether `event` is a change to a file that can change what gikli shows. Reading a file is
 /// not: git reads the working tree every time gikli reads the changes. Neither is anything in
 /// the [`UNWATCHED_GIT_FOLDERS`] of the `git_dirs`, nor a git directory itself being modified:
 /// that only says something inside it changed, which has an event of its own.

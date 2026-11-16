@@ -2037,22 +2037,32 @@ impl Gikli {
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes
-    /// to its working tree or its git directory, gikli sends [`Event::FilesChanged`]. Watching
-    /// it again changes nothing.
+    /// to its working tree, its git directory, or the common git directory that holds its refs,
+    /// gikli sends [`Event::FilesChanged`]. Watching it again changes nothing.
     pub fn watch_changes(&self, repository: &Repository) -> Result<(), Failure> {
         if lock(&self.watchers).contains_key(&repository.root) {
             return Ok(());
         }
-        let git_dir = self
-            .runner(&repository.root)?
+        let runner = self.runner(&repository.root)?;
+        let canonical = |path: PathBuf| canonicalize(&path).unwrap_or(path);
+        let git_dir = runner
             .git_dir(&repository.root)
             .map_err(git_failed_to_start)?
-            .map(|git_dir| canonicalize(&git_dir).unwrap_or(git_dir));
-        let watcher = ChangesWatcher::start(repository.clone(), git_dir, self.events.clone())
-            .map_err(|error| Failure::ChangesNotWatched {
-                folder: repository.root.clone(),
-                message: error.to_string(),
-            })?;
+            .map(canonical);
+        let common_git_dir = runner
+            .common_git_dir(&repository.root)
+            .map_err(git_failed_to_start)?
+            .map(canonical);
+        let watcher = ChangesWatcher::start(
+            repository.clone(),
+            git_dir,
+            common_git_dir,
+            self.events.clone(),
+        )
+        .map_err(|error| Failure::ChangesNotWatched {
+            folder: repository.root.clone(),
+            message: error.to_string(),
+        })?;
         // Two calls at once may both start a watcher; the first one kept wins.
         lock(&self.watchers)
             .entry(repository.root.clone())
