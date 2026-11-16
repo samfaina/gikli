@@ -395,7 +395,7 @@ const FORMAT: &str = "--format=%H%x00%P%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s
 const SEARCH_FORMAT: &str = "--format=%H%x00%P%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00%B";
 const FIELDS: usize = 9;
 
-/// One commit as git printed it, a field of [`FORMAT`] each.
+/// One commit as git printed it, a field of [`FORMAT`] or [`SEARCH_FORMAT`] each.
 type Commit = [String; FIELDS];
 
 /// The most reads of the log gikli holds at once. Each is a git waiting to list more commits, and

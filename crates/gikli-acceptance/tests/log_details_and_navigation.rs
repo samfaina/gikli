@@ -826,6 +826,26 @@ fn going_to_a_commit_tells_a_match_by_the_rules_of_the_search() {
         assert_eq!(reaches, Ok(expected), "{what}: {search:?}");
         assert_eq!(shown, expected, "the pages agree on {what}: {search:?}");
     }
+    // git's own search of the message agrees where its rules are gikli's. `\w` is a GNU extension
+    // that the regular expressions of macOS lack, so git is asked the same in plain POSIX.
+    let found_by_git = |args: &[&str]| {
+        let args = [&["log", "--format=%H"][..], args, &["main"]].concat();
+        repository.git(&args).lines().any(|listed| listed == target)
+    };
+    assert!(
+        found_by_git(&["-i", "--grep=lexer"]),
+        "git finds the message in any case"
+    );
+    assert!(!found_by_git(&["--grep=lexer"]), "git keeps to the case");
+    assert!(found_by_git(&["--grep=LEXER"]), "git finds it in its case");
+    assert!(
+        found_by_git(&["-E", "-i", "--grep=^The lex[[:alnum:]_]+"]),
+        "git matches `^` at the start of a line"
+    );
+    assert!(
+        found_by_git(&["-i", "--author=lovelace"]),
+        "git finds the author"
+    );
 }
 
 #[test]
@@ -847,12 +867,19 @@ fn going_to_a_commit_with_a_search_that_is_no_regular_expression_fails_as_the_se
     filter.branches = vec![branch("main", RefKind::Local)];
     let reaches_on_main = gikli.filtered_log_reaches(&root, &filter, &base);
 
-    assert!(
-        matches!(read, Err(Failure::SearchPatternInvalid { .. })),
-        "{read:?}"
+    let Err(failure @ Failure::SearchPatternInvalid { .. }) = read else {
+        panic!("the search fails on the pattern: {read:?}");
+    };
+    assert_eq!(
+        reaches,
+        Err(failure.clone()),
+        "the same failure as the search"
     );
-    assert_eq!(reaches, read.clone().map(|_| true));
-    assert_eq!(reaches_on_main, read.map(|_| true));
+    assert_eq!(reaches_on_main, Err(failure), "with a branch filter too");
+    assert!(
+        !repository.git_succeeds(&["log", "-E", "--grep=fix("]),
+        "git does not take it either"
+    );
 }
 
 /// A search of `text` with the regex and match-case options off.
