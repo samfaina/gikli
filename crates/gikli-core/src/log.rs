@@ -146,6 +146,13 @@ impl Matcher {
 }
 
 impl LogFilter {
+    /// The matcher of its search, or None when it has none or the search has no text, so it shows
+    /// every commit. A regular expression gikli cannot read returns
+    /// [`Failure::SearchPatternInvalid`].
+    fn matcher(&self) -> Result<Option<Matcher>, Failure> {
+        self.text.as_ref().map_or(Ok(None), Matcher::new)
+    }
+
     /// The revisions git lists the log from with this filter, given the references there are now:
     /// None when it names only branches that are gone, so the log shows nothing.
     fn revisions(&self, references: &References) -> Option<Vec<String>> {
@@ -589,10 +596,7 @@ pub(crate) fn read(
     let seen = after.map_or(0, |cursor| cursor.seen);
     let show_long_edges = after.map_or(show_long_edges, |cursor| cursor.show_long_edges);
     let filter = after.map_or(filter, |cursor| &cursor.filter);
-    let matcher = match &filter.text {
-        Some(search) => Matcher::new(search)?,
-        None => None,
-    };
+    let matcher = filter.matcher()?;
     let held = after.and_then(|cursor| reads.take(cursor, &repository.root));
     // Read before git starts, so a reference that moves in between makes the next page find the
     // history changed, instead of letting the read go on with a history the references left.
@@ -907,10 +911,55 @@ pub(crate) fn branches_containing(
     Ok(labels_of(&run_git(runner, repository, &args)?.stdout))
 }
 
-/// Whether the branches `filter` keeps to reach the commit `hash` in `repository`, so the log
-/// filtered by it can show the commit. Without a branch filter, the log can show every commit.
-/// It asks git of each branch, and reads no page of the log.
+/// Whether the log of `repository` filtered by `filter` can show the commit `hash`: its search, if
+/// any, matches the commit, and the branches it keeps to reach it. Without a branch filter, the log
+/// can show every commit. It reads the one commit and asks git of each branch, and reads no page of
+/// the log. A regular expression gikli cannot read fails as the search does.
 pub(crate) fn filtered_log_reaches(
+    runner: &GitRunner,
+    repository: &Repository,
+    filter: &LogFilter,
+    hash: &str,
+) -> Result<bool, Failure> {
+    if let Some(matcher) = filter.matcher()?
+        && !matcher.matches(&searched_commit(runner, repository, hash)?)
+    {
+        return Ok(false);
+    }
+    branches_reach(runner, repository, filter, hash)
+}
+
+/// The commit `hash` of `repository` as a search reads it from git.
+fn searched_commit(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<Commit, Failure> {
+    let args = [
+        "log",
+        "-1",
+        "--no-walk",
+        "--encoding=UTF-8",
+        "-z",
+        SEARCH_FORMAT,
+        "--end-of-options",
+        hash,
+        "--",
+    ];
+    let printed = run_git(runner, repository, &args)?;
+    let fields: Vec<String> = String::from_utf8_lossy(&printed.stdout)
+        .split('\0')
+        .take(FIELDS)
+        .map(str::to_owned)
+        .collect();
+    fields.try_into().map_err(|_| Failure::LogUnreadable {
+        folder: repository.root.clone(),
+    })
+}
+
+/// Whether the branches `filter` keeps to reach the commit `hash` in `repository`, or it keeps to
+/// none. It asks git of each branch.
+fn branches_reach(
     runner: &GitRunner,
     repository: &Repository,
     filter: &LogFilter,

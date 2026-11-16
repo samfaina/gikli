@@ -909,9 +909,10 @@ export function goTo(repository: Repository, revision: string): Promise<string> 
 }
 
 /**
- * Whether the branches `filter` keeps to reach the commit `hash`, so the log filtered by it can show
- * it. When they do not, the log does not show it, which is known without reading its pages. Rejects
- * with a {@link Failure}.
+ * Whether the log filtered by `filter` can show the commit `hash`: its search, if any, matches it, and
+ * the branches it keeps to reach it. When it cannot, the log does not show it, which is known without
+ * reading its pages. Rejects with a {@link Failure}, as the search does for a regular expression gikli
+ * cannot read.
  */
 export function filteredLogReaches(repository: Repository, filter: LogFilter, hash: string): Promise<boolean> {
   return invoke("filtered_log_reaches", { repository, filter, hash });

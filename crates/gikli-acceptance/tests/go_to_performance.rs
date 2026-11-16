@@ -1,5 +1,5 @@
 //! Going to a commit stays quick on a Repository with hundreds of thousands of commits, when the
-//! log is filtered by a branch that does not reach it.
+//! log is filtered by a branch that does not reach it, or searched for a text it does not match.
 //!
 //! The budget holds on the development machine, where the test checks it. A CI runner is slower
 //! and shared, so there the test only reports what it measured, and still checks the answer. This
@@ -9,13 +9,33 @@
 use std::time::{Duration, Instant};
 
 use gikli_acceptance::{ImportedHistory, Sandbox, on_ci};
-use gikli_core::{LogFilter, RefKind, RefLabel};
+use gikli_core::{Gikli, LogFilter, RefKind, RefLabel, Repository, TextSearch};
 
 /// The commits of the generated history.
 const COMMITS: usize = 300_000;
 /// The budget of going to a commit the filtered log does not show, from the revision the user
 /// typed to the answer that the log does not show it.
 const NOT_SHOWN_BUDGET: Duration = Duration::from_secs(1);
+
+/// Goes to `main` in the log of `root` filtered by `filter`, which does not show it, as `what`
+/// tells, and checks the answer and, off CI, its budget.
+fn goes_to_main_not_shown(gikli: &Gikli, root: &Repository, filter: &LogFilter, what: &str) {
+    let started = Instant::now();
+    let hash = gikli.go_to(root, "main").expect("go to main");
+    let reaches = gikli
+        .filtered_log_reaches(root, filter, &hash)
+        .expect("ask whether the log reaches it");
+    let took = started.elapsed();
+
+    assert!(!reaches, "the log {what} does not show main");
+    eprintln!(
+        "going to a commit the log of {COMMITS} commits {what} does not show: answered in \
+         {took:?} (budget {NOT_SHOWN_BUDGET:?})"
+    );
+    if !on_ci() {
+        assert!(took < NOT_SHOWN_BUDGET, "the answer took {took:?}");
+    }
+}
 
 #[test]
 fn going_to_a_commit_the_filtered_log_does_not_show_answers_within_its_budget() {
@@ -35,31 +55,32 @@ fn going_to_a_commit_the_filtered_log_does_not_show_answers_within_its_budget() 
         .expect("open project")
         .repositories[0]
         .clone();
-    let filter = LogFilter {
+    let by_branch = LogFilter {
         branches: vec![RefLabel {
             name: "release".to_owned(),
             kind: RefKind::Local,
         }],
         ..LogFilter::default()
     };
+    let by_search = LogFilter {
+        text: Some(TextSearch {
+            text: "on release".to_owned(),
+            ..TextSearch::default()
+        }),
+        ..LogFilter::default()
+    };
     assert!(
         !repository.git_succeeds(&["merge-base", "--is-ancestor", "main", "release"]),
         "git agrees the release line does not reach the tip of main"
     );
-
-    let started = Instant::now();
-    let hash = gikli.go_to(&root, "main").expect("go to main");
-    let reaches = gikli
-        .filtered_log_reaches(&root, &filter, &hash)
-        .expect("ask whether the log reaches it");
-    let took = started.elapsed();
-
-    assert!(!reaches, "the log filtered by release does not show main");
-    eprintln!(
-        "going to a commit the log filtered by a branch of {COMMITS} commits does not show: \
-         answered in {took:?} (budget {NOT_SHOWN_BUDGET:?})"
+    assert!(
+        !repository
+            .git(&["log", "-1", "--format=%an%n%B", "main"])
+            .to_lowercase()
+            .contains("on release"),
+        "git agrees the tip of main does not hold the text"
     );
-    if !on_ci() {
-        assert!(took < NOT_SHOWN_BUDGET, "the answer took {took:?}");
-    }
+
+    goes_to_main_not_shown(&gikli, &root, &by_branch, "filtered by a branch");
+    goes_to_main_not_shown(&gikli, &root, &by_search, "searched for a text");
 }

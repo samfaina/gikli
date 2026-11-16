@@ -1763,10 +1763,12 @@ impl Gikli {
     }
 
     /// Whether the log of `repository` filtered by `filter` reaches the commit `hash`, which
-    /// [`Self::go_to`] returned: whether any of the branches the log is filtered by holds it, or
-    /// the log is filtered by none. When it does not, the log does not show the commit, and going
-    /// to it can say so without reading the pages of the log. When it does, a search may still
-    /// leave the commit out, which only the pages tell.
+    /// [`Self::go_to`] returned: whether its search, if any, matches the commit as the pages of the
+    /// log would, and any of the branches the log is filtered by holds it, or the log is filtered
+    /// by none. When it does not, the log does not show the commit, and going to it can say so
+    /// without reading the pages of the log. A regular expression gikli cannot read returns
+    /// [`Failure::SearchPatternInvalid`], as [`Self::read_filtered_log`] does, and the search is
+    /// not kept in [`Self::log_search_history`].
     pub fn filtered_log_reaches(
         &self,
         repository: &Repository,
