@@ -758,8 +758,8 @@ fn the_searches_the_user_ran_are_kept_newest_first() {
 
     let history = gikli.log_search_history();
     assert_eq!(history.len(), 20);
-    assert_eq!(history[0], "search 24");
-    assert_eq!(history[19], "search 5");
+    assert_eq!(history[0], search_with("search 24", false, false));
+    assert_eq!(history[19], search_with("search 5", false, false));
     let again = sandbox.gikli();
     assert_eq!(
         again.log_search_history(),
@@ -768,8 +768,94 @@ fn the_searches_the_user_ran_are_kept_newest_first() {
     );
 
     filtered_rows(&again, &root, &search("lex"), 1);
-    assert_eq!(again.log_search_history()[0], "lex");
+    assert_eq!(again.log_search_history()[0], search_with("lex", false, false));
     assert_eq!(again.log_search_history().len(), 20);
+}
+
+/// A search of `text` with the regex and match-case options as given.
+fn search_with(text: &str, regex: bool, match_case: bool) -> TextSearch {
+    TextSearch {
+        text: text.to_owned(),
+        regex,
+        match_case,
+    }
+}
+
+#[test]
+fn a_search_in_the_history_keeps_its_regex_and_match_case_options() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Fix the parser");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let ran = search_with("^Fix", true, true);
+
+    filtered_rows(
+        &gikli,
+        &root,
+        &LogFilter {
+            text: Some(ran.clone()),
+            ..LogFilter::default()
+        },
+        1,
+    );
+
+    assert_eq!(gikli.log_search_history(), vec![ran.clone()]);
+    assert_eq!(
+        sandbox.gikli().log_search_history(),
+        vec![ran],
+        "kept with its options for the next start"
+    );
+}
+
+#[test]
+fn the_same_text_with_other_options_is_another_search_in_the_history() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Fix the parser");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    for ran in [
+        search_with("fix", false, false),
+        search_with("fix", true, false),
+        search_with("fix", false, true),
+        search_with("fix", false, false),
+    ] {
+        let filter = LogFilter {
+            text: Some(ran),
+            ..LogFilter::default()
+        };
+        filtered_rows(&gikli, &root, &filter, 1);
+    }
+
+    assert_eq!(
+        gikli.log_search_history(),
+        vec![
+            search_with("fix", false, false),
+            search_with("fix", false, true),
+            search_with("fix", true, false),
+        ]
+    );
+}
+
+#[test]
+fn a_history_of_search_texts_only_loads_with_both_options_off() {
+    let sandbox = Sandbox::new();
+    let config = sandbox.config_folder();
+    std::fs::create_dir_all(&config).expect("create the config folder");
+    std::fs::write(config.join("log-searches.json"), r#"["parser", "lex"]"#)
+        .expect("write the history an earlier gikli saved");
+
+    let gikli = sandbox.gikli();
+
+    assert_eq!(
+        gikli.log_search_history(),
+        vec![
+            search_with("parser", false, false),
+            search_with("lex", false, false),
+        ]
+    );
 }
 
 #[test]

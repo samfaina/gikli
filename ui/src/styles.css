@@ -864,6 +864,11 @@ button:disabled {
   min-width: 0;
 }
 
+.log-search-history {
+  flex: 0 1 160px;
+  min-width: 0;
+}
+
 .log-go-to {
   flex: 0 1 220px;
   min-width: 0;

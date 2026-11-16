@@ -1725,14 +1725,15 @@ impl Gikli {
         if after.is_none()
             && let Some(search) = &filter.text
         {
-            self.log_searches.remember(&search.text);
+            self.log_searches.remember(search);
         }
         Ok(page)
     }
 
-    /// The searches of the log the user ran, newest first, each once, the last 20 of them. They
-    /// are kept from one start of gikli to the next.
-    pub fn log_search_history(&self) -> Vec<String> {
+    /// The searches of the log the user ran, newest first, each once, the last 20 of them, each
+    /// with its regex and match-case options. The same text with other options is another search.
+    /// They are kept from one start of gikli to the next.
+    pub fn log_search_history(&self) -> Vec<TextSearch> {
         self.log_searches.searches()
     }
 
