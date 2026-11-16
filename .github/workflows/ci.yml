@@ -48,7 +48,7 @@ jobs:
             os: ubuntu-24.04
             git: minimum
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Every command that reaches Ubuntu's package servers, Launchpad or kernel.org runs through
       # retry.sh, which tries it again when it fails and stops each try that hangs. Its bounds keep
@@ -104,7 +104,7 @@ jobs:
       - name: Restore git ${{ steps.minimum-git.outputs.version }}
         if: runner.os == 'Linux' && matrix.git == 'minimum'
         id: minimum-git-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ steps.minimum-git.outputs.prefix }}
           # The workflow's hash covers the build options below.
@@ -170,7 +170,7 @@ jobs:
         with:
           key: ${{ matrix.git }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
