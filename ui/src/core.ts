@@ -908,6 +908,15 @@ export function goTo(repository: Repository, revision: string): Promise<string> 
   return invoke("go_to", { repository, revision });
 }
 
+/**
+ * Whether the branches `filter` keeps to reach the commit `hash`, so the log filtered by it can show
+ * it. When they do not, the log does not show it, which is known without reading its pages. Rejects
+ * with a {@link Failure}.
+ */
+export function filteredLogReaches(repository: Repository, filter: LogFilter, hash: string): Promise<boolean> {
+  return invoke("filtered_log_reaches", { repository, filter, hash });
+}
+
 /** The branches and tags whose name holds `text`, those that start with it first. Rejects with a {@link Failure}. */
 export function goToSuggestions(repository: Repository, text: string): Promise<RefLabel[]> {
   return invoke("go_to_suggestions", { repository, text });

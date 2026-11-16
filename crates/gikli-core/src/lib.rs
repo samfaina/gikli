@@ -1762,6 +1762,20 @@ impl Gikli {
         details::resolve(&self.runner(&repository.root)?, repository, revision)
     }
 
+    /// Whether the log of `repository` filtered by `filter` reaches the commit `hash`, which
+    /// [`Self::go_to`] returned: whether any of the branches the log is filtered by holds it, or
+    /// the log is filtered by none. When it does not, the log does not show the commit, and going
+    /// to it can say so without reading the pages of the log. When it does, a search may still
+    /// leave the commit out, which only the pages tell.
+    pub fn filtered_log_reaches(
+        &self,
+        repository: &Repository,
+        filter: &LogFilter,
+        hash: &str,
+    ) -> Result<bool, Failure> {
+        log::filtered_log_reaches(&self.runner(&repository.root)?, repository, filter, hash)
+    }
+
     /// The local branches, remote branches and tags of `repository` that the user can go to when
     /// they have typed `text`: those whose name holds it, ignoring case. The names that start with
     /// it come first, then the others, each local branches first, then remote branches and tags,

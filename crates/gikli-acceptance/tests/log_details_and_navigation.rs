@@ -603,6 +603,69 @@ fn the_log_filtered_by_branch_shows_only_the_commits_of_those_branches() {
     );
 }
 
+#[test]
+fn going_to_a_commit_no_filtered_branch_reaches_says_it_is_not_shown() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base");
+    repository.git(&["switch", "--quiet", "--create", "feature"]);
+    repository.commit_at(2, "Feature");
+    repository.git(&["switch", "--quiet", "main"]);
+    repository.commit_at(3, "Main");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let filter = LogFilter {
+        branches: vec![branch("main", RefKind::Local)],
+        ..LogFilter::default()
+    };
+    let feature = gikli.go_to(&root, "feature").expect("go to the feature");
+
+    assert_eq!(
+        gikli.filtered_log_reaches(&root, &filter, &feature),
+        Ok(false)
+    );
+    assert!(
+        !subjects(&filtered_rows(&gikli, &root, &filter, 1)).contains(&"Feature"),
+        "the log filtered by main does not show the feature"
+    );
+}
+
+#[test]
+fn going_to_a_commit_the_filtered_log_shows_still_goes_to_it() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.commit_at(1, "Base");
+    repository.git(&["switch", "--quiet", "--create", "feature"]);
+    repository.commit_at(2, "Feature");
+    repository.git(&["switch", "--quiet", "main"]);
+    repository.commit_at(3, "Main");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+    let filter = LogFilter {
+        branches: vec![
+            branch("gone", RefKind::Local),
+            branch("main", RefKind::Local),
+            branch("feature", RefKind::Local),
+        ],
+        ..LogFilter::default()
+    };
+    let feature = gikli.go_to(&root, "feature~0").expect("go to the feature");
+    let base = gikli.go_to(&root, "main~1").expect("go to the base");
+
+    assert_eq!(
+        gikli.filtered_log_reaches(&root, &filter, &feature),
+        Ok(true)
+    );
+    assert_eq!(gikli.filtered_log_reaches(&root, &filter, &base), Ok(true));
+    assert_eq!(
+        gikli.filtered_log_reaches(&root, &LogFilter::default(), &feature),
+        Ok(true)
+    );
+    let rows = filtered_rows(&gikli, &root, &filter, 1);
+    assert!(rows.iter().any(|row| row.hash == feature));
+    assert!(rows.iter().any(|row| row.hash == base));
+}
+
 /// A search of `text` with the regex and match-case options off.
 fn plain(text: &str) -> TextSearch {
     TextSearch {

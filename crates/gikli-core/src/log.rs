@@ -907,6 +907,46 @@ pub(crate) fn branches_containing(
     Ok(labels_of(&run_git(runner, repository, &args)?.stdout))
 }
 
+/// Whether the branches `filter` keeps to reach the commit `hash` in `repository`, so the log
+/// filtered by it can show the commit. Without a branch filter, the log can show every commit.
+/// It asks git of each branch, and reads no page of the log.
+pub(crate) fn filtered_log_reaches(
+    runner: &GitRunner,
+    repository: &Repository,
+    filter: &LogFilter,
+    hash: &str,
+) -> Result<bool, Failure> {
+    if filter.branches.is_empty() {
+        return Ok(true);
+    }
+    let references = References::read(runner, repository)?;
+    for branch in &filter.branches {
+        let Some(commit) = references.commit_of(branch) else {
+            continue;
+        };
+        let args = [
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            hash,
+            commit,
+        ];
+        let root = &repository.root;
+        let invocation = runner.run(root, &args).map_err(git_failed_to_start)?;
+        if invocation.success {
+            return Ok(true);
+        }
+        // git fails with nothing to say when the branch does not reach the commit.
+        if !invocation.stderr.trim().is_empty() {
+            let unreadable = Failure::LogUnreadable {
+                folder: root.clone(),
+            };
+            return Err(failure_of(runner, root, &invocation, unreadable));
+        }
+    }
+    Ok(false)
+}
+
 /// The local branches, remote branches and tags of `repository` the user can go to when they have
 /// typed `text`: those whose name holds it, ignoring case. The names that start with it come
 /// first, then the others, each in the order of [`references`].

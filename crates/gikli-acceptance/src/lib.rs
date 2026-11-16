@@ -543,6 +543,47 @@ impl ImportedHistory {
             .push_str(&format!("reset {name}\nfrom :{mark}\n\n"));
     }
 
+    /// A history of `commits` commits, as the tests of the log's speed read it: a main line that a topic branch
+    /// of three commits is merged into every twentieth commit, a release line beside it the whole way
+    /// that the main line merges every five hundredth, a tag every thousandth and a remote branch.
+    pub fn generated(commits: usize) -> Self {
+        let mut history = Self::default();
+        let mut main: Option<usize> = None;
+        let mut release: Option<usize> = None;
+        while history.commits() < commits {
+            let step = history.commits() + 1;
+            let room = commits - history.commits();
+            if step % 500 == 0
+                && let (Some(tip), Some(line)) = (main, release)
+            {
+                main = Some(history.commit("main", &[tip, line]));
+            } else if step % 20 == 0
+                && room > 4
+                && let Some(tip) = main
+            {
+                let mut topic = tip;
+                for _ in 0..3 {
+                    topic = history.commit("topic", &[topic]);
+                }
+                main = Some(history.commit("main", &[tip, topic]));
+            } else if step % 7 == 0 {
+                let parents: Vec<usize> = release.or(main).into_iter().collect();
+                release = Some(history.commit("release", &parents));
+            } else {
+                let parents: Vec<usize> = main.into_iter().collect();
+                main = Some(history.commit("main", &parents));
+            }
+            if history.commits() % 1000 == 0 {
+                let tag = format!("refs/tags/v{}", history.commits() / 1000);
+                history.reset(&tag, history.commits());
+            }
+        }
+        if let Some(tip) = main {
+            history.reset("refs/remotes/origin/main", tip);
+        }
+        history
+    }
+
     /// How many commits it holds.
     pub fn commits(&self) -> usize {
         self.commits
