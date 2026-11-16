@@ -6,7 +6,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{Change, ChangeStatus, Event, Gikli, Repository};
+use gikli_core::{
+    Change, ChangeStatus, CurrentBranch, Event, Gikli, IncomingOutgoing, Repository, Upstream,
+};
 
 /// How long a change may take to be announced before the test fails. Generous, for slow CI
 /// machines; an announcement normally arrives well under a second after the change.
@@ -168,6 +170,155 @@ fn staging_a_file_from_a_terminal_in_a_linked_worktree_is_announced() {
     assert_eq!(change_set.changes[0].status, ChangeStatus::Added);
     assert_eq!(worktree.status_by_git(), vec!["A  TODO.md"]);
     assert!(worktree.root().join(".git").is_file());
+}
+
+/// The repository `work`, which pushed its first commit to the `main` of a bare remote, a clone
+/// `mine` of that remote, and a linked worktree of the clone on a branch `feature` that follows
+/// `origin/main`.
+fn linked_worktree_with_upstream(
+    sandbox: &Sandbox,
+) -> (TestRepository, TestRepository, TestRepository) {
+    let remote = sandbox.bare_remote("remote.git");
+    let work = committed_repository(sandbox);
+    work.add_remote("origin", &remote);
+    work.git(&["push", "--quiet", "origin", "main"]);
+    let mine = sandbox.clone_of(&remote, "mine");
+    let worktree = mine.linked_worktree("feature");
+    worktree.git(&["branch", "--quiet", "--set-upstream-to", "origin/main"]);
+    (work, mine, worktree)
+}
+
+/// The current branch `feature`, `incoming` commits behind `origin/main` and `outgoing` ahead.
+fn feature_following_origin_main(incoming: usize, outgoing: usize) -> CurrentBranch {
+    CurrentBranch::Branch {
+        name: "feature".to_owned(),
+        upstream: Some(Upstream {
+            name: "origin/main".to_owned(),
+            commits: Some(IncomingOutgoing { incoming, outgoing }),
+        }),
+    }
+}
+
+/// A linked worktree keeps its refs in the common git directory, the one of the main working tree.
+#[test]
+fn a_ref_moved_from_a_terminal_in_a_linked_worktree_is_announced() {
+    let sandbox = Sandbox::new();
+    let (_work, _mine, worktree) = linked_worktree_with_upstream(&sandbox);
+    let theirs = worktree.git(&["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Theirs"]);
+    let (gikli, watched, events) = watch(&sandbox, &worktree);
+    assert_eq!(
+        gikli.current_branch(&watched),
+        Ok(feature_following_origin_main(0, 0))
+    );
+
+    worktree.git(&["update-ref", "refs/remotes/origin/main", theirs.trim()]);
+
+    assert!(next_announcement(&events, &watched, ANNOUNCEMENT_DEADLINE).is_some());
+    assert_eq!(
+        gikli.current_branch(&watched),
+        Ok(feature_following_origin_main(1, 0))
+    );
+    assert_eq!(
+        worktree.git(&["rev-list", "--count", "feature..origin/main"]),
+        "1\n"
+    );
+}
+
+/// The fetch writes no FETCH_HEAD, which a linked worktree keeps in its own git directory, so
+/// only the remote branch it moves in the common git directory can announce it.
+#[test]
+fn a_fetch_from_a_terminal_in_a_linked_worktree_is_announced() {
+    let sandbox = Sandbox::new();
+    let (work, _mine, worktree) = linked_worktree_with_upstream(&sandbox);
+    work.commit_at(2, "Theirs");
+    work.git(&["push", "--quiet", "origin", "main"]);
+    let (gikli, watched, events) = watch(&sandbox, &worktree);
+
+    worktree.git(&["fetch", "--quiet", "--no-write-fetch-head", "origin"]);
+
+    assert!(next_announcement(&events, &watched, ANNOUNCEMENT_DEADLINE).is_some());
+    assert_eq!(
+        gikli.current_branch(&watched),
+        Ok(feature_following_origin_main(1, 0))
+    );
+    assert_eq!(
+        worktree.git(&["rev-list", "--count", "feature..origin/main"]),
+        "1\n"
+    );
+}
+
+/// The main working tree and its linked worktree share the refs of the common git directory.
+#[test]
+fn a_ref_moved_in_the_common_git_directory_is_announced_for_every_worktree_that_shares_it() {
+    let sandbox = Sandbox::new();
+    let (_work, mine, worktree) = linked_worktree_with_upstream(&sandbox);
+    let theirs = mine.git(&["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Theirs"]);
+    let gikli = sandbox.gikli();
+    let events = gikli.subscribe();
+    let watched: Vec<Repository> = [&mine, &worktree]
+        .into_iter()
+        .map(|repository| {
+            let project = gikli.open_project(repository.root()).expect("open project");
+            let watched = project.repositories[0].clone();
+            gikli.watch_changes(&watched).expect("watch changes");
+            watched
+        })
+        .collect();
+    while events.recv_timeout(Duration::from_millis(500)).is_ok() {}
+
+    mine.git(&["update-ref", "refs/remotes/origin/main", theirs.trim()]);
+
+    let mut announced = Vec::new();
+    let start = Instant::now();
+    while announced.len() < watched.len() && start.elapsed() < ANNOUNCEMENT_DEADLINE {
+        if let Ok(Event::FilesChanged { repository }) =
+            events.recv_timeout(Duration::from_millis(100))
+            && !announced.contains(&repository)
+        {
+            announced.push(repository);
+        }
+    }
+    assert_eq!(announced.len(), 2, "announced only for {announced:?}");
+    assert!(
+        watched
+            .iter()
+            .all(|repository| announced.contains(repository))
+    );
+    assert_eq!(
+        worktree.git(&["rev-parse", "origin/main"]),
+        mine.git(&["rev-parse", "origin/main"])
+    );
+}
+
+/// Objects, reflogs and gikli's own files never change what the changes view or the status area
+/// shows, wherever in the common git directory they are written.
+#[test]
+fn writing_objects_reflogs_or_gikli_files_in_the_common_git_directory_is_not_announced() {
+    let sandbox = Sandbox::new();
+    let (_work, mine, worktree) = linked_worktree_with_upstream(&sandbox);
+    let common_git_dir = mine.root().join(".git");
+    let (_gikli, watched, events) = watch(&sandbox, &worktree);
+
+    worktree.write("notes.txt", "not yet added\n");
+    while next_announcement(&events, &watched, Duration::from_millis(500)).is_some() {}
+    let object = worktree.git(&["hash-object", "-w", "notes.txt"]);
+    let reflog = common_git_dir.join("logs/refs/heads/main");
+    let mut entries = std::fs::read_to_string(&reflog).expect("read the reflog of main");
+    entries.push_str(
+        &entries
+            .lines()
+            .last()
+            .expect("an entry")
+            .replace("clone", "noted"),
+    );
+    entries.push('\n');
+    std::fs::write(&reflog, entries).expect("append to the reflog of main");
+    std::fs::create_dir_all(common_git_dir.join("gikli")).expect("create gikli's folder");
+    std::fs::write(common_git_dir.join("gikli/notes.json"), "{}").expect("write a gikli file");
+
+    assert_eq!(next_announcement(&events, &watched, SILENCE), None);
+    assert_eq!(worktree.git(&["cat-file", "-t", object.trim()]), "blob\n");
+    assert_eq!(worktree.git(&["reflog", "main"]).lines().count(), 2);
 }
 
 #[test]

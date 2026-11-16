@@ -28,16 +28,34 @@ pub(crate) struct ChangesWatcher {
 }
 
 impl ChangesWatcher {
-    /// Starts watching the working tree of `repository` and its `git_dir`, when git named one,
-    /// and sends [`Event::FilesChanged`] to `events` after each burst of changes.
+    /// Starts watching the working tree of `repository`, its `git_dir` and its `common_git_dir`,
+    /// when git named them, and sends [`Event::FilesChanged`] to `events` after each burst of
+    /// changes.
     pub fn start(
         repository: Repository,
         git_dir: Option<PathBuf>,
+        common_git_dir: Option<PathBuf>,
         events: Arc<EventBus>,
     ) -> notify::Result<Self> {
         let inside = repository.root.join(".git");
-        let outside = git_dir.filter(|git_dir| !git_dir.starts_with(&repository.root));
-        let git_dirs: Vec<PathBuf> = std::iter::once(inside).chain(outside.clone()).collect();
+        let outside: Vec<PathBuf> = [common_git_dir, git_dir]
+            .into_iter()
+            .flatten()
+            .filter(|git_dir| !git_dir.starts_with(&repository.root))
+            .collect();
+        // A submodule's common git directory is its git directory, and a linked worktree's git
+        // directory sits inside its common one: a folder already watched is not watched again.
+        let watched: Vec<PathBuf> = outside
+            .iter()
+            .enumerate()
+            .filter(|(index, git_dir)| {
+                !outside[..*index]
+                    .iter()
+                    .any(|earlier| git_dir.starts_with(earlier))
+            })
+            .map(|(_, git_dir)| git_dir.clone())
+            .collect();
+        let git_dirs: Vec<PathBuf> = std::iter::once(inside).chain(outside).collect();
         let (sender, receiver) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |result: notify::Result<_>| {
             // An error can mean lost events: count it as a change, so nothing goes unseen.
@@ -46,8 +64,9 @@ impl ChangesWatcher {
             }
         })?;
         watcher.watch(&repository.root, RecursiveMode::Recursive)?;
-        // A linked worktree or a submodule keeps its index and HEAD outside its working tree.
-        if let Some(git_dir) = &outside {
+        // A linked worktree or a submodule keeps its index and HEAD outside its working tree, and
+        // a linked worktree its refs in the common git directory, outside it as well.
+        for git_dir in &watched {
             watcher.watch(git_dir, RecursiveMode::Recursive)?;
         }
         std::thread::spawn(move || announce_bursts(&receiver, &repository, &events));
