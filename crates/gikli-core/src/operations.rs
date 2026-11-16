@@ -36,6 +36,17 @@ pub enum LongOperation {
         remote: String,
         branch: String,
     },
+    /// Fetching `remote` of `repository`, which the user just defined.
+    FetchRemote {
+        repository: Repository,
+        remote: String,
+    },
+    /// Pushing the current branch of `repository` to the branch `branch` of `remote`.
+    Push {
+        repository: Repository,
+        remote: String,
+        branch: String,
+    },
     /// Fetching the rest of the history of `repository`, whose history is cut, from `remote`.
     FetchRestOfHistory {
         repository: Repository,

@@ -15,8 +15,8 @@ use gikli_core::{
     CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck,
     HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget, Notification,
     NotificationAction, NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt,
-    RefLabel, Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide,
-    TextSearch, answer_askpass_request,
+    PushPlan, PushTags, PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan,
+    RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -606,6 +606,35 @@ fn fetch_branch(
 }
 
 #[tauri::command(async)]
+fn push_plan(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    target: Option<PushTarget>,
+) -> Result<PushPlan, Failure> {
+    gikli.push_plan(&repository, target.as_ref())
+}
+
+#[tauri::command(async)]
+fn push(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    target: PushTarget,
+    tags: PushTags,
+) -> Result<(), Failure> {
+    gikli.push(&repository, &target, tags)
+}
+
+#[tauri::command(async)]
+fn add_remote(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    name: String,
+    url: String,
+) -> Result<(), Failure> {
+    gikli.add_remote(&repository, &name, &url)
+}
+
+#[tauri::command(async)]
 fn local_branches(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -839,6 +868,9 @@ fn main() {
             fetch_rest_of_history,
             fetch_all,
             fetch_branch,
+            push_plan,
+            push,
+            add_remote,
             local_branches,
             current_branch,
             end_log_read,

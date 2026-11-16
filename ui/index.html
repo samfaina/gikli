@@ -140,6 +140,56 @@
           </aside>
         </div>
       </section>
+      <section id="push-dialog" class="push-dialog" data-testid="push-dialog" hidden>
+        <div class="log-toolbar">
+          <h2 id="push-title" class="log-title"></h2>
+          <button id="push-close" type="button" data-testid="push-close"></button>
+        </div>
+        <ul class="push-tree" data-testid="push-tree">
+          <li>
+            <span id="push-repository" class="push-repository" data-testid="push-repository"></span>
+            <ul>
+              <li>
+                <span id="push-branch" class="push-branch" data-testid="push-branch"></span>
+                <span class="push-arrow" aria-hidden="true">→</span>
+                <span id="push-target" class="push-target" data-testid="push-target">
+                  <select id="push-remote" data-testid="push-remote"></select>
+                  <span aria-hidden="true">/</span>
+                  <input id="push-target-branch" type="text" spellcheck="false" data-testid="push-target-branch" />
+                  <span id="push-new-branch" class="push-new-branch" data-testid="push-new-branch" hidden></span>
+                </span>
+                <span id="push-define-remote" class="push-define-remote" data-testid="push-define-remote" hidden>
+                  <span id="push-define-text"></span>
+                  <label><span id="push-define-name-label"></span><input id="push-define-name" type="text" spellcheck="false" data-testid="push-define-name" /></label>
+                  <label><span id="push-define-url-label"></span><input id="push-define-url" class="push-define-url" type="text" spellcheck="false" data-testid="push-define-url" /></label>
+                  <button id="push-define" type="button" data-testid="push-define"></button>
+                </span>
+              </li>
+            </ul>
+          </li>
+        </ul>
+        <div id="push-message" class="log-message" data-testid="push-message" role="status"></div>
+        <div class="file-history-body">
+          <div id="push-commits" class="file-history-list" data-testid="push-commits" role="listbox" tabindex="0"></div>
+          <aside class="file-history-side">
+            <div class="log-pane-header">
+              <h3 id="push-files-title"></h3>
+            </div>
+            <div id="push-files" class="log-changes-content push-files" data-testid="push-files"></div>
+            <div class="log-pane-header">
+              <h3 id="push-preview-title"></h3>
+            </div>
+            <div id="push-preview" class="file-history-preview diff-content" data-testid="push-preview"></div>
+          </aside>
+        </div>
+        <div class="push-footer">
+          <label><input id="push-tags" type="checkbox" data-testid="push-tags" /><span id="push-tags-label"></span></label>
+          <select id="push-tags-choice" data-testid="push-tags-choice" disabled></select>
+          <span class="push-footer-gap"></span>
+          <button id="push-start" type="button" data-testid="push-start" disabled></button>
+          <button id="push-cancel" type="button" data-testid="push-cancel"></button>
+        </div>
+      </section>
       <section id="operation-log" class="operation-log" data-testid="operation-log" hidden>
         <div class="operation-log-header">
           <h2 id="operation-log-title"></h2>

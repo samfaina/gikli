@@ -125,7 +125,7 @@ pub(crate) fn branch_source(
 }
 
 /// The value of the configuration `key` in `repository`, if it is set.
-fn configured(
+pub(crate) fn configured(
     runner: &GitRunner,
     repository: &Repository,
     key: &str,
@@ -149,31 +149,103 @@ fn fetched_into(
     repository: &Repository,
     remote_branch: &str,
 ) -> Result<Option<BranchSource>, Failure> {
+    Ok(fetch_refspecs(runner, repository)?
+        .iter()
+        .find_map(|refspec| {
+            Some(BranchSource {
+                remote: refspec.remote.clone(),
+                reference: refspec.source_of(remote_branch)?,
+            })
+        }))
+}
+
+/// The remote branch the configuration of `remote` in `repository` fetches its branch `reference`,
+/// a full reference name such as `refs/heads/main`, into, if it fetches it anywhere. The first
+/// refspec of the remote that maps it counts, as git's own does.
+pub(crate) fn fetched_from(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote: &str,
+    reference: &str,
+) -> Result<Option<String>, Failure> {
+    Ok(fetch_refspecs(runner, repository)?
+        .iter()
+        .filter(|refspec| refspec.remote == remote)
+        .find_map(|refspec| refspec.destination_of(reference)))
+}
+
+/// Where the fetch configuration of `remote` in `repository` writes the branches it fetches: each
+/// refspec's destination, such as `refs/remotes/origin/*`, in the order git lists them.
+pub(crate) fn fetch_destinations(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote: &str,
+) -> Result<Vec<String>, Failure> {
+    Ok(fetch_refspecs(runner, repository)?
+        .into_iter()
+        .filter(|refspec| refspec.remote == remote)
+        .map(|refspec| refspec.destination)
+        .collect())
+}
+
+/// One refspec of the fetch configuration of a remote, such as
+/// `+refs/heads/*:refs/remotes/origin/*`: what it fetches, and where it writes it.
+struct FetchRefspec {
+    remote: String,
+    source: String,
+    destination: String,
+}
+
+impl FetchRefspec {
+    /// The reference of the remote this refspec fetches into `destination`, if it does.
+    fn source_of(&self, destination: &str) -> Option<String> {
+        Self::map(&self.destination, &self.source, destination)
+    }
+
+    /// Where this refspec writes the reference `source` of the remote, if it fetches it.
+    fn destination_of(&self, source: &str) -> Option<String> {
+        Self::map(&self.source, &self.destination, source)
+    }
+
+    /// `reference` matched against the side `from` of a refspec and written as its side `to`.
+    fn map(from: &str, to: &str, reference: &str) -> Option<String> {
+        match (from.split_once('*'), to.split_once('*')) {
+            (Some((from_start, from_end)), Some((to_start, to_end))) => {
+                let matched = reference.strip_prefix(from_start)?.strip_suffix(from_end)?;
+                Some(format!("{to_start}{matched}{to_end}"))
+            }
+            (None, None) if from == reference => Some(to.to_owned()),
+            _ => None,
+        }
+    }
+}
+
+/// The fetch configuration of every remote of `repository`, in the order git lists it.
+fn fetch_refspecs(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<Vec<FetchRefspec>, Failure> {
     let listed = runner
         .run(
             &repository.root,
             &["config", "--null", "--get-regexp", r"^remote\..*\.fetch$"],
         )
         .map_err(git_failed_to_start)?;
-    // Each entry is the key, a line break, then the refspec, such as
-    // `+refs/heads/*:refs/remotes/origin/*`.
-    Ok(listed.stdout_text().split('\0').find_map(|entry| {
-        let (key, refspec) = entry.split_once('\n')?;
-        let remote = key.strip_prefix("remote.")?.strip_suffix(".fetch")?;
-        let (source, destination) = refspec.trim_start_matches('+').split_once(':')?;
-        let reference = match (source.split_once('*'), destination.split_once('*')) {
-            (Some((source_start, source_end)), Some((start, end))) => {
-                let matched = remote_branch.strip_prefix(start)?.strip_suffix(end)?;
-                format!("{source_start}{matched}{source_end}")
-            }
-            (None, None) if destination == remote_branch => source.to_owned(),
-            _ => return None,
-        };
-        Some(BranchSource {
-            remote: remote.to_owned(),
-            reference,
+    // Each entry is the key, a line break, then the refspec.
+    Ok(listed
+        .stdout_text()
+        .split('\0')
+        .filter_map(|entry| {
+            let (key, refspec) = entry.split_once('\n')?;
+            let remote = key.strip_prefix("remote.")?.strip_suffix(".fetch")?;
+            let (source, destination) = refspec.trim_start_matches('+').split_once(':')?;
+            Some(FetchRefspec {
+                remote: remote.to_owned(),
+                source: source.to_owned(),
+                destination: destination.to_owned(),
+            })
         })
-    }))
+        .collect())
 }
 
 /// The names of the remotes of `repository`, as git lists them.

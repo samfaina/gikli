@@ -2,7 +2,7 @@
 // the current branch is from its upstream. The core reads both; this only draws them.
 
 import { currentBranch, type CurrentBranch, type Repository, type Upstream } from "./core";
-import { element } from "./dom";
+import { element, folderName } from "./dom";
 import { SHORT_HASH_LENGTH } from "./log-details";
 import { t } from "./strings";
 
@@ -97,8 +97,4 @@ function part(testId: string, text: string): HTMLElement {
   span.dataset.testid = testId;
   span.textContent = text;
   return span;
-}
-
-function folderName(root: string): string {
-  return root.split(/[\\/]/).filter((piece) => piece !== "").pop() ?? root;
 }
