@@ -684,7 +684,11 @@ describe("gikli", () => {
       assert.equal(runGit(repository, gitconfig, "rev-list", "--count", "HEAD"), commits, "the last commit is replaced");
       assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s"), "Amended from the panel\n");
       assert.deepEqual(runGit(repository, gitconfig, "show", "--format=", "--name-only", "HEAD").trim().split("\n").sort(), [first, second].sort());
-      assert.equal(await amend.isSelected(), false, "the next commit is a new one");
+      // The watcher can show the changes after the amend before the panel hears back from it, so the tick goes a moment later.
+      await browser.waitUntil(async () => !(await amend.isSelected()), {
+        timeout: 30000,
+        timeoutMsg: "the next commit is a new one",
+      });
     });
 
     it("shows the commits in the log, and goes back to the changes", async () => {
