@@ -29,8 +29,8 @@ export interface CommitPanelHost {
   committed(): void;
   /** Commit and push went through its commit, and the push dialog is to open for the Repository. */
   openPushDialog(): void;
-  /** Commit and push pushed at once, as the settings suppress the dialog, so the branches moved. */
-  pushed(): void;
+  /** Commit and push pushed at once, as the settings suppress the dialog, so the branches may have moved, even when the push failed. */
+  branchesMoved(): void;
   /** What to show for an error from the core. `retry` runs once the user has done what it offers. */
   errorView(error: unknown, retry?: () => void): HTMLElement;
 }
@@ -342,7 +342,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       void loadPreviousMessages();
       host.committed();
       if (pushAfter) {
-        await push();
+        await pushAfterCommitted();
       }
     } catch (error) {
       if (isFailure(error) && error.kind === "commitIdentityMissing") {
@@ -357,17 +357,32 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   }
 
   /** The push of Commit and push, once its commit went through. A failed push leaves the commit made, and offers the push again. */
-  async function push(): Promise<void> {
+  async function pushAfterCommitted(): Promise<void> {
     try {
       const after = await pushAfterCommit(host.repository);
       if (after.kind === "dialog") {
         host.openPushDialog();
       } else {
-        result.textContent = t("commitAndPushPushed", { branch: after.target.branch, remote: after.target.remote });
-        host.pushed();
+        result.textContent = t("commitAndPushPushed", { target: `${after.target.remote}/${after.target.branch}` });
+        host.branchesMoved();
       }
     } catch (error) {
-      result.replaceChildren(host.errorView(error, () => void push()));
+      result.replaceChildren(host.errorView(error, () => void pushAgain()));
+      // A push that failed may still have moved remote branches.
+      host.branchesMoved();
+    }
+  }
+
+  /** Pushes again after Commit and push failed to, holding the panel as a commit would. */
+  async function pushAgain(): Promise<void> {
+    if (!startCommitting()) {
+      return;
+    }
+    try {
+      await pushAfterCommitted();
+    } finally {
+      committing = false;
+      updateSubmit();
     }
   }
 

@@ -31,16 +31,26 @@ fn target(remote: &str, branch: &str) -> PushTarget {
     }
 }
 
-/// Writes `notes.txt` in `repository` and commits it with Commit and push, returning what follows
-/// the commit.
-fn commit_and_push(gikli: &Gikli, root: &Repository, mine: &TestRepository) -> PushAfterCommit {
-    mine.write("notes.txt", "notes\n");
+/// Writes `notes.txt` in the working tree of `repository`, `working_tree`, and commits it as Add
+/// notes with Commit and push, returning what follows the commit.
+fn commit_and_push(
+    gikli: &Gikli,
+    repository: &Repository,
+    working_tree: &TestRepository,
+) -> Result<PushAfterCommit, Failure> {
+    working_tree.write("notes.txt", "notes\n");
     gikli
-        .commit_files(root, &["notes.txt".to_owned()], "Add notes")
+        .commit_files(repository, &["notes.txt".to_owned()], "Add notes")
         .expect("commit");
-    gikli
-        .push_after_commit(root)
-        .expect("push after the commit")
+    gikli.push_after_commit(repository)
+}
+
+/// The subject of the last commit of `branch` in `repository`, as git tells it.
+fn last_subject_by_git(repository: &TestRepository, branch: &str) -> String {
+    repository
+        .git(&["log", "-1", "--format=%s", branch])
+        .trim_end()
+        .to_owned()
 }
 
 #[test]
@@ -51,7 +61,7 @@ fn commit_and_push_commits_and_then_opens_the_push_dialog() {
     let root = opened(&gikli, &mine);
     let remote_main = remote.git(&["rev-parse", "main"]);
 
-    let after = commit_and_push(&gikli, &root, &mine);
+    let after = commit_and_push(&gikli, &root, &mine).expect("commit and push");
 
     let PushAfterCommit::Dialog { plan } = after else {
         panic!("the push dialog opens, not {after:?}");
@@ -60,7 +70,7 @@ fn commit_and_push_commits_and_then_opens_the_push_dialog() {
     let subjects: Vec<&str> = plan.commits.iter().map(|c| c.subject.as_str()).collect();
     assert_eq!(subjects, ["Add notes"], "the dialog shows the new commit");
     assert_eq!(
-        mine.git(&["log", "-1", "--format=%s"]).trim_end(),
+        last_subject_by_git(&mine, "HEAD"),
         "Add notes",
         "git has the commit"
     );
@@ -90,7 +100,7 @@ fn with_the_dialog_suppressed_commit_and_push_pushes_at_once() {
         .expect("save the setting");
     let root = opened(&gikli, &mine);
 
-    let after = commit_and_push(&gikli, &root, &mine);
+    let after = commit_and_push(&gikli, &root, &mine).expect("commit and push");
 
     assert_eq!(
         after,
@@ -99,7 +109,7 @@ fn with_the_dialog_suppressed_commit_and_push_pushes_at_once() {
         }
     );
     assert_eq!(
-        remote.git(&["log", "-1", "--format=%s", "main"]).trim_end(),
+        last_subject_by_git(&remote, "main"),
         "Add notes",
         "git agrees the remote has the commit"
     );
@@ -120,7 +130,7 @@ fn with_the_dialog_only_for_protected_branches_a_push_to_another_branch_runs_at_
         .expect("save the setting");
     let root = opened(&gikli, &mine);
 
-    let after = commit_and_push(&gikli, &root, &mine);
+    let after = commit_and_push(&gikli, &root, &mine).expect("commit and push");
 
     assert_eq!(
         after,
@@ -156,7 +166,7 @@ fn with_the_dialog_only_for_protected_branches_a_push_to_main_or_master_opens_th
         let root = opened(&gikli, &mine);
         let remote_branches = remote.git(&["for-each-ref"]);
 
-        let after = commit_and_push(&gikli, &root, &mine);
+        let after = commit_and_push(&gikli, &root, &mine).expect("commit and push");
 
         let PushAfterCommit::Dialog { plan } = after else {
             panic!("a push to {protected} opens the dialog, not {after:?}");
@@ -181,7 +191,7 @@ fn a_protected_branch_is_one_whose_whole_name_is_main_or_master() {
         .expect("save the setting");
     let root = opened(&gikli, &mine);
 
-    let after = commit_and_push(&gikli, &root, &mine);
+    let after = commit_and_push(&gikli, &root, &mine).expect("commit and push");
 
     assert_eq!(
         after,
@@ -222,14 +232,14 @@ fn without_a_remote_the_dialog_opens_to_define_one_even_when_suppressed() {
         .expect("save the setting");
     let root = opened(&gikli, &mine);
 
-    let after = commit_and_push(&gikli, &root, &mine);
+    let after = commit_and_push(&gikli, &root, &mine).expect("commit and push");
 
     let PushAfterCommit::Dialog { plan } = after else {
         panic!("the dialog opens to define a remote, not {after:?}");
     };
     assert_eq!(plan.target, None, "there is nowhere to push yet");
     assert_eq!(
-        mine.git(&["log", "-1", "--format=%s"]).trim_end(),
+        last_subject_by_git(&mine, "HEAD"),
         "Add notes",
         "git has the commit"
     );
@@ -249,15 +259,7 @@ fn a_push_git_rejects_after_the_commit_fails_and_keeps_the_commit() {
         .expect("save the setting");
     let root = opened(&gikli, &mine);
 
-    mine.write(
-        "notes.txt",
-        "notes
-",
-    );
-    gikli
-        .commit_files(&root, &["notes.txt".to_owned()], "Add notes")
-        .expect("commit");
-    let rejected = gikli.push_after_commit(&root);
+    let rejected = commit_and_push(&gikli, &root, &mine);
 
     assert_eq!(
         rejected,
@@ -268,8 +270,91 @@ fn a_push_git_rejects_after_the_commit_fails_and_keeps_the_commit() {
     );
     assert_eq!(remote.git(&["rev-parse", "main"]), remote_main);
     assert_eq!(
-        mine.git(&["log", "-1", "--format=%s"]).trim_end(),
+        last_subject_by_git(&mine, "HEAD"),
         "Add notes",
         "git still has the commit"
     );
+}
+
+#[test]
+fn with_the_dialog_off_a_push_to_a_protected_branch_runs_at_once_too() {
+    let sandbox = Sandbox::new();
+    let (remote, mine) = remote_and_clone(&sandbox);
+    let gikli = sandbox.gikli();
+    gikli
+        .set_show_push_dialog_for_commit_and_push(false)
+        .expect("save the setting");
+    gikli
+        .set_show_push_dialog_only_for_protected_branches(true)
+        .expect("save the setting");
+    let root = opened(&gikli, &mine);
+
+    let after = commit_and_push(&gikli, &root, &mine).expect("commit and push");
+
+    assert_eq!(
+        after,
+        PushAfterCommit::Pushed {
+            target: target("origin", "main")
+        },
+        "only for protected branches narrows the dialog, it does not bring it back"
+    );
+    assert_eq!(
+        remote.git(&["rev-parse", "main"]),
+        mine.git(&["rev-parse", "main"]),
+        "git agrees the remote has the commit"
+    );
+}
+
+#[test]
+fn commit_and_push_follows_a_commit_of_what_is_staged() {
+    let sandbox = Sandbox::new();
+    let (remote, mine) = remote_and_clone(&sandbox);
+    let gikli = sandbox.gikli();
+    gikli
+        .set_show_push_dialog_for_commit_and_push(false)
+        .expect("save the setting");
+    gikli
+        .set_staging_mode(true)
+        .expect("switch to Staging mode");
+    let root = opened(&gikli, &mine);
+    mine.write("notes.txt", "notes\n");
+    mine.git(&["add", "notes.txt"]);
+
+    gikli
+        .commit_staged(&root, "Add staged notes")
+        .expect("commit");
+    let after = gikli
+        .push_after_commit(&root)
+        .expect("push after the commit");
+
+    assert_eq!(
+        after,
+        PushAfterCommit::Pushed {
+            target: target("origin", "main")
+        }
+    );
+    assert_eq!(last_subject_by_git(&remote, "main"), "Add staged notes");
+}
+
+#[test]
+fn a_commit_in_detached_head_is_kept_and_has_no_branch_to_push() {
+    let sandbox = Sandbox::new();
+    let (remote, mine) = remote_and_clone(&sandbox);
+    mine.git(&["switch", "--quiet", "--detach"]);
+    let remote_main = remote.git(&["rev-parse", "main"]);
+    let gikli = sandbox.gikli();
+    gikli
+        .set_show_push_dialog_for_commit_and_push(false)
+        .expect("save the setting");
+    let root = opened(&gikli, &mine);
+
+    let after = commit_and_push(&gikli, &root, &mine);
+
+    assert_eq!(after, Err(Failure::DetachedHeadNotPushed));
+    assert_eq!(
+        last_subject_by_git(&mine, "HEAD"),
+        "Add notes",
+        "git has the commit"
+    );
+    assert_eq!(remote.git(&["rev-parse", "main"]), remote_main);
 }

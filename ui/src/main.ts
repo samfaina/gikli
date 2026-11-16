@@ -33,13 +33,13 @@ import {
   setChangelistComment,
   setChangeGrouping,
   setClearCommitMessageAfterCommit,
-  setShowPushDialogForCommitAndPush,
-  setShowPushDialogOnlyForProtectedBranches,
   setCloneSubmodulesRecursively,
   setDiffLocalSideEditable,
   setGitPath,
   setGoToNextFileAfterLastChange,
   setOperationLogSoftWrap,
+  setShowPushDialogForCommitAndPush,
+  setShowPushDialogOnlyForProtectedBranches,
   setShowIgnoredFiles,
   setStagingMode,
   setUseCredentialHelper,
@@ -255,7 +255,10 @@ saveOnChange(goToNextFileInput, async (checked) => {
 });
 saveOnChange(warnOnUnusualCommitStateInput, async (checked) => (await setWarnOnUnusualCommitState(checked)).warnOnUnusualCommitState);
 saveOnChange(clearCommitMessageInput, async (checked) => (await setClearCommitMessageAfterCommit(checked)).clearCommitMessageAfterCommit);
-saveOnChange(showPushDialogInput, async (checked) => (await setShowPushDialogForCommitAndPush(checked)).showPushDialogForCommitAndPush);
+saveOnChange(showPushDialogInput, async (checked) => (await setShowPushDialogForCommitAndPush(checked)).showPushDialogForCommitAndPush, (shown) => {
+  // Only for protected branches narrows the dialog, so it means nothing while the dialog is off.
+  showPushDialogOnlyProtectedInput.disabled = !shown;
+});
 saveOnChange(
   showPushDialogOnlyProtectedInput,
   async (checked) => (await setShowPushDialogOnlyForProtectedBranches(checked)).showPushDialogOnlyForProtectedBranches,
@@ -305,6 +308,7 @@ settingsButton.addEventListener("click", async () => {
     clearCommitMessageInput.checked = current.clearCommitMessageAfterCommit;
     showPushDialogInput.checked = current.showPushDialogForCommitAndPush;
     showPushDialogOnlyProtectedInput.checked = current.showPushDialogOnlyForProtectedBranches;
+    showPushDialogOnlyProtectedInput.disabled = !current.showPushDialogForCommitAndPush;
     stagingModeInput.checked = current.stagingMode;
     gitTestResult.textContent = "";
   }
@@ -421,7 +425,7 @@ clonePanel.addEventListener("submit", async (event) => {
 void start();
 
 /** Saves a setting when the user changes `input`, with what `save` says was saved. When it fails, `input` goes back. */
-function saveOnChange(input: HTMLInputElement, save: (checked: boolean) => Promise<boolean>): void {
+function saveOnChange(input: HTMLInputElement, save: (checked: boolean) => Promise<boolean>, saved?: (checked: boolean) => void): void {
   input.addEventListener("change", async () => {
     input.disabled = true;
     try {
@@ -431,6 +435,7 @@ function saveOnChange(input: HTMLInputElement, save: (checked: boolean) => Promi
       report(error);
     } finally {
       input.disabled = false;
+      saved?.(input.checked);
     }
   });
 }
@@ -838,7 +843,7 @@ function repositoryView(repository: Repository): HTMLElement {
     describeChange,
     committed: () => void refreshChanges(),
     openPushDialog: () => pushDialog.open(repository),
-    pushed: () => statusArea.refresh(repository.root),
+    branchesMoved: () => statusArea.refresh(repository.root),
     errorView,
   });
   const newChangelist = changelistButton("new-changelist", t("newChangelist"), () =>

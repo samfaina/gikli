@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::ChangeGrouping;
+use crate::push::{self, PushTarget};
 
 /// gikli's application settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +80,15 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Whether Commit and push opens the push dialog for a push to `target`, instead of pushing at
+    /// once: when it shows for Commit and push, and either for every branch or `target` is a
+    /// protected branch.
+    pub(crate) fn shows_push_dialog_after_commit_for(&self, target: &PushTarget) -> bool {
+        self.show_push_dialog_for_commit_and_push
+            && (!self.show_push_dialog_only_for_protected_branches
+                || push::is_protected(&target.branch))
+    }
+
     /// Reads the settings in `file`. A missing or unreadable file gives the defaults, so gikli
     /// always starts.
     pub(crate) fn load(file: &Path) -> Self {

@@ -111,7 +111,7 @@ export const en = {
   commitSubmitAmend: "Amend Commit",
   commitAndPushSubmit: "Commit and Push…",
   commitAndPushSubmitAmend: "Amend Commit and Push…",
-  commitAndPushPushed: "Pushed to {branch} of {remote}",
+  commitAndPushPushed: "Pushed to {target}.",
   commitAmend: "Amend last commit",
   commitPreviousMessages: "Previous messages",
   commitWarningDetachedHead: "HEAD is on no branch, so this commit will be on none either and can get lost. Commit anyway?",

@@ -2012,13 +2012,8 @@ impl Gikli {
     pub fn push_after_commit(&self, repository: &Repository) -> Result<PushAfterCommit, Failure> {
         let plan = self.push_plan(repository, None)?;
         let settings = self.settings();
-        let dialog_for = |target: &PushTarget| {
-            settings.show_push_dialog_for_commit_and_push
-                && (!settings.show_push_dialog_only_for_protected_branches
-                    || push::is_protected(&target.branch))
-        };
         match plan.target {
-            Some(target) if !dialog_for(&target) => {
+            Some(target) if !settings.shows_push_dialog_after_commit_for(&target) => {
                 self.push(repository, &target, PushTags::None)?;
                 Ok(PushAfterCommit::Pushed { target })
             }
