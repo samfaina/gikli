@@ -33,6 +33,8 @@ import {
   setChangelistComment,
   setChangeGrouping,
   setClearCommitMessageAfterCommit,
+  setShowPushDialogForCommitAndPush,
+  setShowPushDialogOnlyForProtectedBranches,
   setCloneSubmodulesRecursively,
   setDiffLocalSideEditable,
   setGitPath,
@@ -120,6 +122,8 @@ const diffLocalSideEditableInput = element<HTMLInputElement>("diff-local-side-ed
 const goToNextFileInput = element<HTMLInputElement>("go-to-next-file-after-last-change");
 const warnOnUnusualCommitStateInput = element<HTMLInputElement>("warn-on-unusual-commit-state");
 const clearCommitMessageInput = element<HTMLInputElement>("clear-commit-message-after-commit");
+const showPushDialogInput = element<HTMLInputElement>("show-push-dialog-for-commit-and-push");
+const showPushDialogOnlyProtectedInput = element<HTMLInputElement>("show-push-dialog-only-for-protected-branches");
 const stagingModeInput = element<HTMLInputElement>("staging-mode");
 
 document.title = t("appTitle");
@@ -159,6 +163,8 @@ element<HTMLElement>("diff-local-side-editable-label").textContent = t("diffLoca
 element<HTMLElement>("go-to-next-file-after-last-change-label").textContent = t("goToNextFileAfterLastChange");
 element<HTMLElement>("warn-on-unusual-commit-state-label").textContent = t("warnOnUnusualCommitState");
 element<HTMLElement>("clear-commit-message-after-commit-label").textContent = t("clearCommitMessageAfterCommit");
+element<HTMLElement>("show-push-dialog-for-commit-and-push-label").textContent = t("showPushDialogForCommitAndPush");
+element<HTMLElement>("show-push-dialog-only-for-protected-branches-label").textContent = t("showPushDialogOnlyForProtectedBranches");
 element<HTMLElement>("staging-mode-label").textContent = t("stagingMode");
 element<HTMLElement>("staging-mode-hint").textContent = t("stagingModeHint");
 
@@ -249,6 +255,11 @@ saveOnChange(goToNextFileInput, async (checked) => {
 });
 saveOnChange(warnOnUnusualCommitStateInput, async (checked) => (await setWarnOnUnusualCommitState(checked)).warnOnUnusualCommitState);
 saveOnChange(clearCommitMessageInput, async (checked) => (await setClearCommitMessageAfterCommit(checked)).clearCommitMessageAfterCommit);
+saveOnChange(showPushDialogInput, async (checked) => (await setShowPushDialogForCommitAndPush(checked)).showPushDialogForCommitAndPush);
+saveOnChange(
+  showPushDialogOnlyProtectedInput,
+  async (checked) => (await setShowPushDialogOnlyForProtectedBranches(checked)).showPushDialogOnlyForProtectedBranches,
+);
 saveOnChange(stagingModeInput, async (checked) => {
   const saved = await setStagingMode(checked);
   for (const { refresh } of shownRepositories.values()) {
@@ -292,6 +303,8 @@ settingsButton.addEventListener("click", async () => {
     goToNextFileInput.checked = current.goToNextFileAfterLastChange;
     warnOnUnusualCommitStateInput.checked = current.warnOnUnusualCommitState;
     clearCommitMessageInput.checked = current.clearCommitMessageAfterCommit;
+    showPushDialogInput.checked = current.showPushDialogForCommitAndPush;
+    showPushDialogOnlyProtectedInput.checked = current.showPushDialogOnlyForProtectedBranches;
     stagingModeInput.checked = current.stagingMode;
     gitTestResult.textContent = "";
   }
@@ -824,6 +837,8 @@ function repositoryView(repository: Repository): HTMLElement {
     repository,
     describeChange,
     committed: () => void refreshChanges(),
+    openPushDialog: () => pushDialog.open(repository),
+    pushed: () => statusArea.refresh(repository.root),
     errorView,
   });
   const newChangelist = changelistButton("new-changelist", t("newChangelist"), () =>

@@ -36,6 +36,16 @@ pub struct PushPlan {
     pub commits: Vec<PushCommit>,
 }
 
+/// What follows a commit made with Commit and push.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PushAfterCommit {
+    /// The push dialog opens with `plan`, and the user pushes from there.
+    Dialog { plan: PushPlan },
+    /// The push dialog was suppressed, so the current branch went to `target` at once.
+    Pushed { target: PushTarget },
+}
+
 /// A commit a push would send.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +84,15 @@ impl PushTags {
             Self::CurrentBranch => Some("--follow-tags"),
         }
     }
+}
+
+/// The protected branches: those where shared history lives. In this scope they are the default
+/// list of the reference, whose expressions match a whole branch name.
+const PROTECTED_BRANCHES: [&str; 2] = ["master", "main"];
+
+/// Whether `branch`, a name such as `main`, is a protected branch.
+pub(crate) fn is_protected(branch: &str) -> bool {
+    PROTECTED_BRANCHES.contains(&branch)
 }
 
 /// The arguments of the git that pushes `branch`, the current branch, to `target`, with the tags

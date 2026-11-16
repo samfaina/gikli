@@ -64,7 +64,7 @@ pub use notifications::{Notification, NotificationAction, NotificationKind, Noti
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
-pub use push::{PushCommit, PushPlan, PushTags, PushTarget};
+pub use push::{PushAfterCommit, PushCommit, PushPlan, PushTags, PushTarget};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
 pub use status::{
@@ -708,6 +708,25 @@ impl Gikli {
     /// Makes the commit message empty once a commit went through, or keeps it.
     pub fn set_clear_commit_message_after_commit(&self, clear: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.clear_commit_message_after_commit = clear)
+    }
+
+    /// Makes Commit and push open the push dialog once the commit went through, or push at once.
+    pub fn set_show_push_dialog_for_commit_and_push(
+        &self,
+        show: bool,
+    ) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.show_push_dialog_for_commit_and_push = show)
+    }
+
+    /// Makes Commit and push open the push dialog only when the push goes to a protected branch,
+    /// or whatever branch it goes to.
+    pub fn set_show_push_dialog_only_for_protected_branches(
+        &self,
+        only_protected: bool,
+    ) -> Result<Settings, Failure> {
+        self.change_settings(|settings| {
+            settings.show_push_dialog_only_for_protected_branches = only_protected;
+        })
     }
 
     /// Switches between Changelist mode and Staging mode. The Changelists stay as they are.
@@ -1982,6 +2001,29 @@ impl Gikli {
                 folder: root.clone(),
             },
         ))
+    }
+
+    /// What follows a commit the user made with Commit and push in `repository`, once it went
+    /// through. The push dialog opens, with what a push of the current branch would send, unless
+    /// the settings suppress it: then the branch goes at once, without tags, to the target the
+    /// dialog would start from. The dialog is suppressed when it is off for Commit and push, or
+    /// when it shows only for protected branches and the target is not one. A Repository without
+    /// a remote has no target, so the dialog opens to offer to define one.
+    pub fn push_after_commit(&self, repository: &Repository) -> Result<PushAfterCommit, Failure> {
+        let plan = self.push_plan(repository, None)?;
+        let settings = self.settings();
+        let dialog_for = |target: &PushTarget| {
+            settings.show_push_dialog_for_commit_and_push
+                && (!settings.show_push_dialog_only_for_protected_branches
+                    || push::is_protected(&target.branch))
+        };
+        match plan.target {
+            Some(target) if !dialog_for(&target) => {
+                self.push(repository, &target, PushTags::None)?;
+                Ok(PushAfterCommit::Pushed { target })
+            }
+            _ => Ok(PushAfterCommit::Dialog { plan }),
+        }
     }
 
     /// Defines the remote `name` of `repository` at `url`, as the push dialog offers when there is
