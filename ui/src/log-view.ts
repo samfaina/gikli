@@ -154,7 +154,7 @@ export function createLogView(host: LogViewHost): LogView {
   matchCaseInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
   searchHistory.addEventListener("change", runRecentSearch);
   branchSelect.addEventListener("change", () => {
-    nameFetch();
+    labelFetchButton();
     applyFilter();
   });
   goToInput.addEventListener("input", scheduleSuggestions);
@@ -222,7 +222,7 @@ export function createLogView(host: LogViewHost): LogView {
     );
     const still = branches.findIndex((branch) => branch.name === chosen?.name && branch.kind === chosen.kind);
     branchSelect.value = still < 0 ? "" : String(still);
-    nameFetch();
+    labelFetchButton();
   }
 
   /** The branch chosen in the branch filter, if any. */
@@ -231,7 +231,7 @@ export function createLogView(host: LogViewHost): LogView {
   }
 
   /** Says on the fetch button what it fetches: the branch chosen in the filter, or every remote. */
-  function nameFetch(): void {
+  function labelFetchButton(): void {
     const chosen = chosenBranch();
     fetchButton.textContent = chosen === undefined ? t("logFetchAll") : t("logFetchBranch", { branch: chosen.name });
   }

@@ -13,10 +13,17 @@ export interface StatusArea {
   refresh(root?: string): void;
 }
 
+/** One Repository the status area shows, with the number of its latest read. */
+interface ShownRepository {
+  repository: Repository;
+  view: HTMLElement;
+  latestRead: number;
+}
+
 export function createStatusArea(describeError: (error: unknown) => string): StatusArea {
   const view = element<HTMLElement>("status-area");
-  /** The view of each Repository shown, by root, with the number of its latest read. */
-  let shown = new Map<string, { repository: Repository; view: HTMLElement; latestRead: number }>();
+  /** Each Repository shown, by root. */
+  let shown = new Map<string, ShownRepository>();
 
   function show(repositories: Repository[]): void {
     shown = new Map(
@@ -43,7 +50,7 @@ export function createStatusArea(describeError: (error: unknown) => string): Sta
   }
 
   /** Reads what HEAD of the Repository of `entry` is on; an answer an earlier read gives late is dropped. */
-  async function read(entry: { repository: Repository; view: HTMLElement; latestRead: number }): Promise<void> {
+  async function read(entry: ShownRepository): Promise<void> {
     const reading = ++entry.latestRead;
     let parts: HTMLElement[];
     try {

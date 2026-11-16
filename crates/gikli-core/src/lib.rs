@@ -1824,23 +1824,15 @@ impl Gikli {
     /// cancel. A Repository without a remote returns [`Failure::NoRemoteToFetchFrom`].
     pub fn fetch_all(&self, repository: &Repository) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?;
-        let root = &repository.root;
-        if shallow::remote_to_fetch_from(&runner, repository)?.is_none() {
+        if !sync::has_remote(&runner, repository)? {
             return Err(Failure::NoRemoteToFetchFrom {
-                folder: root.clone(),
+                folder: repository.root.clone(),
             });
         }
         let operation = LongOperation::FetchAll {
             repository: repository.clone(),
         };
-        let invocation = self.run_operation(&runner, operation, root, &sync::FETCH_ALL_ARGS)?;
-        if invocation.success {
-            return Ok(());
-        }
-        let fallback = Failure::FetchFailed {
-            folder: root.clone(),
-        };
-        Err(failure_of(&runner, root, &invocation, fallback))
+        self.fetch(&runner, repository, operation, &sync::FETCH_ALL_ARGS)
     }
 
     /// Fetches `branch` of `repository` alone: a local branch from the remote branch its upstream
@@ -1850,21 +1842,32 @@ impl Gikli {
     /// no remote fetches into [`Failure::NoRemoteToFetchFrom`].
     pub fn fetch_branch(&self, repository: &Repository, branch: &RefLabel) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?;
-        let root = &repository.root;
         let source = sync::branch_source(&runner, repository, branch)?;
         let operation = LongOperation::FetchBranch {
             repository: repository.clone(),
             remote: source.remote.clone(),
             branch: branch.name.clone(),
         };
-        let invocation = self.run_operation(&runner, operation, root, &source.fetch_args())?;
+        self.fetch(&runner, repository, operation, &source.fetch_args())
+    }
+
+    /// Runs git with `args`, a fetch, in `repository` as `operation`, and explains its failure.
+    fn fetch(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        operation: LongOperation,
+        args: &[&str],
+    ) -> Result<(), Failure> {
+        let root = &repository.root;
+        let invocation = self.run_operation(runner, operation, root, args)?;
         if invocation.success {
             return Ok(());
         }
         let fallback = Failure::FetchFailed {
             folder: root.clone(),
         };
-        Err(failure_of(&runner, root, &invocation, fallback))
+        Err(failure_of(runner, root, &invocation, fallback))
     }
 
     /// The local branches of `repository`, by name, each with how far it is from its upstream.

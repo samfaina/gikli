@@ -743,7 +743,7 @@ button:disabled {
 }
 
 /* The long operations with their progress, and the status area under them: always in view and never in the way. */
-.status-bar {
+.window-foot {
   position: sticky;
   bottom: 0;
   background: var(--surface);

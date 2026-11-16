@@ -106,8 +106,8 @@ pub(crate) fn branch_source(
             }
         }
         RefKind::Remote => {
-            let tracking = format!("refs/remotes/{}", branch.name);
-            fetched_into(runner, repository, &tracking)?.ok_or_else(|| {
+            let remote_branch = format!("refs/remotes/{}", branch.name);
+            fetched_into(runner, repository, &remote_branch)?.ok_or_else(|| {
                 Failure::NoRemoteToFetchFrom {
                     folder: repository.root.clone(),
                 }
@@ -135,29 +135,31 @@ fn configured(
 }
 
 /// The branch of a remote of `repository` that the configuration of the remote fetches into the
-/// remote branch `tracking`, a full reference name, if one does.
+/// remote branch `remote_branch`, a full reference name, if one does. The first refspec that maps
+/// into it counts, as two remotes fetching into the same remote branch would overwrite each other.
 fn fetched_into(
     runner: &GitRunner,
     repository: &Repository,
-    tracking: &str,
+    remote_branch: &str,
 ) -> Result<Option<BranchSource>, Failure> {
     let listed = runner
         .run(
             &repository.root,
-            &["config", "--get-regexp", r"^remote\..*\.fetch$"],
+            &["config", "--null", "--get-regexp", r"^remote\..*\.fetch$"],
         )
         .map_err(git_failed_to_start)?;
-    // Each line is the key, then the refspec, such as `+refs/heads/*:refs/remotes/origin/*`.
-    Ok(listed.stdout_text().lines().find_map(|line| {
-        let (key, refspec) = line.split_once(' ')?;
+    // Each entry is the key, a line break, then the refspec, such as
+    // `+refs/heads/*:refs/remotes/origin/*`.
+    Ok(listed.stdout_text().split('\0').find_map(|entry| {
+        let (key, refspec) = entry.split_once('\n')?;
         let remote = key.strip_prefix("remote.")?.strip_suffix(".fetch")?;
         let (source, destination) = refspec.trim_start_matches('+').split_once(':')?;
         let reference = match (source.split_once('*'), destination.split_once('*')) {
             (Some((source_start, source_end)), Some((start, end))) => {
-                let matched = tracking.strip_prefix(start)?.strip_suffix(end)?;
+                let matched = remote_branch.strip_prefix(start)?.strip_suffix(end)?;
                 format!("{source_start}{matched}{source_end}")
             }
-            (None, None) if destination == tracking => source.to_owned(),
+            (None, None) if destination == remote_branch => source.to_owned(),
             _ => return None,
         };
         Some(BranchSource {
@@ -167,50 +169,124 @@ fn fetched_into(
     }))
 }
 
-/// What `for-each-ref` writes of each reference: its name, and the name of its upstream in full and
-/// as the user knows it, empty when it has none.
-const BRANCH_FORMAT: &str = "--format=%(refname)%00%(upstream)%00%(upstream:short)";
+/// Whether `repository` has any remote.
+pub(crate) fn has_remote(runner: &GitRunner, repository: &Repository) -> Result<bool, Failure> {
+    let listed = read_branches(runner, repository, &["remote"])?;
+    Ok(!listed.trim().is_empty())
+}
+
+/// What `for-each-ref` writes of each local branch: its full name, and that of its upstream, empty
+/// when it has none.
+const BRANCH_FORMAT: &str = "--format=%(refname)%00%(upstream)";
 
 /// The local branches of `repository`, by name, each with how far it is from its upstream.
 pub(crate) fn local_branches(
     runner: &GitRunner,
     repository: &Repository,
 ) -> Result<Vec<LocalBranch>, Failure> {
-    let listed = read(
+    let listed = read_branches(
         runner,
         repository,
-        &[
-            "for-each-ref",
-            BRANCH_FORMAT,
-            "refs/heads/",
-            "refs/remotes/",
-        ],
+        &["for-each-ref", BRANCH_FORMAT, "refs/heads/"],
     )?;
-    let lines: Vec<[&str; 3]> = listed
+    with_upstreams(runner, repository, branch_refs(&listed))
+}
+
+/// What HEAD of `repository` is on. Only the current branch is counted.
+pub(crate) fn current_branch(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<CurrentBranch, Failure> {
+    let head = runner
+        .run(&repository.root, &["symbolic-ref", "--quiet", "HEAD"])
+        .map_err(git_failed_to_start)?;
+    let head_ref = head.stdout_text();
+    let head_ref = head_ref.trim_end();
+    if head.success
+        && let Some(name) = head_ref.strip_prefix("refs/heads/")
+    {
+        // A branch with no commit yet is not listed, and has nothing to count.
+        let listed = read_branches(
+            runner,
+            repository,
+            &["for-each-ref", BRANCH_FORMAT, head_ref],
+        )?;
+        let mut refs = branch_refs(&listed);
+        refs.retain(|branch| branch.reference == head_ref);
+        let upstream = with_upstreams(runner, repository, refs)?
+            .into_iter()
+            .next()
+            .and_then(|branch| branch.upstream);
+        return Ok(CurrentBranch::Branch {
+            name: name.to_owned(),
+            upstream,
+        });
+    }
+    let hash = read_branches(runner, repository, &["rev-parse", "--verify", "HEAD"])?;
+    Ok(CurrentBranch::Detached {
+        hash: hash.trim_end().to_owned(),
+    })
+}
+
+/// A local branch as `for-each-ref` lists it in [`BRANCH_FORMAT`].
+struct BranchRef<'a> {
+    reference: &'a str,
+    /// Empty when the branch has none.
+    upstream: &'a str,
+}
+
+/// The local branches `listed` in [`BRANCH_FORMAT`].
+fn branch_refs(listed: &str) -> Vec<BranchRef<'_>> {
+    listed
         .lines()
         .filter_map(|line| {
-            let fields: Vec<&str> = line.split('\0').collect();
-            <[&str; 3]>::try_from(fields).ok()
+            let (reference, upstream) = line.split_once('\0')?;
+            Some(BranchRef {
+                reference,
+                upstream,
+            })
         })
+        .collect()
+}
+
+/// The local branches `refs` of `repository`, each with how far it is from its upstream. An
+/// upstream that does not exist, wherever the configuration puts it, is gone.
+fn with_upstreams(
+    runner: &GitRunner,
+    repository: &Repository,
+    refs: Vec<BranchRef>,
+) -> Result<Vec<LocalBranch>, Failure> {
+    let mut upstreams: Vec<&str> = refs
+        .iter()
+        .map(|branch| branch.upstream)
+        .filter(|upstream| !upstream.is_empty())
         .collect();
-    let existing: BTreeSet<&str> = lines.iter().map(|[name, ..]| *name).collect();
+    upstreams.sort_unstable();
+    upstreams.dedup();
+    let listed = if upstreams.is_empty() {
+        String::new()
+    } else {
+        let mut args = vec!["for-each-ref", "--format=%(refname)"];
+        args.extend(&upstreams);
+        read_branches(runner, repository, &args)?
+    };
+    // A pattern of `for-each-ref` also matches the names under it as a folder, which the exact
+    // comparison leaves out.
+    let existing: BTreeSet<&str> = listed.lines().collect();
     let mut branches = Vec::new();
-    for [reference, upstream, upstream_name] in &lines {
-        let Some(name) = reference.strip_prefix("refs/heads/") else {
+    for branch in refs {
+        let Some(name) = branch.reference.strip_prefix("refs/heads/") else {
             continue;
         };
-        let upstream = if upstream.is_empty() {
-            None
-        } else {
-            let commits = if existing.contains(upstream) {
-                Some(count(runner, repository, reference, upstream)?)
-            } else {
-                None
-            };
-            Some(Upstream {
-                name: (*upstream_name).to_owned(),
-                commits,
-            })
+        let upstream = match branch.upstream {
+            "" => None,
+            upstream => Some(Upstream {
+                name: short_name(upstream).to_owned(),
+                commits: match existing.contains(upstream) {
+                    true => Some(count(runner, repository, branch.reference, upstream)?),
+                    false => None,
+                },
+            }),
         };
         branches.push(LocalBranch {
             name: name.to_owned(),
@@ -220,33 +296,14 @@ pub(crate) fn local_branches(
     Ok(branches)
 }
 
-/// What HEAD of `repository` is on.
-pub(crate) fn current_branch(
-    runner: &GitRunner,
-    repository: &Repository,
-) -> Result<CurrentBranch, Failure> {
-    let head = runner
-        .run(&repository.root, &["symbolic-ref", "--quiet", "HEAD"])
-        .map_err(git_failed_to_start)?;
-    let head_ref = head.stdout_text();
-    match head_ref.trim_end().strip_prefix("refs/heads/") {
-        Some(name) if head.success => {
-            let upstream = local_branches(runner, repository)?
-                .into_iter()
-                .find(|branch| branch.name == name)
-                .and_then(|branch| branch.upstream);
-            Ok(CurrentBranch::Branch {
-                name: name.to_owned(),
-                upstream,
-            })
-        }
-        _ => {
-            let hash = read(runner, repository, &["rev-parse", "--verify", "HEAD"])?;
-            Ok(CurrentBranch::Detached {
-                hash: hash.trim_end().to_owned(),
-            })
-        }
-    }
+/// `reference` as the user knows it: a remote branch or a local branch without its folder, as
+/// `origin/main` or `main`, and any other reference in full. git's own short form depends on the
+/// user's configuration.
+fn short_name(reference: &str) -> &str {
+    reference
+        .strip_prefix("refs/remotes/")
+        .or_else(|| reference.strip_prefix("refs/heads/"))
+        .unwrap_or(reference)
 }
 
 /// How far the branch `reference` is from `upstream`, both full reference names.
@@ -257,7 +314,7 @@ fn count(
     upstream: &str,
 ) -> Result<IncomingOutgoing, Failure> {
     let range = format!("{reference}...{upstream}");
-    let counted = read(
+    let counted = read_branches(
         runner,
         repository,
         &["rev-list", "--left-right", "--count", &range, "--"],
@@ -265,26 +322,27 @@ fn count(
     let mut numbers = counted.split_whitespace().map(str::parse::<usize>);
     match (numbers.next(), numbers.next()) {
         (Some(Ok(outgoing)), Some(Ok(incoming))) => Ok(IncomingOutgoing { incoming, outgoing }),
-        _ => Err(unreadable(repository)),
+        _ => Err(branches_unreadable(repository)),
     }
 }
 
-/// The standard output of git run with `args` in `repository`, which has to succeed.
-fn read(runner: &GitRunner, repository: &Repository, args: &[&str]) -> Result<String, Failure> {
+/// The standard output of git run with `args` in `repository` to read its branches, which has to
+/// succeed. A failure the failure explainer does not know says the branches could not be read.
+fn read_branches(
+    runner: &GitRunner,
+    repository: &Repository,
+    args: &[&str],
+) -> Result<String, Failure> {
     let root = &repository.root;
     let invocation = runner.run(root, args).map_err(git_failed_to_start)?;
     if !invocation.success {
-        return Err(failure_of(
-            runner,
-            root,
-            &invocation,
-            unreadable(repository),
-        ));
+        let fallback = branches_unreadable(repository);
+        return Err(failure_of(runner, root, &invocation, fallback));
     }
     Ok(invocation.stdout_text())
 }
 
-fn unreadable(repository: &Repository) -> Failure {
+fn branches_unreadable(repository: &Repository) -> Failure {
     Failure::BranchesUnreadable {
         folder: repository.root.clone(),
     }

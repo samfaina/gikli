@@ -26,12 +26,34 @@ fn remote_with_work(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
     (remote, work)
 }
 
-/// The upstream `name` of a branch, `incoming` commits behind it and `outgoing` ahead.
+/// The upstream `name` of a branch, with `incoming` commits the branch does not have and
+/// `outgoing` ones it does not have.
 fn upstream(name: &str, incoming: usize, outgoing: usize) -> Option<Upstream> {
     Some(Upstream {
         name: name.to_owned(),
         commits: Some(IncomingOutgoing { incoming, outgoing }),
     })
+}
+
+/// The incoming and outgoing commits of `branch` against `upstream`, as plain git counts them.
+fn counted_by_git(repository: &TestRepository, branch: &str, upstream: &str) -> (usize, usize) {
+    let range = format!("{branch}...{upstream}");
+    let counted = repository.git(&["rev-list", "--left-right", "--count", &range]);
+    let mut numbers = counted
+        .split_whitespace()
+        .map(|number| number.parse().expect("a count"));
+    let outgoing = numbers.next().expect("outgoing");
+    let incoming = numbers.next().expect("incoming");
+    (incoming, outgoing)
+}
+
+/// The remote branches of `repository` and where they point, as plain git lists them.
+fn remote_branches_by_git(repository: &TestRepository) -> String {
+    repository.git(&[
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+        "refs/remotes/",
+    ])
 }
 
 #[test]
@@ -244,7 +266,7 @@ fn fetching_a_remote_branch_fetches_only_it() {
 #[test]
 fn fetching_a_branch_runs_as_a_long_operation_from_its_remote() {
     let sandbox = Sandbox::new();
-    let (mine, _work) = both_branches_moved_on(&sandbox);
+    let (mine, work) = both_branches_moved_on(&sandbox);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
     let events = gikli.subscribe();
@@ -264,6 +286,11 @@ fn fetching_a_branch_runs_as_a_long_operation_from_its_remote() {
         }
     );
     assert!(received.contains(&Event::OperationFinished { id }));
+    assert_eq!(
+        mine.git(&["rev-parse", "origin/side"]),
+        work.git(&["rev-parse", "side"]),
+        "git agrees the branch was fetched"
+    );
 }
 
 /// The first long operation `received` announces as started, with its id.
@@ -281,6 +308,7 @@ fn a_local_branch_without_an_upstream_has_nothing_to_fetch() {
     mine.git(&["branch", "--quiet", "alone"]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
+    let before = remote_branches_by_git(&mine);
 
     let fetched = gikli.fetch_branch(&root, &label("alone", RefKind::Local));
 
@@ -293,6 +321,12 @@ fn a_local_branch_without_an_upstream_has_nothing_to_fetch() {
     let branches = gikli.local_branches(&root).expect("read the branches");
     assert_eq!(branches[0].name, "alone");
     assert_eq!(branches[0].upstream, None);
+    assert_eq!(
+        remote_branches_by_git(&mine),
+        before,
+        "git agrees nothing was fetched"
+    );
+    assert!(!mine.git_succeeds(&["rev-parse", "--verify", "--quiet", "alone@{upstream}"]));
 }
 
 #[test]
@@ -334,6 +368,11 @@ fn fetching_every_remote_runs_as_a_long_operation_that_reports_its_progress() {
         "the fetch reports progress up to the end: {reported:?}"
     );
     assert!(received.contains(&Event::OperationFinished { id }));
+    assert_eq!(
+        mine.git(&["rev-parse", "origin/main"]),
+        work.git(&["rev-parse", "HEAD"]),
+        "git agrees the remote was fetched"
+    );
 }
 
 #[test]
@@ -357,6 +396,7 @@ fn a_repository_without_a_remote_has_nowhere_to_fetch_from() {
             upstream: None,
         })
     );
+    assert_eq!(alone.git(&["remote"]), "", "git agrees there is no remote");
 }
 
 /// What the failure explainer says of a server git could not reach.
@@ -379,6 +419,7 @@ fn a_fetch_that_cannot_reach_the_server_is_explained() {
     );
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
+    let before = remote_branches_by_git(&mine);
 
     let every_remote = gikli.fetch_all(&root);
     let one_branch = gikli.fetch_branch(&root, &label("main", RefKind::Local));
@@ -397,6 +438,11 @@ fn a_fetch_that_cannot_reach_the_server_is_explained() {
             .any(|entry| format!("{entry:?}").contains("Could not resolve hostname")),
         "the raw output goes to the operation log"
     );
+    assert_eq!(
+        remote_branches_by_git(&mine),
+        before,
+        "git agrees nothing was fetched"
+    );
 }
 
 #[test]
@@ -407,6 +453,7 @@ fn a_fetch_git_cannot_explain_says_it_failed() {
     std::fs::remove_dir_all(remote.root()).expect("remove the remote");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
+    let before = remote_branches_by_git(&mine);
 
     assert_eq!(
         gikli.fetch_all(&root),
@@ -420,6 +467,11 @@ fn a_fetch_git_cannot_explain_says_it_failed() {
             name: "main".to_owned(),
             upstream: upstream("origin/main", 0, 0),
         })
+    );
+    assert_eq!(
+        remote_branches_by_git(&mine),
+        before,
+        "git agrees nothing was fetched"
     );
 }
 
@@ -458,6 +510,12 @@ fn a_branch_without_commits_shows_as_the_current_branch() {
         })
     );
     assert_eq!(gikli.local_branches(&root), Ok(vec![]));
+    assert_eq!(empty.git(&["symbolic-ref", "HEAD"]), "refs/heads/fresh\n");
+    assert_eq!(
+        empty.git(&["for-each-ref", "refs/heads/"]),
+        "",
+        "git lists no branch either"
+    );
 }
 
 #[test]
@@ -481,6 +539,7 @@ fn a_linked_worktree_shows_its_own_current_branch_and_counts() {
             upstream: upstream("origin/main", 1, 0),
         })
     );
+    assert_eq!(counted_by_git(&worktree, "feature", "origin/main"), (1, 0));
 }
 
 #[test]
@@ -500,10 +559,81 @@ fn a_branch_that_follows_another_local_branch_counts_against_it() {
             upstream: upstream("main", 0, 1),
         })
     );
+    assert_eq!(counted_by_git(&mine, "topic", "main"), (0, 1));
     assert_eq!(
         gikli.fetch_branch(&root, &label("topic", RefKind::Local)),
         Err(Failure::NoUpstream {
             branch: "topic".to_owned()
         })
+    );
+}
+
+#[test]
+fn a_remote_branch_of_a_remote_with_its_own_mapping_fetches_from_that_remote() {
+    let sandbox = Sandbox::new();
+    let (mine, work) = both_branches_moved_on(&sandbox);
+    mine.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/mirror/*",
+    ]);
+    mine.git(&["fetch", "--quiet", "origin", "main"]);
+    mine.git(&["update-ref", "refs/remotes/mirror/side", "origin/side"]);
+    mine.git(&[
+        "branch",
+        "--quiet",
+        "--set-upstream-to",
+        "mirror/side",
+        "side",
+    ]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+
+    gikli
+        .fetch_branch(&root, &label("mirror/side", RefKind::Remote))
+        .expect("fetch the branch");
+
+    assert_eq!(
+        mine.git(&["rev-parse", "mirror/side"]),
+        work.git(&["rev-parse", "side"]),
+        "git agrees the remote branch the mapping names was fetched"
+    );
+    let branches = gikli.local_branches(&root).expect("read the branches");
+    assert_eq!(branches[1].upstream, upstream("mirror/side", 1, 0));
+    assert_eq!(counted_by_git(&mine, "side", "mirror/side"), (1, 0));
+}
+
+#[test]
+fn an_upstream_outside_the_remote_branches_is_counted_and_not_gone() {
+    let sandbox = Sandbox::new();
+    let (remote, work) = remote_with_work(&sandbox);
+    let mine = sandbox.clone_of(&remote, "mine");
+    mine.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/mirrored/origin/*",
+    ]);
+    work.commit_at(2, "Second");
+    work.git(&["push", "--quiet"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+
+    gikli.fetch_all(&root).expect("fetch every remote");
+
+    assert_eq!(
+        gikli.current_branch(&root),
+        Ok(CurrentBranch::Branch {
+            name: "main".to_owned(),
+            upstream: upstream("refs/mirrored/origin/main", 1, 0),
+        })
+    );
+    assert_eq!(
+        mine.git(&["rev-parse", "--symbolic-full-name", "main@{upstream}"]),
+        "refs/mirrored/origin/main\n",
+        "git agrees where the upstream is"
+    );
+    assert_eq!(
+        counted_by_git(&mine, "main", "refs/mirrored/origin/main"),
+        (1, 0)
     );
 }
