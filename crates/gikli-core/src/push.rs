@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::GitRunner;
 use crate::log::run_git;
-use crate::sync::{configured, fetched_from, remotes};
+use crate::sync::{configured, fetch_destinations, fetched_from, remotes};
 use crate::{Failure, Repository, commit, git_failed_to_start};
 
 /// Where a push sends the current branch: the branch `branch` of the remote `remote`.
@@ -129,13 +129,19 @@ pub(crate) fn plan(
             false,
             commits(runner, repository, &[&local, "--not", &remote_branch])?,
         ),
-        // A new branch starts from commits the remote may already have on other branches.
+        // A new branch starts from commits the remote may already have on other branches: those
+        // of every remote branch its fetch configuration writes into.
         None => {
-            let on_the_remote = format!("--remotes={}", target.remote);
-            (
-                true,
-                commits(runner, repository, &[&local, "--not", &on_the_remote])?,
-            )
+            let mut revisions = vec![local.clone(), "--not".to_owned()];
+            for destination in fetch_destinations(runner, repository, &target.remote)? {
+                if destination.contains('*') {
+                    revisions.push(format!("--glob={destination}"));
+                } else if exists(runner, repository, &destination)? {
+                    revisions.push(destination);
+                }
+            }
+            let revisions: Vec<&str> = revisions.iter().map(String::as_str).collect();
+            (true, commits(runner, repository, &revisions)?)
         }
     };
     Ok(PushPlan {
@@ -161,16 +167,25 @@ pub(crate) fn check(
             remote: target.remote.clone(),
         });
     }
-    let reference = format!("refs/heads/{}", target.branch);
-    let checked = runner
-        .run(&repository.root, &["check-ref-format", &reference])
-        .map_err(git_failed_to_start)?;
-    if !checked.success {
+    if !is_reference_name(runner, repository, &format!("refs/heads/{}", target.branch))? {
         return Err(Failure::BranchNameInvalid {
             name: target.branch.clone(),
         });
     }
     Ok(())
+}
+
+/// Whether git takes `reference`, a full name such as `refs/heads/main`, for the name of a
+/// reference.
+pub(crate) fn is_reference_name(
+    runner: &GitRunner,
+    repository: &Repository,
+    reference: &str,
+) -> Result<bool, Failure> {
+    Ok(runner
+        .run(&repository.root, &["check-ref-format", reference])
+        .map_err(git_failed_to_start)?
+        .success)
 }
 
 /// Whether a push of `branch` of `repository` to `target` sets `target` as its upstream: when the
@@ -203,7 +218,7 @@ pub(crate) fn current_branch(
     else {
         return Err(Failure::DetachedHeadNotPushed);
     };
-    if !exists(runner, repository, &format!("refs/heads/{branch}")) {
+    if !exists(runner, repository, &format!("refs/heads/{branch}"))? {
         return Err(Failure::BranchWithoutCommits {
             branch: branch.to_owned(),
         });
@@ -262,17 +277,21 @@ fn remote_branch(
 ) -> Result<Option<String>, Failure> {
     let reference = format!("refs/heads/{}", target.branch);
     let fetched = fetched_from(runner, repository, &target.remote, &reference)?;
-    Ok(fetched.filter(|fetched| exists(runner, repository, fetched)))
+    match fetched {
+        Some(fetched) if exists(runner, repository, &fetched)? => Ok(Some(fetched)),
+        _ => Ok(None),
+    }
 }
 
 /// Whether the reference `reference` exists in `repository`.
-fn exists(runner: &GitRunner, repository: &Repository, reference: &str) -> bool {
-    runner
+fn exists(runner: &GitRunner, repository: &Repository, reference: &str) -> Result<bool, Failure> {
+    Ok(runner
         .run(
             &repository.root,
             &["rev-parse", "--verify", "--quiet", reference],
         )
-        .is_ok_and(|verified| verified.success)
+        .map_err(git_failed_to_start)?
+        .success)
 }
 
 /// What git prints of each commit, a field per NUL, with `-z` putting a NUL between commits too.
@@ -284,7 +303,14 @@ fn commits(
     repository: &Repository,
     revisions: &[&str],
 ) -> Result<Vec<PushCommit>, Failure> {
-    let mut args = vec!["log", "-z", "--encoding=UTF-8", FORMAT];
+    // `log.showSignature` would add the signatures to what git prints.
+    let mut args = vec![
+        "log",
+        "-z",
+        "--no-show-signature",
+        "--encoding=UTF-8",
+        FORMAT,
+    ];
     args.extend(revisions);
     args.push("--");
     let listed = run_git(runner, repository, &args)?.stdout_text();

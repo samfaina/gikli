@@ -41,6 +41,7 @@ export const en = {
   pushNewBranchHint: "The remote has no such branch yet: the push creates it, and it becomes the upstream of a branch that has none.",
   pushReading: "Reading what the push would send…",
   pushNothingToPush: "The remote branch already has every commit of this branch.",
+  pushOneCommit: "1 commit goes to {target}.",
   pushCommitCount: "{count} commits go to {target}.",
   pushOtherAuthor: "Written by {author}, not by you",
   pushChangedFiles: "Files the commit changed",

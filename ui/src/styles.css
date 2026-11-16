@@ -1167,18 +1167,24 @@ button:disabled {
 .log-graph .log-lane-7 { stroke: var(--log-lane-7); fill: var(--log-lane-7); }
 
 /* File history: the revisions of one file, and beside them the selected one's changes and files. */
+/* The background of the selected row of a list of commits, in the file history and the push dialog. */
+.file-history,
+.push-dialog {
+  --selected-row: #cfe0f7;
+}
+
+@media (prefers-color-scheme: dark) {
+  .file-history,
+  .push-dialog {
+    --selected-row: #2f4466;
+  }
+}
+
 .file-history {
-  --file-history-selected: #cfe0f7;
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
   min-height: 240px;
-}
-
-@media (prefers-color-scheme: dark) {
-  .file-history {
-    --file-history-selected: #2f4466;
-  }
 }
 
 .file-history[hidden] {
@@ -1224,7 +1230,7 @@ button:disabled {
 }
 
 .file-history-row.selected {
-  background: var(--file-history-selected);
+  background: var(--selected-row);
 }
 
 .file-history-list:focus-visible .file-history-row.selected {
@@ -1279,17 +1285,10 @@ button:disabled {
 
 /* The push dialog: the tree of Repository, current branch and target, then the commits it sends. */
 .push-dialog {
-  --file-history-selected: #cfe0f7;
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
   min-height: 240px;
-}
-
-@media (prefers-color-scheme: dark) {
-  .push-dialog {
-    --file-history-selected: #2f4466;
-  }
 }
 
 .push-dialog[hidden] {
@@ -1377,7 +1376,7 @@ button:disabled {
 
 .push-commit.selected,
 .push-file.selected {
-  background: var(--file-history-selected);
+  background: var(--selected-row);
 }
 
 .file-history-list:focus-visible .push-commit.selected {

@@ -19,7 +19,7 @@ import {
   type Repository,
 } from "./core";
 import { createDiffPreview } from "./diff-view";
-import { element } from "./dom";
+import { element, folderName } from "./dom";
 import { note, SHORT_HASH_LENGTH } from "./log-details";
 import { t } from "./strings";
 
@@ -107,6 +107,9 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
   defineButton.addEventListener("click", () => void defineRemote());
   remoteSelect.addEventListener("change", () => void read(chosenTarget()));
   targetBranch.addEventListener("input", () => {
+    // Until the commits of the typed target are read, Push would still send to the one before.
+    latestRead += 1;
+    pushButton.disabled = true;
     window.clearTimeout(typingPause);
     typingPause = window.setTimeout(() => void read(chosenTarget()), TARGET_TYPING_PAUSE_MS);
   });
@@ -201,7 +204,9 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
         ? ""
         : read.commits.length === 0
           ? t("pushNothingToPush")
-          : t("pushCommitCount", { count: String(read.commits.length), target: `${target.remote}/${target.branch}` });
+          : read.commits.length === 1
+            ? t("pushOneCommit", { target: `${target.remote}/${target.branch}` })
+            : t("pushCommitCount", { count: String(read.commits.length), target: `${target.remote}/${target.branch}` });
     drawCommits(read.commits);
     select(read.commits.find((commit) => commit.hash === selected?.hash) ?? read.commits[0] ?? null);
   }
@@ -393,8 +398,4 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
 /** The paths of the files among `nodes`, folders opened, in their order. */
 function filePaths(nodes: ChangeNode[]): string[] {
   return nodes.flatMap((node) => (node.kind === "folder" ? filePaths(node.children) : [node.path]));
-}
-
-function folderName(root: string): string {
-  return root.split(/[\\/]/).filter((piece) => piece !== "").pop() ?? root;
 }

@@ -2009,10 +2009,7 @@ impl Gikli {
         }
         // git takes a name for a remote when its remote branches would have valid names.
         let remote_branches = format!("refs/remotes/{name}/branch");
-        let checked = runner
-            .run(root, &["check-ref-format", &remote_branches])
-            .map_err(git_failed_to_start)?;
-        if !checked.success {
+        if !push::is_reference_name(&runner, repository, &remote_branches)? {
             return Err(Failure::RemoteNameInvalid {
                 name: name.to_owned(),
             });

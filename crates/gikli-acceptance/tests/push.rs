@@ -577,3 +577,29 @@ fn a_branch_without_commits_has_nothing_to_push() {
         Err(refused)
     );
 }
+
+#[test]
+fn a_new_target_on_a_remote_with_its_own_mapping_leaves_out_what_the_remote_holds() {
+    let sandbox = Sandbox::new();
+    let (_remote, mine) = remote_and_clone(&sandbox);
+    mine.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/mirror/*",
+    ]);
+    mine.git(&["fetch", "--quiet", "origin"]);
+    mine.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    mine.git(&["switch", "--quiet", "--create", "feature"]);
+    mine.commit_at(2, "On feature");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+
+    let plan = gikli.push_plan(&root, None).expect("plan the push");
+
+    assert!(plan.new_branch, "origin has no feature");
+    assert_eq!(
+        subjects(&plan.commits),
+        ["On feature"],
+        "First is on refs/remotes/mirror/main, where origin's branches go"
+    );
+}

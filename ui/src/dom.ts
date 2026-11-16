@@ -10,6 +10,11 @@ export function hasShortcutKey(event: KeyboardEvent | MouseEvent): boolean {
   return onMac ? event.metaKey : event.ctrlKey;
 }
 
+/** The last folder of the path `root`, as a Repository is named where its whole path does not fit. */
+export function folderName(root: string): string {
+  return root.split(/[\\/]/).filter((piece) => piece !== "").pop() ?? root;
+}
+
 /** The element of index.html with this id. */
 export function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);

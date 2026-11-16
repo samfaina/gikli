@@ -174,6 +174,20 @@ pub(crate) fn fetched_from(
         .find_map(|refspec| refspec.destination_of(reference)))
 }
 
+/// Where the fetch configuration of `remote` in `repository` writes the branches it fetches: each
+/// refspec's destination, such as `refs/remotes/origin/*`, in the order git lists them.
+pub(crate) fn fetch_destinations(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote: &str,
+) -> Result<Vec<String>, Failure> {
+    Ok(fetch_refspecs(runner, repository)?
+        .into_iter()
+        .filter(|refspec| refspec.remote == remote)
+        .map(|refspec| refspec.destination)
+        .collect())
+}
+
 /// One refspec of the fetch configuration of a remote, such as
 /// `+refs/heads/*:refs/remotes/origin/*`: what it fetches, and where it writes it.
 struct FetchRefspec {
@@ -364,7 +378,7 @@ fn with_upstreams(
 /// `reference` as the user knows it: a remote branch or a local branch without its folder, as
 /// `origin/main` or `main`, and any other reference in full. git's own short form depends on the
 /// user's configuration.
-pub(crate) fn short_name(reference: &str) -> &str {
+fn short_name(reference: &str) -> &str {
     reference
         .strip_prefix("refs/remotes/")
         .or_else(|| reference.strip_prefix("refs/heads/"))
@@ -393,7 +407,7 @@ fn count(
 
 /// The standard output of git run with `args` in `repository` to read its branches, which has to
 /// succeed. A failure the failure explainer does not know says the branches could not be read.
-pub(crate) fn read_branches(
+fn read_branches(
     runner: &GitRunner,
     repository: &Repository,
     args: &[&str],
