@@ -80,6 +80,7 @@ import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
 import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
+import { createFileHistoryView } from "./file-history";
 import { createLogView } from "./log-view";
 import { t, type StringKey } from "./strings";
 
@@ -169,6 +170,8 @@ const diffView = createDiffView({
   },
 });
 
+const logSection = element<HTMLElement>("log");
+
 const logView = createLogView({
   errorView,
   opened: () => {
@@ -176,6 +179,26 @@ const logView = createLogView({
   },
   closed: () => {
     projectView.hidden = false;
+  },
+  showFileHistory: (repository, path) => fileHistoryView.open(repository, path),
+});
+
+/** The views the file history took the place of, which come back when it closes. */
+let underFileHistory: HTMLElement[] = [];
+
+const fileHistoryView = createFileHistoryView({
+  errorView,
+  opened: () => {
+    underFileHistory.push(...[projectView, logSection].filter((view) => !view.hidden));
+    for (const view of underFileHistory) {
+      view.hidden = true;
+    }
+  },
+  closed: () => {
+    for (const view of underFileHistory) {
+      view.hidden = false;
+    }
+    underFileHistory = [];
   },
 });
 
@@ -745,6 +768,7 @@ function repositoryView(repository: Repository): HTMLElement {
     changed: () => void refreshChanges(),
     describeError,
     describeChange,
+    showFileHistory: (path) => fileHistoryView.open(repository, path),
   });
   const commitPanel = createCommitPanel({
     repository,
@@ -1796,6 +1820,8 @@ function describeFailure(failure: Failure): string {
       return t("failureLogChanged");
     case "revisionNotFound":
       return t("failureRevisionNotFound", { revision: failure.revision });
+    case "fileVersionNotRestored":
+      return t("failureFileVersionNotRestored", { path: failure.path });
     case "searchPatternInvalid":
       return t("failureSearchPatternInvalid", { message: failure.message });
     case "commitMessagesUnreadable":

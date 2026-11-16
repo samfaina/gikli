@@ -63,6 +63,7 @@ const READ_ONLY_LABELS: Record<LocalReadOnly, StringKey> = {
   notUtf8: "diffLocalSideNotUtf8",
   symbolicLink: "diffLocalSideLink",
   index: "diffLocalSideIndex",
+  revision: "diffLocalSideRevision",
 };
 
 /** The diff of the file at `path` on `side` of the index, or against HEAD when `side` is null. */
@@ -144,6 +145,41 @@ function positionOfLine(doc: Text, line: number): number {
  */
 function documentOf(text: string | null): Text {
   return Text.of((text ?? "").split("\n"));
+}
+
+/**
+ * A read-only side-by-side view of `text` in `parent`, as the preview of a file history shows a
+ * revision. It keeps to the differences the core found, and hides the regions it collapsed until
+ * the user clicks them.
+ */
+export function createDiffPreview(parent: HTMLElement, text: TextDiff): MergeView {
+  const headDocument = documentOf(text.head);
+  const localDocument = documentOf(text.local);
+  const differences = text.differences.map(
+    ({ head: inHead, local: inLocal }) =>
+      new Change(
+        positionOfLine(headDocument, inHead.start),
+        positionOfLine(headDocument, inHead.end),
+        positionOfLine(localDocument, inLocal.start),
+        positionOfLine(localDocument, inLocal.end),
+      ),
+  );
+  const expand = (index: number): void => dispatchOnBothSides(merge, expandRegion.of(index));
+  const shared: Extension = [
+    lineNumbers(),
+    highlightSpecialChars(),
+    EditorState.readOnly.of(true),
+    EditorView.darkTheme.of(window.matchMedia("(prefers-color-scheme: dark)").matches),
+  ];
+  const merge: MergeView = new MergeView({
+    parent,
+    a: { doc: headDocument, extensions: [shared, collapsedLines(text.collapsed.map((region) => region.head), expand)] },
+    b: { doc: localDocument, extensions: [shared, collapsedLines(text.collapsed.map((region) => region.local), expand)] },
+    highlightChanges: false,
+    gutter: true,
+    diffConfig: { override: () => differences },
+  });
+  return merge;
 }
 
 export function createDiffView(host: DiffViewHost): DiffView {

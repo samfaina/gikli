@@ -12,10 +12,11 @@ use std::path::PathBuf;
 
 use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges, CommitDetails,
-    CommitWarning, Failure, FailureAction, FileDiff, Gikli, GitCheck, HostEnvironment, LogCursor,
-    LogFilter, LogPage, MoveTarget, Notification, NotificationAction, NotificationOutcome,
-    OperationLogEntry, Project, ProjectWindow, Prompt, RefLabel, Repository, RollbackPlan,
-    RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
+    CommitWarning, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment,
+    LogCursor, LogFilter, LogPage, MoveTarget, Notification, NotificationAction,
+    NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt, RefLabel, Repository,
+    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch,
+    answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -93,6 +94,11 @@ fn set_commit_changes_grouping(
     grouping: ChangeGrouping,
 ) -> Result<Settings, Failure> {
     gikli.set_commit_changes_grouping(grouping)
+}
+
+#[tauri::command]
+fn set_file_history_row_limit(gikli: State<'_, Gikli>, limit: usize) -> Result<Settings, Failure> {
+    gikli.set_file_history_row_limit(limit)
 }
 
 #[tauri::command]
@@ -637,6 +643,37 @@ fn commit_changes(
 }
 
 #[tauri::command(async)]
+fn file_history(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    path: String,
+    branches: Vec<RefLabel>,
+) -> Result<FileHistory, Failure> {
+    gikli.file_history(&repository, &path, &branches)
+}
+
+#[tauri::command(async)]
+fn revision_file_diff(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    revision: String,
+    path: String,
+) -> Result<RevisionFileDiff, Failure> {
+    gikli.revision_file_diff(&repository, &revision, &path)
+}
+
+#[tauri::command(async)]
+fn get_file_version(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    revision: String,
+    revision_path: String,
+    path: String,
+) -> Result<(), Failure> {
+    gikli.get_file_version(&repository, &revision, &revision_path, &path)
+}
+
+#[tauri::command(async)]
 fn end_log_read(gikli: State<'_, Gikli>, cursor: LogCursor) {
     gikli.end_log_read(&cursor);
 }
@@ -772,6 +809,10 @@ fn main() {
             go_to_suggestions,
             commit_details,
             commit_changes,
+            file_history,
+            revision_file_diff,
+            get_file_version,
+            set_file_history_row_limit,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
             set_staging_mode,

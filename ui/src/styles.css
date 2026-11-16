@@ -1105,3 +1105,114 @@ button:disabled {
 .log-graph .log-lane-5 { stroke: var(--log-lane-5); fill: var(--log-lane-5); }
 .log-graph .log-lane-6 { stroke: var(--log-lane-6); fill: var(--log-lane-6); }
 .log-graph .log-lane-7 { stroke: var(--log-lane-7); fill: var(--log-lane-7); }
+
+/* File history: the revisions of one file, and beside them the selected one's changes and files. */
+.file-history {
+  --file-history-selected: #cfe0f7;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 240px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .file-history {
+    --file-history-selected: #2f4466;
+  }
+}
+
+.file-history[hidden] {
+  display: none;
+}
+
+.file-history .log-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-history-limit {
+  width: 6em;
+}
+
+.file-history-body {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.file-history-list {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: auto;
+}
+
+.file-history-row {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr) minmax(0, 220px) 130px 110px;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 16px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.file-history-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-history-row.selected {
+  background: var(--file-history-selected);
+}
+
+.file-history-list:focus-visible .file-history-row.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The renames column: a path other than the one the history is of stands out. */
+.file-history-path {
+  color: var(--muted);
+}
+
+.file-history-path-other {
+  color: var(--accent);
+}
+
+.file-history-side {
+  display: flex;
+  flex: 0 0 45%;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 12px;
+  border-left: 1px solid var(--border);
+}
+
+.file-history-preview {
+  flex: 2 1 0;
+  min-height: 120px;
+}
+
+.file-history-side .log-changes-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.file-history-side .log-changes-content ul {
+  padding-left: 0;
+}
+
+.file-history-this-file {
+  font-weight: 600;
+}
+
+/* Shows the history of a file, from its row. */
+.file-history-button {
+  margin-left: 8px;
+  padding: 0 6px;
+  font-size: 0.85em;
+}

@@ -151,7 +151,7 @@ pub(crate) fn changes(
 }
 
 /// The parents of the commit `hash`, the first parent first.
-fn parents_of(
+pub(crate) fn parents_of(
     runner: &GitRunner,
     repository: &Repository,
     hash: &str,
@@ -176,7 +176,7 @@ fn parents_of(
 
 /// The files that differ from `parent` to the commit `hash`, by path, with renames found. Without
 /// a parent, every file of the commit is new.
-fn changed_files(
+pub(crate) fn changed_files(
     runner: &GitRunner,
     repository: &Repository,
     parent: Option<&str>,

@@ -110,6 +110,30 @@
         </aside>
       </div>
     </section>
+    <section id="file-history" class="file-history" data-testid="file-history" hidden>
+      <div class="log-toolbar">
+        <h2 id="file-history-title" class="log-title" data-testid="file-history-title"></h2>
+        <label><span id="file-history-branch-label"></span><select id="file-history-branch" data-testid="file-history-branch"></select></label>
+        <label><span id="file-history-limit-label"></span><input id="file-history-limit" class="file-history-limit" type="number" min="1" step="1" data-testid="file-history-limit" /></label>
+        <button id="file-history-refresh" type="button" data-testid="file-history-refresh"></button>
+        <button id="file-history-close" type="button" data-testid="file-history-close"></button>
+      </div>
+      <div id="file-history-message" class="log-message" data-testid="file-history-message" role="status"></div>
+      <div class="file-history-body">
+        <div id="file-history-list" class="file-history-list" data-testid="file-history-list" role="listbox" tabindex="0"></div>
+        <aside class="file-history-side">
+          <div class="log-pane-header">
+            <h3 id="file-history-preview-title"></h3>
+            <button id="file-history-get" type="button" data-testid="file-history-get" disabled></button>
+          </div>
+          <div id="file-history-preview" class="file-history-preview diff-content" data-testid="file-history-preview"></div>
+          <div class="log-pane-header">
+            <h3 id="file-history-files-title"></h3>
+          </div>
+          <div id="file-history-files" class="log-changes-content" data-testid="file-history-files"></div>
+        </aside>
+      </div>
+    </section>
     <section id="operation-log" class="operation-log" data-testid="operation-log" hidden>
       <div class="operation-log-header">
         <h2 id="operation-log-title"></h2>

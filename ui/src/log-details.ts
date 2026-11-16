@@ -21,6 +21,8 @@ export interface CommitPanesHost {
   errorView(error: unknown): HTMLElement;
   /** Selects the commit `hash` in the log. */
   goToCommit(hash: string): void;
+  /** Opens the history of the file at `path` in `repository`. */
+  showFileHistory(repository: Repository, path: string): void;
 }
 
 /** The panes of the selected commit. */
@@ -88,7 +90,7 @@ export function createCommitPanes(host: CommitPanesHost): CommitPanes {
       return;
     }
     changesView.replaceChildren(
-      changes.status === "fulfilled" ? changesContent(changes.value) : host.errorView(changes.reason),
+      changes.status === "fulfilled" ? changesContent(repository, changes.value) : host.errorView(changes.reason),
     );
     detailsView.replaceChildren(
       details.status === "fulfilled" ? detailsContent(details.value) : host.errorView(details.reason),
@@ -114,7 +116,8 @@ export function createCommitPanes(host: CommitPanesHost): CommitPanes {
   }
 
   /** The changed files, under a title for each parent when there are several. */
-  function changesContent(perParent: CommitChanges[]): HTMLElement {
+  function changesContent(repository: Repository, perParent: CommitChanges[]): HTMLElement {
+    const showHistory = (path: string): void => host.showFileHistory(repository, path);
     const content = document.createElement("div");
     for (const against of perParent) {
       if (perParent.length > 1 && against.parent !== null) {
@@ -124,7 +127,7 @@ export function createCommitPanes(host: CommitPanesHost): CommitPanes {
         content.append(title);
       }
       content.append(
-        against.group.nodes.length === 0 ? note(t("logNoChangedFiles")) : nodesView(against.group.nodes),
+        against.group.nodes.length === 0 ? note(t("logNoChangedFiles")) : nodesView(against.group.nodes, showHistory),
       );
     }
     return content;
@@ -202,6 +205,22 @@ export function createCommitPanes(host: CommitPanesHost): CommitPanes {
   return { show };
 }
 
+/** A button that shows the history of the file at `path`. */
+export function historyButton(path: string, showHistory: (path: string) => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "file-history-button";
+  button.dataset.testid = "show-file-history";
+  button.textContent = t("logShowFileHistory");
+  button.title = t("logShowFileHistoryOf", { path });
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    showHistory(path);
+  });
+  button.addEventListener("dblclick", (event) => event.stopPropagation());
+  return button;
+}
+
 /** Adds the field `name` with its `value` to the description `list`. */
 function field(list: HTMLElement, name: string, value: string | Node): void {
   const term = document.createElement("dt");
@@ -221,9 +240,9 @@ function note(text: string): HTMLElement {
 
 /**
  * The changed files as a tree of folders, or a list when there are no folders among `nodes`. A file
- * `inFolder` shows by its name, under its folder.
+ * `inFolder` shows by its name, under its folder, and each one offers `showHistory` of its path.
  */
-function nodesView(nodes: ChangeNode[], inFolder = false): HTMLElement {
+function nodesView(nodes: ChangeNode[], showHistory: (path: string) => void, inFolder = false): HTMLElement {
   const list = document.createElement("ul");
   for (const node of nodes) {
     const item = document.createElement("li");
@@ -232,7 +251,7 @@ function nodesView(nodes: ChangeNode[], inFolder = false): HTMLElement {
       name.className = "folder-name";
       name.textContent = node.path.slice(node.path.lastIndexOf("/") + 1);
       name.title = node.path;
-      item.append(name, nodesView(node.children, true));
+      item.append(name, nodesView(node.children, showHistory, true));
     } else {
       item.className = "change";
       item.dataset.status = node.status;
@@ -242,7 +261,7 @@ function nodesView(nodes: ChangeNode[], inFolder = false): HTMLElement {
       path.textContent =
         node.originalPath === null ? shownPath : t("logRenamedFrom", { path: shownPath, from: node.originalPath });
       path.title = node.path;
-      item.append(path);
+      item.append(path, historyButton(node.path, showHistory));
     }
     list.append(item);
   }

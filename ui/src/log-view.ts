@@ -36,6 +36,8 @@ export interface LogViewHost {
   opened(): void;
   /** The changes view is back. */
   closed(): void;
+  /** Opens the history of the file at `path` in `repository`. */
+  showFileHistory(repository: Repository, path: string): void;
 }
 
 export interface LogView {
@@ -106,6 +108,7 @@ export function createLogView(host: LogViewHost): LogView {
   const panes = createCommitPanes({
     errorView: (error) => host.errorView(error),
     goToCommit: (hash) => void goToCommit(hash, hash.slice(0, SHORT_HASH_LENGTH)),
+    showFileHistory: (shown, path) => host.showFileHistory(shown, path),
   });
   const menu = createCommitMenu(view, (error) => message.replaceChildren(host.errorView(error)));
 

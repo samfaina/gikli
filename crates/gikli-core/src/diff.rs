@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::git::{GitRunner, Invocation};
 use crate::{
-    ChangeSet, Failure, Repository, Settings, StagingSide, failure_of, git_failed_to_start,
+    ChangeSet, Failure, Repository, Settings, StagingSide, details, failure_of, git_failed_to_start,
 };
 
 /// A changed file, compared with its version in HEAD, or with the index on a side of Staging mode.
@@ -85,6 +85,28 @@ pub enum LocalReadOnly {
     SymbolicLink,
     /// This side is the git index, and a diff writes only to the file on disk.
     Index,
+    /// This side is the file in a commit, which stays as it is.
+    Revision,
+}
+
+/// What a commit changed in one file, against its first parent: the older side is the file in the
+/// parent, at the path it had there, and the newer side the file in the commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevisionFileDiff {
+    pub repository: Repository,
+    /// The full hash of the commit.
+    pub revision: String,
+    /// The full hash of its first parent, or None for a commit with no parent.
+    pub parent: Option<String>,
+    /// The file's path in the commit, relative to the Repository root, with `/` between folders.
+    pub path: PathBuf,
+    /// The path the file had in the parent, for a commit that renamed or copied it: the older side
+    /// is the file at this path.
+    pub original_path: Option<PathBuf>,
+    /// The file in the parent as [`TextDiff::head`], and in the commit as [`TextDiff::local`],
+    /// which is read-only.
+    pub content: DiffContent,
 }
 
 /// Unchanged lines, the same on both sides, and in the same number.
@@ -178,6 +200,40 @@ pub(crate) fn read_side(
         neighbors,
         settings,
     ))
+}
+
+/// Reads what the commit `revision` names in `repository` changed in the file at `path`, against
+/// its first parent.
+pub(crate) fn read_revision(
+    runner: &GitRunner,
+    repository: &Repository,
+    revision: &str,
+    path: &str,
+) -> Result<RevisionFileDiff, Failure> {
+    let hash = details::resolve(runner, repository, revision)?;
+    let parent = details::parents_of(runner, repository, &hash)?
+        .into_iter()
+        .next();
+    let original_path = details::changed_files(runner, repository, parent.as_deref(), &hash)?
+        .into_iter()
+        .find(|change| change.path == Path::new(path))
+        .and_then(|change| change.original_path);
+    let older_path = head_path_of(path, original_path.as_deref());
+    let file = ComparedFile {
+        runner,
+        root: &repository.root,
+        path,
+        head_path: &older_path,
+    };
+    let content = file.revision_against_parent(&hash, parent.as_deref())?;
+    Ok(RevisionFileDiff {
+        repository: repository.clone(),
+        revision: hash,
+        parent,
+        path: PathBuf::from(path),
+        original_path,
+        content,
+    })
 }
 
 /// Where HEAD has the file at `path`, which was moved from `original_path` if it was.
@@ -471,6 +527,65 @@ impl<'a> ComparedFile<'a> {
         )
     }
 
+    /// What the view shows of the file in the commit `hash` against the file in `parent`, at its
+    /// head path there. The commit's side is read-only.
+    fn revision_against_parent(
+        &self,
+        hash: &str,
+        parent: Option<&str>,
+    ) -> Result<DiffContent, Failure> {
+        let older = match parent {
+            Some(parent) => self.entry_in(parent, self.head_path)?,
+            None => None,
+        };
+        let newer = self.entry_in(hash, self.path)?;
+        if [&older, &newer]
+            .into_iter()
+            .flatten()
+            .any(StoredEntry::is_folder)
+        {
+            return Ok(DiffContent::Folder);
+        }
+        let comparison = match (parent, &older, &newer) {
+            (_, None, None) => Comparison::of_nothing(),
+            // Two blobs, as one path in both commits would not find a moved file.
+            (Some(parent), Some(_), Some(_)) => {
+                let older_blob = format!("{parent}:{}", self.head_path);
+                let newer_blob = format!("{hash}:{}", self.path);
+                self.compare_targets(&[&older_blob, &newer_blob])?
+            }
+            // The commit added or deleted the file, against its first parent or, without one,
+            // against nothing, which `show` compares a commit with no parent to.
+            _ => {
+                let present = if newer.is_some() {
+                    self.path
+                } else {
+                    self.head_path
+                };
+                let mut args = vec![
+                    "--literal-pathspecs",
+                    "show",
+                    "--format=",
+                    "--diff-merges=first-parent",
+                ];
+                args.extend(&DIFF_ARGS[2..]);
+                args.extend([hash, "--", present]);
+                self.compare_args(&args)?
+            }
+        };
+        let newer_bytes = match &newer {
+            Some(entry) => Some(self.read_blob(&entry.id)?),
+            None => None,
+        };
+        self.content(
+            &comparison,
+            older.as_ref(),
+            newer_bytes.as_deref(),
+            String::new(),
+            Some(LocalReadOnly::Revision),
+        )
+    }
+
     /// What the view shows of this file, from what `comparison` says, with `older` what the older
     /// side has of it, `newer` what the newer side holds, `local_version` what identifies that, and
     /// `local_read_only` why it cannot be edited.
@@ -558,7 +673,12 @@ impl<'a> ComparedFile<'a> {
     fn compare_targets(&self, targets: &[&str]) -> Result<Comparison, Failure> {
         let mut args = DIFF_ARGS.to_vec();
         args.extend(targets);
-        let invocation = self.run(&args)?;
+        self.compare_args(&args)
+    }
+
+    /// Has git compare what `args`, the arguments after `git`, name.
+    fn compare_args(&self, args: &[&str]) -> Result<Comparison, Failure> {
+        let invocation = self.run(args)?;
         // With `--no-index`, git says the files differ by failing, and writes the difference.
         if !invocation.success && invocation.stdout.is_empty() {
             return Err(self.unreadable(&invocation));
@@ -606,14 +726,19 @@ impl<'a> ComparedFile<'a> {
         {
             return Ok(None);
         }
+        self.entry_in("HEAD", self.head_path)
+    }
+
+    /// What the commit `revision` has at `path`, if anything.
+    fn entry_in(&self, revision: &str, path: &str) -> Result<Option<StoredEntry>, Failure> {
         let invocation = self.run(&[
             "--literal-pathspecs",
             "ls-tree",
             "-z",
             "--full-tree",
-            "HEAD",
+            revision,
             "--",
-            self.head_path,
+            path,
         ])?;
         if !invocation.success {
             return Err(self.unreadable(&invocation));
