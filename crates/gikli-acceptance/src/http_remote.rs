@@ -75,8 +75,12 @@ struct Server {
 pub(crate) enum Refusal {
     /// Requests that do not carry this `Authorization` header are asked for credentials.
     UnlessAuthorized(String),
-    /// Every request gets this status, such as `403 Forbidden`.
-    Always(String),
+    /// Every request gets `status`, such as `403 Forbidden`, with `text` as a plain text body when
+    /// there is one, as a hosting service words why.
+    Always {
+        status: String,
+        text: Option<String>,
+    },
 }
 
 impl Refusal {
@@ -102,10 +106,20 @@ impl Server {
     fn answer(&self, mut stream: TcpStream) -> std::io::Result<()> {
         let request = read_request(&stream)?;
         match &self.refusal {
-            Refusal::Always(status) => stream.write_all(
-                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            Refusal::Always { status, text } => {
+                let (content_type, body) = match text {
+                    Some(text) => ("Content-Type: text/plain\r\n", format!("{text}\n")),
+                    None => ("", String::new()),
+                };
+                stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\n{content_type}Content-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    )
                     .as_bytes(),
-            ),
+                )
+            }
             Refusal::UnlessAuthorized(expected)
                 if request.authorization.as_deref() != Some(expected) =>
             {

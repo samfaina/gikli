@@ -29,7 +29,7 @@ use crate::operation_log::{OperationLog, OperationLogEntry};
 use crate::operations::{OperationRun, Progress};
 use crate::process_tree::{self, Cancellation};
 use crate::prompts;
-use crate::trace::{self, ForwardedEvents, HookRuns, TraceReader};
+use crate::trace::{self, ChildRuns, ForwardedEvents, TraceReader};
 use crate::url_passwords::hide_url_passwords;
 use crate::version::GitVersion;
 use crate::wsl::WslShare;
@@ -141,6 +141,21 @@ impl GitProgram {
         }
     }
 
+    /// Where this process finds `path`, a path git reads in `folder`. A relative one is relative
+    /// to `folder`. An absolute one inside WSL is in the distribution of `folder`, and None when
+    /// `folder` is in none: where a Windows drive appears inside WSL depends on its settings.
+    fn path_on_this_machine(&self, folder: &Path, path: &str) -> Option<PathBuf> {
+        match self {
+            Self::Wsl { share, .. } if path.starts_with('/') => {
+                let share = share
+                    .clone()
+                    .or_else(|| WslShare::of(folder).map(|(share, _)| share))?;
+                Some(share.windows_path(path))
+            }
+            _ => Some(folder.join(path)),
+        }
+    }
+
     /// The root of the repository `folder` is in, from the output of [`Self::toplevel_args`].
     fn toplevel(&self, folder: &Path, output: &[u8]) -> PathBuf {
         let output = output.strip_suffix(b"\n").unwrap_or(output);
@@ -174,6 +189,9 @@ pub(crate) struct Invocation {
     pub stderr: String,
     /// The hook that failed in this run, as git's trace of the run names it.
     pub failed_hook: Option<String>,
+    /// The remotes this run fetched from in a git of its own each, as `git fetch --all` does, whose
+    /// git failed, as git's trace of the run names them.
+    pub failed_fetches: Vec<String>,
     /// Whether a remote refused the credentials git gave it in this run.
     pub credentials_refused: bool,
     /// Whether the user cancelled this run, which ended it. It is not a failure of git's, whatever
@@ -265,6 +283,11 @@ impl GitRunner {
     /// not.
     pub fn runs_natively(&self) -> bool {
         matches!(self.program, GitProgram::Native(_))
+    }
+
+    /// Where this process finds `path`, a path this git reads in `folder`, when it can tell.
+    pub fn path_on_this_machine(&self, folder: &Path, path: &str) -> Option<PathBuf> {
+        self.program.path_on_this_machine(folder, path)
     }
 
     /// Runs git with `args` in `folder`, for a command nobody needs to see or stop.
@@ -511,6 +534,7 @@ fn finish_run(
         stdout,
         stderr,
         failed_hook: trace.failed_hook(),
+        failed_fetches: trace.failed_fetches(),
         credentials_refused: trace.refused_credentials_file.exists(),
         cancelled,
         last_hook: trace.last_hook().filter(|_| cancelled),
@@ -775,6 +799,7 @@ impl Invocation {
             stdout: self.stdout.clone(),
             stderr: kept,
             failed_hook: self.failed_hook.clone(),
+            failed_fetches: self.failed_fetches.clone(),
             credentials_refused: self.credentials_refused,
             cancelled: self.cancelled,
             last_hook: self.last_hook.clone(),
@@ -788,7 +813,7 @@ impl Invocation {
 struct RunTrace {
     /// What git's trace of the run has said so far, without its command lines. Empty for a run
     /// without a trace, which then reports no hook.
-    hooks: Arc<Mutex<HookRuns>>,
+    children: Arc<Mutex<ChildRuns>>,
     source: TraceSource,
     /// What git gets as its target for the trace.
     git_target: OsString,
@@ -810,20 +835,20 @@ impl RunTrace {
     /// The trace of a run of `program`. When it cannot be read, git runs without one, as it can do
     /// its work all the same, and gikli does not fall back to a file.
     fn new(program: &GitProgram, can_read: bool) -> Self {
-        let hooks = Arc::new(Mutex::new(HookRuns::default()));
+        let children = Arc::new(Mutex::new(ChildRuns::default()));
         let mut source = TraceSource::None;
         let mut git_target = OsString::from(trace::NO_TRACE);
         if can_read {
             match program {
                 GitProgram::Native(_) => {
-                    if let Ok((reader, target)) = TraceReader::start(hooks.clone()) {
+                    if let Ok((reader, target)) = TraceReader::start(children.clone()) {
                         source = TraceSource::Reader(reader);
                         git_target = target;
                     }
                 }
                 // The forwarder gives git its target, and git runs with this one without it.
                 GitProgram::Wsl { .. } => {
-                    if let Ok(forwarded) = ForwardedEvents::new(hooks.clone()) {
+                    if let Ok(forwarded) = ForwardedEvents::new(children.clone()) {
                         source = TraceSource::Forwarded(forwarded);
                     }
                 }
@@ -832,7 +857,7 @@ impl RunTrace {
         let refused_credentials_file =
             std::env::temp_dir().join(format!("{}.refused", trace::new_run_name()));
         Self {
-            hooks,
+            children,
             source,
             git_target,
             refused_credentials_file,
@@ -873,17 +898,22 @@ impl RunTrace {
 
     /// The hook that ended with an error in the run, as the git gikli started saw it.
     fn failed_hook(&self) -> Option<String> {
-        lock(&self.hooks).failed()
+        lock(&self.children).failed_hook()
+    }
+
+    /// The remotes whose own git failed in the run, as the git gikli started saw it.
+    fn failed_fetches(&self) -> Vec<String> {
+        lock(&self.children).failed_fetches()
     }
 
     /// The hook running now, as the git gikli started sees it.
     fn running_hook(&self) -> Option<String> {
-        lock(&self.hooks).running()
+        lock(&self.children).running_hook()
     }
 
     /// The last hook the git gikli started has started, running or not.
     fn last_hook(&self) -> Option<String> {
-        lock(&self.hooks).last()
+        lock(&self.children).last_hook()
     }
 }
 

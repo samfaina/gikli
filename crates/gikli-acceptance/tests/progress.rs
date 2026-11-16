@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, file_url};
-use gikli_core::{Event, Failure, LongOperation, Progress, Repository, RunningOperation};
+use gikli_core::{
+    Event, ExplainedMessage, Explanation, Failure, LongOperation, NextStep, Progress, Repository,
+    RunningOperation,
+};
 
 /// How long the tests wait for the clone to start before failing. Generous, for slow CI machines.
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -196,9 +199,12 @@ fn a_clone_that_fails_still_finishes_and_leaves_git_output_in_the_operation_log(
 
     assert_eq!(
         result,
-        Err(Failure::CloneFailed {
-            url,
-            folder: target.clone()
+        Err(Failure::Explained {
+            explanation: Explanation {
+                message: ExplainedMessage::RemoteWithoutRepository { remote: None, url },
+                next_step: NextStep::CheckRemoteUrl,
+                actions: vec![],
+            }
         })
     );
     let received: Vec<Event> = events.try_iter().collect();

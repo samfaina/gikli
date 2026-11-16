@@ -207,6 +207,9 @@ export const en = {
   failureIndexLockNotRemoved: "gikli could not remove {lock}: {message}",
   failureFolderNotTrusted: "git could not add {folder} to your trusted folders. The operation log shows git's output.",
   failureServerUnreachable: "git could not reach the server.",
+  failureRemoteWithoutRepository:
+    "The remote {remote} points to {url}, where git finds no repository, or none you are allowed to see.",
+  failureUrlWithoutRepository: "git finds no repository at {url}, or none you are allowed to see.",
   failureCloneTargetNotEmpty: "{folder} already holds something, so git cannot clone into it.",
   failureSubmodulesNotCloned: "The files of the Repository are in {folder}, but git could not clone its submodules.",
   failureSubmodulesNotClonedCause: "{message} {cause}",
@@ -238,6 +241,8 @@ export const en = {
   nextStepCheckChangedHostKey:
     "Do not connect until whoever runs the server confirms the new key. Then remove the old one with ssh-keygen -R and the name of the server, and try again. gikli leaves your known_hosts file to you.",
   nextStepCheckConnection: "Check the URL and your connection, then try again.",
+  nextStepCheckRemoteUrl:
+    "Check the URL and that you have access to the repository there, then try again. git remote set-url changes the URL of a remote.",
   nextStepChooseEmptyFolder: "Choose an empty folder, or a folder that does not exist yet.",
   nextStepUseOrDeleteClone:
     "The operation log shows why. You can open the folder without its submodules, or delete it before you clone again.",

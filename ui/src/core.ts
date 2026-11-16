@@ -254,6 +254,8 @@ export type ExplainedMessage =
   | { kind: "hostKeyUnknown" }
   | { kind: "hostKeyChanged" }
   | { kind: "serverUnreachable" }
+  /** `remote` is null for a clone, which has no remote yet. A password in `url` is hidden. */
+  | { kind: "remoteWithoutRepository"; remote: string | null; url: string }
   | { kind: "cloneTargetNotEmpty"; folder: string }
   /** `cause` is what kept the submodules from cloning, when the core knows it. */
   | { kind: "submodulesNotCloned"; folder: string; cause: ExplainedMessage | null };
@@ -269,6 +271,7 @@ export type NextStep =
   | "verifyHostKey"
   | "checkChangedHostKey"
   | "checkConnection"
+  | "checkRemoteUrl"
   | "chooseEmptyFolder"
   | "useOrDeleteClone";
 
