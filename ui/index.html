@@ -81,6 +81,7 @@
       <div class="log-toolbar">
         <h2 id="log-title" class="log-title" data-testid="log-title"></h2>
         <label><input id="log-long-edges" type="checkbox" data-testid="log-long-edges" /><span id="log-long-edges-label"></span></label>
+        <button id="log-fetch" type="button" data-testid="log-fetch"></button>
         <button id="log-refresh" type="button" data-testid="log-refresh"></button>
         <button id="log-close" type="button" data-testid="log-close"></button>
       </div>
@@ -146,6 +147,9 @@
       </div>
       <div id="operation-log-entries" class="operation-log-entries" data-testid="operation-log-entries" tabindex="0"></div>
     </section>
-    <footer id="operations" class="operations" data-testid="operations" role="status" hidden></footer>
+    <footer class="status-bar">
+      <div id="operations" class="operations" data-testid="operations" role="status" hidden></div>
+      <div id="status-area" class="status-area" data-testid="status-area" role="status" hidden></div>
+    </footer>
   </body>
 </html>

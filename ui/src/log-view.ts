@@ -6,10 +6,13 @@
 import { createCommitMenu } from "./commit-menu";
 import {
   endLogRead,
+  fetchAll,
+  fetchBranch,
   fetchRestOfHistory,
   filteredLogReaches,
   goTo,
   goToSuggestions,
+  localBranches,
   logBranches,
   logSearchHistory,
   readLog,
@@ -18,6 +21,7 @@ import {
   setShowLongEdges,
   type GraphArrow,
   type GraphLine,
+  type LocalBranch,
   type LogCursor,
   type LogFilter,
   type LogRow,
@@ -79,6 +83,7 @@ export function createLogView(host: LogViewHost): LogView {
   const list = element<HTMLElement>("log-list");
   const rowsView = element<HTMLElement>("log-rows");
   const longEdgesInput = element<HTMLInputElement>("log-long-edges");
+  const fetchButton = element<HTMLButtonElement>("log-fetch");
   const refreshButton = element<HTMLButtonElement>("log-refresh");
   const closeButton = element<HTMLButtonElement>("log-close");
   const searchInput = element<HTMLInputElement>("log-search");
@@ -127,6 +132,8 @@ export function createLogView(host: LogViewHost): LogView {
   element<HTMLElement>("log-history-cut-text").textContent = t("logHistoryCut");
   fetchRestButton.textContent = t("logFetchRest");
   fetchRestButton.addEventListener("click", () => void fetchRest());
+  fetchButton.textContent = t("logFetchAll");
+  fetchButton.addEventListener("click", () => void fetchChosen());
   refreshButton.textContent = t("logRefresh");
   closeButton.textContent = t("logClose");
   refreshButton.addEventListener("click", refresh);
@@ -146,7 +153,10 @@ export function createLogView(host: LogViewHost): LogView {
   regexInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
   matchCaseInput.addEventListener("change", () => searchInput.value !== "" && applyFilter());
   searchHistory.addEventListener("change", runRecentSearch);
-  branchSelect.addEventListener("change", applyFilter);
+  branchSelect.addEventListener("change", () => {
+    nameFetch();
+    applyFilter();
+  });
   goToInput.addEventListener("input", scheduleSuggestions);
   goToInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && goToInput.value.trim() !== "") {
@@ -188,23 +198,64 @@ export function createLogView(host: LogViewHost): LogView {
     void startOver();
   }
 
-  /** Lists the branches of `shown` in the branch filter, with every branch first, keeping the one chosen. */
+  /**
+   * Lists the branches of `shown` in the branch filter, with every branch first, keeping the one
+   * chosen. Each local branch says how far it is from its upstream.
+   */
   async function listBranches(shown: Repository): Promise<void> {
-    const chosen = branchSelect.value === "" ? undefined : branches[Number(branchSelect.value)];
-    let listed: RefLabel[] = [];
-    try {
-      listed = await logBranches(shown);
-    } catch {
-      // The filter then offers every branch only; the log says why it cannot be read.
-    }
+    const chosen = chosenBranch();
+    // Without the branches, the filter offers every branch only; the log says why they cannot be
+    // read. Without how far they are from their upstreams, it lists them by name alone.
+    const [listed, locals] = await Promise.all([
+      logBranches(shown).catch((): RefLabel[] => []),
+      localBranches(shown).catch((): LocalBranch[] => []),
+    ]);
     if (repository !== shown) {
       return;
     }
     branches = listed;
+    const upstreams = new Map(locals.map((local) => [local.name, local.upstream]));
     const every = new Option(t("logAllBranches"), "");
-    branchSelect.replaceChildren(every, ...branches.map((branch, index) => new Option(branch.name, String(index))));
+    branchSelect.replaceChildren(
+      every,
+      ...branches.map((branch, index) => new Option(branchLabel(branch, upstreams), String(index))),
+    );
     const still = branches.findIndex((branch) => branch.name === chosen?.name && branch.kind === chosen.kind);
     branchSelect.value = still < 0 ? "" : String(still);
+    nameFetch();
+  }
+
+  /** The branch chosen in the branch filter, if any. */
+  function chosenBranch(): RefLabel | undefined {
+    return branchSelect.value === "" ? undefined : branches[Number(branchSelect.value)];
+  }
+
+  /** Says on the fetch button what it fetches: the branch chosen in the filter, or every remote. */
+  function nameFetch(): void {
+    const chosen = chosenBranch();
+    fetchButton.textContent = chosen === undefined ? t("logFetchAll") : t("logFetchBranch", { branch: chosen.name });
+  }
+
+  /** Fetches the branch chosen in the filter, or every remote when none is, and reads the log again. */
+  async function fetchChosen(): Promise<void> {
+    const shown = repository;
+    if (shown === null) {
+      return;
+    }
+    const chosen = chosenBranch();
+    fetchButton.disabled = true;
+    try {
+      await (chosen === undefined ? fetchAll(shown) : fetchBranch(shown, chosen));
+      if (repository === shown) {
+        refresh();
+      }
+    } catch (error) {
+      if (repository === shown) {
+        message.replaceChildren(host.errorView(error));
+      }
+    } finally {
+      fetchButton.disabled = false;
+    }
   }
 
   /** Offers the searches the user ran, newest first, with their options, beside the search field. */
@@ -244,7 +295,7 @@ export function createLogView(host: LogViewHost): LogView {
 
   /** Reads the log again with the search and the branch filter as the user set them. */
   function applyFilter(): void {
-    const branch = branchSelect.value === "" ? undefined : branches[Number(branchSelect.value)];
+    const branch = chosenBranch();
     const text = searchInput.value;
     filter = {
       branches: branch === undefined ? [] : [branch],
@@ -711,4 +762,20 @@ function cutView(nodeColumn: number, middle: number): SVGElement {
 
 function laneColor(column: number): string {
   return `log-lane-${column % LANE_COLORS}`;
+}
+
+/** The name of `branch` in the branch filter: a local branch with how far it is from its upstream, if it has one. */
+function branchLabel(branch: RefLabel, upstreams: Map<string, LocalBranch["upstream"]>): string {
+  const upstream = branch.kind === "local" ? upstreams.get(branch.name) : undefined;
+  if (upstream === undefined || upstream === null) {
+    return branch.name;
+  }
+  if (upstream.commits === null) {
+    return t("logBranchUpstreamGone", { branch: branch.name });
+  }
+  return t("logBranchWithCounts", {
+    branch: branch.name,
+    incoming: String(upstream.commits.incoming),
+    outgoing: String(upstream.commits.outgoing),
+  });
 }

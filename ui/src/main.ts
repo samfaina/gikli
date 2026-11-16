@@ -16,6 +16,7 @@ import {
   deleteChangelist,
   dismissNotification,
   createRepository,
+  fetchAll,
   formatVersion,
   ignoreRepository,
   isFailure,
@@ -82,6 +83,7 @@ import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
 import { createLogView } from "./log-view";
+import { createStatusArea } from "./status-area";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -171,6 +173,8 @@ const diffView = createDiffView({
 });
 
 const logSection = element<HTMLElement>("log");
+
+const statusArea = createStatusArea(describeError);
 
 const logView = createLogView({
   errorView,
@@ -485,9 +489,12 @@ function handleCoreEvent(event: CoreEvent): void {
       cancellingOperations.delete(event.payload.id);
       runningOperations.delete(event.payload.id);
       showOperations();
+      // A fetch, a commit or a clone can move a branch or its upstream.
+      statusArea.refresh();
       break;
     case "filesChanged":
       shownRepositories.get(event.payload.repository.root)?.refresh();
+      statusArea.refresh(event.payload.repository.root);
       if (diffView.shownRoot() === event.payload.repository.root) {
         void diffView.refresh();
       }
@@ -608,6 +615,7 @@ function showProject(project: Project): void {
     }
   }
   shownRepositories.clear();
+  statusArea.show(project.repositories);
   const options = document.createElement("div");
   void viewOptions().then((view) => options.replaceWith(view));
   const choose = (choice: typeof addRepository, repository: Repository) => choice(project.folder, repository);
@@ -744,6 +752,22 @@ function repositoryView(repository: Repository): HTMLElement {
   openLog.dataset.testid = "open-log";
   openLog.textContent = t("logOpen");
   openLog.addEventListener("click", () => logView.open(repository));
+  const fetchButton = document.createElement("button");
+  fetchButton.type = "button";
+  fetchButton.dataset.testid = "fetch-all";
+  fetchButton.textContent = t("fetchAll");
+  fetchButton.addEventListener("click", async () => {
+    fetchButton.disabled = true;
+    try {
+      await fetchAll(repository);
+    } catch (error) {
+      changes.prepend(errorView(error));
+      drawnChanges = null;
+    } finally {
+      fetchButton.disabled = false;
+      statusArea.refresh(repository.root);
+    }
+  });
   // Outside the rows, which are drawn again on every read: what the user is typing stays.
   const form = changelistForm(() => void refreshChanges());
   const changes = document.createElement("div");
@@ -786,7 +810,7 @@ function repositoryView(repository: Repository): HTMLElement {
       save: ({ name, description }) => createChangelist(repository, name, description),
     }),
   );
-  header.append(title, refresh, openLog, newChangelist);
+  header.append(title, refresh, fetchButton, openLog, newChangelist);
   const watching = document.createElement("div");
   const features = document.createElement("div");
   const changesColumn = document.createElement("div");
@@ -1594,6 +1618,10 @@ function describeOperation(operation: LongOperation): string {
       return t("operationCommitFiles", { root: operation.repository.root });
     case "fetchRestOfHistory":
       return t("operationFetchRestOfHistory", { root: operation.repository.root, remote: operation.remote });
+    case "fetchAll":
+      return t("operationFetchAll", { root: operation.repository.root });
+    case "fetchBranch":
+      return t("operationFetchBranch", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
   }
 }
 
@@ -1824,6 +1852,12 @@ function describeFailure(failure: Failure): string {
       return t("failureNoRemoteToFetchFrom", { folder: failure.folder });
     case "historyNotFetched":
       return t("failureHistoryNotFetched", { folder: failure.folder, remote: failure.remote });
+    case "noUpstream":
+      return t("failureNoUpstream", { branch: failure.branch });
+    case "fetchFailed":
+      return t("failureFetchFailed", { folder: failure.folder });
+    case "branchesUnreadable":
+      return t("failureBranchesUnreadable", { folder: failure.folder });
     case "revisionNotFound":
       return t("failureRevisionNotFound", { revision: failure.revision });
     case "fileVersionNotRestored":

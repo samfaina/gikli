@@ -742,20 +742,52 @@ button:disabled {
   color: var(--status-conflicted);
 }
 
-/* Long operations and their progress, always in view and never in the way. */
-.operations {
+/* The long operations with their progress, and the status area under them: always in view and never in the way. */
+.status-bar {
   position: sticky;
   bottom: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 12px;
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
 
-.operations[hidden] {
+.operations {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+}
+
+.operations[hidden],
+.status-area[hidden] {
   display: none;
+}
+
+/* What HEAD of each Repository is on, and how far its branch is from its upstream. */
+.status-area {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  padding: 4px 12px;
+  font-size: 0.9em;
+}
+
+.operations:not([hidden]) + .status-area {
+  border-top: 1px solid var(--border);
+}
+
+.status-repository {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.status-repository [data-testid="status-branch"] {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.status-repository [data-testid="status-upstream"] {
+  opacity: 0.75;
 }
 
 .operation {

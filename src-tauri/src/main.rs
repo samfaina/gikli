@@ -12,11 +12,11 @@ use std::path::PathBuf;
 
 use gikli_core::{
     CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges, CommitDetails,
-    CommitWarning, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment,
-    LogCursor, LogFilter, LogPage, MoveTarget, Notification, NotificationAction,
-    NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt, RefLabel, Repository,
-    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch,
-    answer_askpass_request,
+    CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck,
+    HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget, Notification,
+    NotificationAction, NotificationOutcome, OperationLogEntry, Project, ProjectWindow, Prompt,
+    RefLabel, Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide,
+    TextSearch, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -591,6 +591,36 @@ fn fetch_rest_of_history(gikli: State<'_, Gikli>, repository: Repository) -> Res
     gikli.fetch_rest_of_history(&repository)
 }
 
+#[tauri::command(async)]
+fn fetch_all(gikli: State<'_, Gikli>, repository: Repository) -> Result<(), Failure> {
+    gikli.fetch_all(&repository)
+}
+
+#[tauri::command(async)]
+fn fetch_branch(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    branch: RefLabel,
+) -> Result<(), Failure> {
+    gikli.fetch_branch(&repository, &branch)
+}
+
+#[tauri::command(async)]
+fn local_branches(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<Vec<LocalBranch>, Failure> {
+    gikli.local_branches(&repository)
+}
+
+#[tauri::command(async)]
+fn current_branch(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<CurrentBranch, Failure> {
+    gikli.current_branch(&repository)
+}
+
 #[tauri::command]
 fn log_search_history(gikli: State<'_, Gikli>) -> Vec<TextSearch> {
     gikli.log_search_history()
@@ -807,6 +837,10 @@ fn main() {
             set_commit_identity,
             read_log,
             fetch_rest_of_history,
+            fetch_all,
+            fetch_branch,
+            local_branches,
+            current_branch,
             end_log_read,
             log_search_history,
             log_branches,
