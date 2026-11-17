@@ -47,6 +47,13 @@ pub enum LongOperation {
         remote: String,
         branch: String,
     },
+    /// Deleting the branch `branch` of `remote`, which a branch of `repository` that the user
+    /// deleted followed.
+    DeleteRemoteBranch {
+        repository: Repository,
+        remote: String,
+        branch: String,
+    },
     /// Checking out `target` in `repository`, a branch, a tag or a commit, where a hook can take as
     /// long as it likes.
     CheckOut {

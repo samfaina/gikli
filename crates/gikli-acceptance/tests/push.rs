@@ -3,7 +3,7 @@
 
 use gikli_acceptance::{Sandbox, TestRepository};
 use gikli_core::{
-    Event, ExplainedMessage, Explanation, Failure, Gikli, LongOperation, NextStep, PushCommit,
+    Event, ExplainedMessage, Explanation, Failure, Gikli, ListedCommit, LongOperation, NextStep,
     PushTags, PushTarget, Repository,
 };
 
@@ -35,7 +35,7 @@ fn target(remote: &str, branch: &str) -> PushTarget {
 }
 
 /// The subjects of `commits`, in their order.
-fn subjects(commits: &[PushCommit]) -> Vec<&str> {
+fn subjects(commits: &[ListedCommit]) -> Vec<&str> {
     commits
         .iter()
         .map(|commit| commit.subject.as_str())
@@ -43,7 +43,7 @@ fn subjects(commits: &[PushCommit]) -> Vec<&str> {
 }
 
 /// The hashes of `commits`, in their order.
-fn hashes(commits: &[PushCommit]) -> Vec<String> {
+fn hashes(commits: &[ListedCommit]) -> Vec<String> {
     commits.iter().map(|commit| commit.hash.clone()).collect()
 }
 

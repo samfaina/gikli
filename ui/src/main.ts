@@ -88,6 +88,9 @@ import { createPushDialog } from "./push-dialog";
 import { createLogView } from "./log-view";
 import { createBranchSelector } from "./branch-selector";
 import { createNewBranchDialog } from "./new-branch-dialog";
+import { createRenameBranchDialog } from "./rename-branch-dialog";
+import { createDeleteBranchesDialog } from "./delete-branches-dialog";
+import { createUnmergedCommitsView } from "./unmerged-commits";
 import { createStatusArea } from "./status-area";
 import { t, type StringKey } from "./strings";
 
@@ -196,6 +199,8 @@ const logView = createLogView({
   showFileHistory: (repository, path) => fileHistoryView.open(repository, path),
   newBranch: (repository, base, baseName) => newBranchDialog.open(repository, base, baseName),
   headMoved: (repository) => headMoved(repository),
+  renameBranch: (repository, name) => renameBranchDialog.open(repository, name),
+  deleteBranches: (repository, ticked) => deleteBranchesDialog.open(repository, ticked),
 });
 
 const branchSelector = createBranchSelector({
@@ -209,6 +214,19 @@ const newBranchDialog = createNewBranchDialog({
   errorView,
   branchesMoved: (repository) => headMoved(repository),
 });
+
+const renameBranchDialog = createRenameBranchDialog({
+  errorView,
+  branchesMoved: (repository) => headMoved(repository),
+});
+
+const deleteBranchesDialog = createDeleteBranchesDialog({
+  errorView,
+  project: () => shownFolder,
+  branchesMoved: (repository) => headMoved(repository),
+});
+
+const unmergedCommitsView = createUnmergedCommitsView();
 
 /**
  * HEAD of `repository` moved, or its branches changed: the status area, its changes and the log, when it shows it, are read
@@ -518,6 +536,12 @@ function handleCoreEvent(event: CoreEvent): void {
       shownNotifications.set(event.payload.id, event.payload);
       showNotifications();
       break;
+    case "notificationChanged":
+      if (shownNotifications.has(event.payload.id)) {
+        shownNotifications.set(event.payload.id, event.payload);
+        showNotifications();
+      }
+      break;
     case "notificationRemoved":
       removedNotifications.add(event.payload.id);
       shownNotifications.delete(event.payload.id);
@@ -669,6 +693,9 @@ function showProject(project: Project): void {
     logView.close();
     branchSelector.close();
     newBranchDialog.close();
+    renameBranchDialog.close();
+    deleteBranchesDialog.close();
+    unmergedCommitsView.close();
   }
   shownFolder = project.folder;
   showNotifications();
@@ -1483,7 +1510,7 @@ function notificationView(notification: Notification): HTMLElement {
     button.type = "button";
     button.dataset.testid = "notification-action";
     button.dataset.action = action.action;
-    button.textContent = t(ACTION_LABELS[action.action]);
+    button.textContent = describeAction(action);
     button.addEventListener("click", async () => {
       buttons.forEach((other) => (other.disabled = true));
       try {
@@ -1492,7 +1519,17 @@ function notificationView(notification: Notification): HTMLElement {
           case "projectChanged":
             showProject(outcome.payload);
             break;
+          case "branchesChanged":
+            headMoved(outcome.payload);
+            break;
+          case "unmergedCommits":
+            if (action.action === "showUnmergedCommits") {
+              unmergedCommitsView.open(action.branch, outcome.payload);
+            }
+            break;
         }
+        // A notification that stays, as after showing the commits, can be acted on again.
+        buttons.forEach((other) => (other.disabled = false));
       } catch (error) {
         report(error);
         buttons.forEach((other) => (other.disabled = false));
@@ -1520,14 +1557,31 @@ function describeNotification(notification: Notification): string {
       return t("notificationInvalidRepository", { root: notification.kind.repository.root });
     case "hookNotFinished":
       return t("notificationHookNotFinished", { root: notification.kind.repository.root, hook: notification.kind.hook });
+    case "branchesDeleted": {
+      const { branches, repository } = notification.kind;
+      const names = branches.map((branch) => branch.name).join(", ");
+      const unmerged = branches.filter((branch) => branch.unmerged).map((branch) => branch.name);
+      return unmerged.length === 0
+        ? t("notificationBranchesDeleted", { branches: names, root: repository.root })
+        : t("notificationBranchesDeletedUnmerged", { branches: names, root: repository.root, unmerged: unmerged.join(", ") });
+    }
   }
 }
 
-const ACTION_LABELS: Record<NotificationAction["action"], StringKey> = {
-  addRepository: "addRepository",
-  ignoreRepository: "ignoreRepository",
-  removeRepository: "removeRepository",
-};
+/** The label of the button that takes `action`. */
+function describeAction(action: NotificationAction): string {
+  switch (action.action) {
+    case "addRepository":
+    case "ignoreRepository":
+    case "removeRepository":
+    case "restoreBranches":
+      return t(action.action);
+    case "showUnmergedCommits":
+      return t("showUnmergedCommits", { branch: action.branch });
+    case "deleteRemoteBranch":
+      return t("deleteRemoteBranch", { remote: action.upstream.remote, branch: action.upstream.branch });
+  }
+}
 
 /** The prompts this window shows, by id. A view stays in place while others come and go, so what the user is typing survives. */
 const shownPrompts = new Map<number, HTMLElement>();
@@ -1702,6 +1756,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationPush", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
     case "checkOut":
       return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
+    case "deleteRemoteBranch":
+      return t("operationDeleteRemoteBranch", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
   }
 }
 
@@ -1951,6 +2007,16 @@ function describeFailure(failure: Failure): string {
       return t("failureBranchNotCreated", { folder: failure.folder, name: failure.name });
     case "checkoutFailed":
       return t("failureCheckoutFailed", { folder: failure.folder });
+    case "branchNotRenamed":
+      return t("failureBranchNotRenamed", { folder: failure.folder, name: failure.name });
+    case "upstreamNotUnset":
+      return t("failureUpstreamNotUnset", { folder: failure.folder, name: failure.name });
+    case "currentBranchNotDeleted":
+      return t("failureCurrentBranchNotDeleted", { name: failure.name });
+    case "branchNotDeleted":
+      return t("failureBranchNotDeleted", { folder: failure.folder, name: failure.name });
+    case "remoteBranchNotDeleted":
+      return t("failureRemoteBranchNotDeleted", { folder: failure.folder, remote: failure.remote, branch: failure.branch });
     case "detachedHeadNotPushed":
       return t("failureDetachedHeadNotPushed");
     case "branchWithoutCommits":

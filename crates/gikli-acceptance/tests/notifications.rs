@@ -76,7 +76,9 @@ fn acting_on_add_later_registers_the_repository_and_removes_the_notification() {
         .act_on_notification(notification.id, &notification.actions[0])
         .expect("add the repository");
 
-    let NotificationOutcome::ProjectChanged(project) = outcome;
+    let NotificationOutcome::ProjectChanged(project) = outcome else {
+        panic!("the Project did not change: {outcome:?}");
+    };
     let engine_root = engine.toplevel_by_git();
     assert_eq!(
         project.repositories,
@@ -134,9 +136,12 @@ fn a_registered_repository_that_is_gone_raises_a_notification_to_remove_it() {
         }]
     );
 
-    let NotificationOutcome::ProjectChanged(project) = gikli
+    let outcome = gikli
         .act_on_notification(notification.id, &notification.actions[0])
         .expect("remove the repository");
+    let NotificationOutcome::ProjectChanged(project) = outcome else {
+        panic!("the Project did not change: {outcome:?}");
+    };
 
     assert!(project.invalid_repositories.is_empty());
     assert!(gikli.notifications().is_empty());

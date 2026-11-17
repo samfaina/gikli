@@ -12,7 +12,7 @@ import {
   pushPlan,
   revisionFileDiff,
   type ChangeNode,
-  type PushCommit,
+  type ListedCommit,
   type PushPlan,
   type PushTags,
   type PushTarget,
@@ -74,7 +74,7 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
 
   let repository: Repository | null = null;
   let plan: PushPlan | null = null;
-  let selected: PushCommit | null = null;
+  let selected: ListedCommit | null = null;
   let merge: MergeView | null = null;
   let typingPause: number | undefined;
   /** Tell the answer to the latest read from one that a later one overtook. */
@@ -211,7 +211,7 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
     select(read.commits.find((commit) => commit.hash === selected?.hash) ?? read.commits[0] ?? null);
   }
 
-  function drawCommits(commits: PushCommit[]): void {
+  function drawCommits(commits: ListedCommit[]): void {
     commitList.replaceChildren(
       ...commits.map((commit, index) => {
         const row = document.createElement("div");
@@ -260,7 +260,7 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
   }
 
   /** Selects `commit`, listing the files it changed and showing the changes of the first. */
-  function select(commit: PushCommit | null): void {
+  function select(commit: ListedCommit | null): void {
     selected = commit;
     const thisSelection = ++latestSelection;
     for (const row of commitList.children) {
@@ -278,7 +278,7 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
     }
   }
 
-  async function listFiles(shown: Repository, commit: PushCommit, thisSelection: number): Promise<void> {
+  async function listFiles(shown: Repository, commit: ListedCommit, thisSelection: number): Promise<void> {
     let paths: string[];
     try {
       // The core lists the changes against the first parent first.
@@ -312,7 +312,7 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
   }
 
   /** Shows what `commit` changed in the file at `path`, or nothing when either is null. */
-  function showFile(commit: PushCommit | null, path: string | null): void {
+  function showFile(commit: ListedCommit | null, path: string | null): void {
     const thisFile = ++latestFile;
     merge?.destroy();
     merge = null;
@@ -325,7 +325,7 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
     }
   }
 
-  async function readFile(shown: Repository, commit: PushCommit, path: string, thisFile: number): Promise<void> {
+  async function readFile(shown: Repository, commit: ListedCommit, path: string, thisFile: number): Promise<void> {
     try {
       const diff = await revisionFileDiff(shown, commit.hash, path);
       if (thisFile !== latestFile) {

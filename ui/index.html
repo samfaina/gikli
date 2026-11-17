@@ -106,6 +106,8 @@
             <div class="log-pane-header">
               <h3 id="log-branches-title"></h3>
               <button id="log-new-branch" type="button" data-testid="log-new-branch"></button>
+              <button id="log-rename-branch" type="button" data-testid="log-rename-branch"></button>
+              <button id="log-delete-branches" type="button" data-testid="log-delete-branches"></button>
               <button id="log-go-to-branch" type="button" data-testid="log-go-to-branch"></button>
             </div>
             <div id="log-branches-list" class="log-branches-list" data-testid="log-branches-list"></div>
@@ -221,6 +223,36 @@
           <button id="new-branch-create" type="button" data-testid="new-branch-create"></button>
         </div>
         <div id="new-branch-message" class="new-branch-message" data-testid="new-branch-message" role="status"></div>
+      </section>
+      <section id="rename-branch" class="branch-selector new-branch" data-testid="rename-branch" role="dialog" aria-labelledby="rename-branch-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="rename-branch-title"></h2>
+          <button id="rename-branch-cancel" type="button" data-testid="rename-branch-cancel"></button>
+        </div>
+        <label class="new-branch-name"><span id="rename-branch-name-label"></span><input id="rename-branch-name" type="text" autocomplete="off" spellcheck="false" data-testid="rename-branch-name" /></label>
+        <div class="new-branch-actions">
+          <label id="rename-branch-unset-upstream-option"><input id="rename-branch-unset-upstream" type="checkbox" data-testid="rename-branch-unset-upstream" /><span id="rename-branch-unset-upstream-label"></span></label>
+          <button id="rename-branch-rename" type="button" data-testid="rename-branch-rename"></button>
+        </div>
+        <div id="rename-branch-message" class="new-branch-message" data-testid="rename-branch-message" role="status"></div>
+      </section>
+      <section id="delete-branches" class="branch-selector new-branch" data-testid="delete-branches" role="dialog" aria-labelledby="delete-branches-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="delete-branches-title"></h2>
+          <button id="delete-branches-cancel" type="button" data-testid="delete-branches-cancel"></button>
+        </div>
+        <ul id="delete-branches-list" class="delete-branches-list" data-testid="delete-branches-list"></ul>
+        <div class="new-branch-actions">
+          <button id="delete-branches-delete" type="button" data-testid="delete-branches-delete"></button>
+        </div>
+        <div id="delete-branches-message" class="new-branch-message" data-testid="delete-branches-message" role="status"></div>
+      </section>
+      <section id="unmerged-commits" class="branch-selector new-branch" data-testid="unmerged-commits" role="dialog" aria-labelledby="unmerged-commits-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="unmerged-commits-title"></h2>
+          <button id="unmerged-commits-close" type="button" data-testid="unmerged-commits-close"></button>
+        </div>
+        <ul id="unmerged-commits-list" class="unmerged-commits-list" data-testid="unmerged-commits-list"></ul>
       </section>
       <section id="branch-selector" class="branch-selector" data-testid="branch-selector" role="dialog" aria-labelledby="branch-selector-title" hidden>
         <div class="branch-selector-header">

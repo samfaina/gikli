@@ -50,6 +50,10 @@ export interface LogViewHost {
   newBranch(repository: Repository, base: NewBranchBase, baseName: string): void;
   /** HEAD of `repository` moved to another branch or commit. */
   headMoved(repository: Repository): void;
+  /** Opens the rename dialog on the local branch `name` of `repository`. */
+  renameBranch(repository: Repository, name: string): void;
+  /** Opens the delete dialog on the local branches of `repository`, with `ticked` ticked if it is one. */
+  deleteBranches(repository: Repository, ticked: string | null): void;
 }
 
 export interface LogView {
@@ -104,6 +108,8 @@ export function createLogView(host: LogViewHost): LogView {
   const branchesPane = element<HTMLElement>("log-branches-list");
   const goToBranchButton = element<HTMLButtonElement>("log-go-to-branch");
   const newBranchButton = element<HTMLButtonElement>("log-new-branch");
+  const renameBranchButton = element<HTMLButtonElement>("log-rename-branch");
+  const deleteBranchesButton = element<HTMLButtonElement>("log-delete-branches");
   const goToInput = element<HTMLInputElement>("log-go-to");
   const goToList = element<HTMLDataListElement>("log-go-to-suggestions");
 
@@ -160,6 +166,20 @@ export function createLogView(host: LogViewHost): LogView {
     if (repository !== null) {
       const base: NewBranchBase = chosen === null ? { kind: "head" } : { kind: "branch", label: chosen };
       host.newBranch(repository, base, chosen === null ? "HEAD" : chosen.name);
+    }
+  });
+  renameBranchButton.textContent = t("logRenameBranch");
+  renameBranchButton.title = t("logRenameBranchTitle");
+  renameBranchButton.addEventListener("click", () => {
+    if (repository !== null && chosen?.kind === "local") {
+      host.renameBranch(repository, chosen.name);
+    }
+  });
+  deleteBranchesButton.textContent = t("logDeleteBranches");
+  deleteBranchesButton.title = t("logDeleteBranchesTitle");
+  deleteBranchesButton.addEventListener("click", () => {
+    if (repository !== null) {
+      host.deleteBranches(repository, chosen?.kind === "local" ? chosen.name : null);
     }
   });
   goToBranchButton.textContent = t("logGoToBranch");
@@ -298,11 +318,16 @@ export function createLogView(host: LogViewHost): LogView {
     listed = read;
     const labels = [...labelsOf(listed.local), ...labelsOf(listed.remote)];
     const kept = chosen;
-    if (kept !== null && !labels.some((label) => sameLabel(label, kept))) {
+    const gone = kept !== null && !labels.some((label) => sameLabel(label, kept));
+    if (gone) {
       chosen = null;
     }
     drawBranches();
     labelFetchButton();
+    if (gone) {
+      // The log was filtered by the branch, as when the user deleted or renamed it: it shows every branch again.
+      void startOver();
+    }
   }
 
   /** Draws the branches pane: every branch, then the local and remote branches, with the chosen one marked. */
@@ -332,6 +357,7 @@ export function createLogView(host: LogViewHost): LogView {
       });
     branchesPane.replaceChildren(every, ...groups, ...(failure === undefined ? [] : [failure]));
     goToBranchButton.disabled = chosen === null;
+    renameBranchButton.disabled = chosen?.kind !== "local";
   }
 
   /** Filters the log by `branch`, or shows every branch again for null. Choosing it again, as a double-click does, changes nothing. */

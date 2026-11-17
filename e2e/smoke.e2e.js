@@ -827,6 +827,50 @@ describe("gikli", () => {
       runGit(repository, gitconfig, "branch", "--delete", "--force", "feature/smoke", "smoke-new");
     });
 
+    it("renames a branch and deletes it from the branches pane, and restores it from the notification", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      runGit(repository, gitconfig, "branch", "smoke/rename", "HEAD");
+      const hasBranch = (name) => runGit(repository, gitconfig, "branch", "--list", name).trim() !== "";
+      const inPane = (name) => $(`[data-testid="log-branches-list"] [data-testid="branch"][data-name="${name}"]`);
+
+      await $('[data-testid="open-log"]').click();
+      await inPane("smoke/rename").waitForDisplayed({ timeout: 30000 });
+      await inPane("smoke/rename").click();
+      await $('[data-testid="log-rename-branch"]').click();
+      const rename = $('[data-testid="rename-branch"]');
+      await rename.waitForDisplayed({ timeout: 30000 });
+      await $('[data-testid="rename-branch-name"]').setValue("smoke/renamed");
+      await $('[data-testid="rename-branch-rename"]').click();
+      await rename.waitForDisplayed({ timeout: 30000, reverse: true });
+      await inPane("smoke/renamed").waitForDisplayed({ timeout: 30000 });
+      assert.equal(hasBranch("smoke/rename"), false);
+      assert.equal(hasBranch("smoke/renamed"), true);
+
+      await inPane("smoke/renamed").click();
+      await $('[data-testid="log-delete-branches"]').click();
+      const remove = $('[data-testid="delete-branches"]');
+      await remove.waitForDisplayed({ timeout: 30000 });
+      const ticked = $('[data-testid="delete-branches-branch"][data-name="smoke/renamed"]');
+      await ticked.waitForDisplayed({ timeout: 30000 });
+      assert.equal(await ticked.isSelected(), true, "the branch chosen in the pane is ticked");
+      await $('[data-testid="delete-branches-delete"]').click();
+      await remove.waitForDisplayed({ timeout: 30000, reverse: true });
+      const notification = $('[data-testid="notification"][data-kind="branchesDeleted"]');
+      await notification.waitForDisplayed({ timeout: 30000 });
+      assert.match(await notification.getText(), /smoke\/renamed/);
+      assert.equal(hasBranch("smoke/renamed"), false);
+
+      await notification.$('[data-testid="notification-action"][data-action="restoreBranches"]').click();
+      await notification.waitForDisplayed({ timeout: 30000, reverse: true });
+      assert.equal(hasBranch("smoke/renamed"), true);
+      await inPane("smoke/renamed").waitForDisplayed({ timeout: 30000 });
+
+      await $('[data-testid="log-close"]').click();
+      await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+      runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/renamed");
+    });
+
     it("works with the index in Staging mode, and brings the Changelists back", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
