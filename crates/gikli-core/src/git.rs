@@ -271,11 +271,23 @@ impl GitRunner {
     /// for a write that must leave the user's index as it is. `index` is relative to the folder
     /// git runs in, so the git inside WSL can be given it too.
     pub fn with_index_file(&self, index: &str) -> Self {
+        self.with_variable("GIT_INDEX_FILE", index)
+    }
+
+    /// This runner, where git takes the message it prepared for a commit as it is, as when it
+    /// continues a merge or a rebase, instead of opening an editor the user cannot reach.
+    pub fn accepting_prepared_messages(&self) -> Self {
+        self.with_variable("GIT_EDITOR", "true")
+    }
+
+    /// This runner, where git gets the variable `name` set to `value`, inside WSL too.
+    fn with_variable(&self, name: &str, value: &str) -> Self {
         let mut runner = self.clone();
-        runner.host.set("GIT_INDEX_FILE", index);
+        runner.host.set(name, value);
         if matches!(runner.program, GitProgram::Wsl { .. }) {
             let mut shared: OsString = runner.host.get("WSLENV").unwrap_or_default().to_owned();
-            shared.push(":GIT_INDEX_FILE");
+            shared.push(":");
+            shared.push(name);
             runner.host.set("WSLENV", shared);
         }
         runner

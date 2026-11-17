@@ -14,10 +14,10 @@ use gikli_core::{
     Branches, CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges,
     CommitDetails, CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory,
     Gikli, GitCheck, HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget,
-    NewBranchBase, Notification, NotificationAction, NotificationOutcome, OperationLogEntry,
-    Project, ProjectWindow, Prompt, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel,
-    Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide,
-    TextSearch, answer_askpass_request,
+    NewBranchBase, Notification, NotificationAction, NotificationOutcome, OperationAction,
+    OperationInProgress, OperationLogEntry, Project, ProjectWindow, Prompt, PushAfterCommit,
+    PushPlan, PushTags, PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan,
+    RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -696,6 +696,25 @@ fn current_branch(
     gikli.current_branch(&repository)
 }
 
+#[tauri::command(async)]
+fn operation_in_progress(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+) -> Result<Option<OperationInProgress>, Failure> {
+    gikli.operation_in_progress(&project, &repository)
+}
+
+#[tauri::command(async)]
+fn take_operation_action(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    action: OperationAction,
+) -> Result<Option<OperationInProgress>, Failure> {
+    gikli.take_operation_action(&project, &repository, action)
+}
+
 #[tauri::command]
 fn log_search_history(gikli: State<'_, Gikli>) -> Vec<TextSearch> {
     gikli.log_search_history()
@@ -1014,6 +1033,8 @@ fn main() {
             add_remote,
             local_branches,
             current_branch,
+            operation_in_progress,
+            take_operation_action,
             end_log_read,
             log_search_history,
             log_branches,

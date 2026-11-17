@@ -1,7 +1,8 @@
 // The branch selector: opened from the current branch in the status area, it shows what HEAD is
-// on, and every branch and tag in the groups Recent, Local, Remote and Tags, with a search across
-// them. Picking a local branch or a tag checks it out, and a new branch starts from HEAD. The core
-// lists, groups and searches them, and checks them out; this draws them and keeps the options.
+// on with the operation half done there, and every branch and tag in the groups Recent, Local,
+// Remote and Tags, with a search across them. Picking a local branch or a tag checks it out, and a
+// new branch starts from HEAD. The core lists, groups and searches them, and checks them out; this
+// draws them and keeps the options.
 
 import { branchGroup, branchList, flatBranchList, upstreamMark, type BranchActions } from "./branch-tree";
 import {
@@ -16,11 +17,14 @@ import {
   type BranchNode,
   type Branches,
   type CurrentBranch,
+  type OperationAction,
+  type OperationInProgress,
   type Repository,
   type Settings,
 } from "./core";
 import { element, folderName } from "./dom";
 import { SHORT_HASH_LENGTH } from "./log-details";
+import { operationInProgressView, type OperationsHost } from "./operation-in-progress";
 import { t } from "./strings";
 
 /** What the branch selector needs from the window around it. */
@@ -33,6 +37,8 @@ export interface BranchSelectorHost {
   newBranch(repository: Repository): void;
   /** HEAD of `repository` moved to another branch or commit. */
   headMoved(repository: Repository): void;
+  /** What shows the operation half done in the Repository, and takes the actions on it. */
+  operations: OperationsHost;
 }
 
 export interface BranchSelector {
@@ -158,9 +164,9 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     const reading = ++latestRead;
     const search = searchInput.value;
     try {
-      const listed = await readBranches(shown, search);
+      const [listed, operation] = await Promise.all([readBranches(shown, search), host.operations.read(shown)]);
       if (reading === latestRead) {
-        draw(shown, listed, search);
+        draw(shown, listed, operation, search);
       }
     } catch (error) {
       if (reading === latestRead) {
@@ -169,8 +175,11 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     }
   }
 
-  function draw(shown: Repository, listed: Branches, search: string): void {
+  function draw(shown: Repository, listed: Branches, operation: OperationInProgress | null, search: string): void {
     current.replaceChildren(...describeCurrent(listed.current));
+    if (operation !== null) {
+      current.append(operationInProgressView(operation, (action) => takeOperationAction(shown, action)));
+    }
     const actions: BranchActions = {
       pick: (branch) => void pick(shown, branch),
     };
@@ -229,6 +238,14 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
       close();
     } else {
       groups.replaceChildren(host.errorView(failure.error));
+    }
+  }
+
+  /** Takes `action` on the operation half done in `shown`, and reads the branches again, as HEAD may have moved. */
+  async function takeOperationAction(shown: Repository, action: OperationAction): Promise<void> {
+    await host.operations.take(shown, action);
+    if (repository === shown) {
+      await listBranches();
     }
   }
 

@@ -45,6 +45,9 @@ pub enum NotificationKind {
         branches: Vec<DeletedBranch>,
         head: Option<String>,
     },
+    /// A rebase in `repository` stopped, on a conflict or at a commit to edit, and waits for the
+    /// user to continue or abort it.
+    RebaseStopped { repository: Repository },
 }
 
 /// An action a notification offers.
@@ -63,6 +66,10 @@ pub enum NotificationAction {
     ShowUnmergedCommits { branch: String },
     /// Deletes `upstream`, which a deleted branch followed, on its remote too.
     DeleteRemoteBranch { upstream: RemoteBranch },
+    /// Goes on with the stopped rebase, once the user resolved the conflicts it stopped on.
+    ContinueRebase,
+    /// Gives up the stopped rebase, and brings the branch back to where it was.
+    AbortRebase,
 }
 
 /// What acting on a notification changed.
@@ -75,6 +82,9 @@ pub enum NotificationOutcome {
     BranchesChanged(Repository),
     /// The commits a deleted branch took away, newest first.
     UnmergedCommits(Vec<ListedCommit>),
+    /// HEAD of the Repository moved, as continuing or aborting a rebase moves it, and the operation
+    /// in progress there may have changed or ended.
+    HeadMoved(Repository),
 }
 
 /// The deletion of branches a notification tells of.
@@ -102,6 +112,15 @@ impl Notification {
             _ => Err(Failure::NotificationActionNotOffered { id: self.id }),
         }
     }
+
+    /// The Repository whose stopped rebase this notification tells of. One about anything else
+    /// offers no action on a rebase, and returns [`Failure::NotificationActionNotOffered`].
+    pub(crate) fn stopped_rebase(&self) -> Result<&Repository, Failure> {
+        match &self.kind {
+            NotificationKind::RebaseStopped { repository } => Ok(repository),
+            _ => Err(Failure::NotificationActionNotOffered { id: self.id }),
+        }
+    }
 }
 
 impl NotificationKind {
@@ -114,7 +133,10 @@ impl NotificationKind {
             Self::InvalidRepository { repository } => {
                 project.invalid_repositories.contains(repository)
             }
-            Self::HookNotFinished { .. } | Self::BranchesDeleted { .. } => true,
+            // Whether a rebase is still stopped takes git to tell: see [`Notifications::settle`].
+            Self::HookNotFinished { .. }
+            | Self::BranchesDeleted { .. }
+            | Self::RebaseStopped { .. } => true,
         }
     }
 
@@ -200,20 +222,53 @@ impl Notifications {
     /// again while what it says holds.
     pub fn dismiss(&self, id: u64) {
         let mut state = self.lock();
-        let Some(index) = state
-            .raised
-            .iter()
-            .position(|notification| notification.id == id)
-        else {
+        let Some(notification) = self.remove(&mut state, id) else {
             return;
         };
-        let notification = state.raised.remove(index);
         if !notification.kind.happened_once() {
             state
                 .dismissed
                 .push((notification.project, notification.kind));
         }
+    }
+
+    /// Removes the notification `id`, when it is still raised, and announces it, as what it said
+    /// was dealt with. Unlike [`Self::dismiss`], it may be raised again whenever it holds again.
+    pub fn withdraw(&self, id: u64) {
+        let mut state = self.lock();
+        self.remove(&mut state, id);
+    }
+
+    /// Takes the notification `id` out of `state`, when it is still raised, announces it and
+    /// returns it.
+    fn remove(&self, state: &mut State, id: u64) -> Option<Notification> {
+        let index = state
+            .raised
+            .iter()
+            .position(|notification| notification.id == id)?;
+        let notification = state.raised.remove(index);
         self.events.send(Event::NotificationRemoved { id });
+        Some(notification)
+    }
+
+    /// Removes the notifications about `project` that say `kind`, which no longer holds, and
+    /// announces each removal. Once the user dismissed it, it may be raised again if it comes back.
+    pub fn settle(&self, project: &Path, kind: &NotificationKind) {
+        let mut state = self.lock();
+        let (settled, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.raised)
+            .into_iter()
+            .partition(|notification| {
+                notification.project == project && &notification.kind == kind
+            });
+        state.raised = kept;
+        state
+            .dismissed
+            .retain(|(folder, dismissed)| folder != project || dismissed != kind);
+        for notification in settled {
+            self.events.send(Event::NotificationRemoved {
+                id: notification.id,
+            });
+        }
     }
 
     /// Takes `action` away from the notification `id`, when it is still raised, as the user took

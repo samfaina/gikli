@@ -1,10 +1,11 @@
-// The status area: always in view, it shows what HEAD of each Repository shown is on, and how far
-// the current branch is from its upstream. The core reads both; this only draws them. What HEAD is
-// on opens the branch selector.
+// The status area: always in view, it shows what HEAD of each Repository shown is on, how far
+// the current branch is from its upstream, and the operation half done there, with what the user can
+// do about it. The core reads them; this only draws them. What HEAD is on opens the branch selector.
 
 import { currentBranch, type CurrentBranch, type Repository, type Upstream } from "./core";
 import { element, folderName } from "./dom";
 import { SHORT_HASH_LENGTH } from "./log-details";
+import { operationInProgressView, type OperationsHost } from "./operation-in-progress";
 import { t } from "./strings";
 
 export interface StatusArea {
@@ -24,6 +25,7 @@ interface ShownRepository {
 export function createStatusArea(
   describeError: (error: unknown) => string,
   openBranches: (repository: Repository) => void,
+  operations: OperationsHost,
 ): StatusArea {
   const view = element<HTMLElement>("status-area");
   /** Each Repository shown, by root. */
@@ -53,12 +55,20 @@ export function createStatusArea(
     }
   }
 
-  /** Reads what HEAD of the Repository of `entry` is on; an answer an earlier read gives late is dropped. */
+  /**
+   * Reads what HEAD of the Repository of `entry` is on, and the operation half done there; an answer an earlier read gives late is
+   * dropped.
+   */
   async function read(entry: ShownRepository): Promise<void> {
     const reading = ++entry.latestRead;
+    const { repository } = entry;
     let parts: HTMLElement[];
     try {
-      parts = describe(await currentBranch(entry.repository), () => openBranches(entry.repository));
+      const [head, operation] = await Promise.all([currentBranch(repository), operations.read(repository)]);
+      parts = describe(head, () => openBranches(repository));
+      if (operation !== null) {
+        parts.push(operationInProgressView(operation, (action) => operations.take(repository, action)));
+      }
     } catch (error) {
       parts = [part("status-error", describeError(error))];
     }

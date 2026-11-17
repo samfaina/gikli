@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-use crate::Repository;
 use crate::events::{Event, EventBus};
 use crate::lock;
 use crate::process_tree::Cancellation;
+use crate::{OperationAction, OperationKind, Repository};
 
 /// A long operation, as the views show it while it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -59,6 +59,13 @@ pub enum LongOperation {
     CheckOut {
         repository: Repository,
         target: String,
+    },
+    /// Taking `action` on the `operation` half done in `repository`, where a hook can take as long
+    /// as it likes.
+    TakeOperationAction {
+        repository: Repository,
+        operation: OperationKind,
+        action: OperationAction,
     },
     /// Fetching the rest of the history of `repository`, whose history is cut, from `remote`.
     FetchRestOfHistory {
