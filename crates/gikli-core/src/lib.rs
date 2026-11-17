@@ -85,7 +85,7 @@ pub use window::ProjectWindow;
 use changelists::{ChangelistStore, Changelists};
 use events::EventBus;
 use git::{GitProgram, GitRunner, Invocation};
-use notifications::Notifications;
+use notifications::{Deletion, Notifications};
 use operation_log::OperationLog;
 use operations::LongOperations;
 use project::{ProjectRegistry, RememberedProject};
@@ -449,6 +449,13 @@ pub enum Failure {
     /// git's output.
     #[serde(rename_all = "camelCase")]
     BranchNotRenamed {
+        folder: PathBuf,
+        name: String,
+    },
+    /// git renamed the branch to `name` in the Repository at `folder`, and could not unset its
+    /// upstream. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    UpstreamNotUnset {
         folder: PathBuf,
         name: String,
     },
@@ -905,16 +912,11 @@ impl Gikli {
         &self,
         notification: &Notification,
     ) -> Result<NotificationOutcome, Failure> {
-        let NotificationKind::BranchesDeleted {
+        let Deletion {
             repository,
             branches,
             ..
-        } = &notification.kind
-        else {
-            return Err(Failure::NotificationActionNotOffered {
-                id: notification.id,
-            });
-        };
+        } = notification.deletion()?;
         delete_branches::restore(&self.runner(&repository.root)?, repository, branches)?;
         self.notifications.dismiss(notification.id);
         Ok(NotificationOutcome::BranchesChanged(repository.clone()))
@@ -927,29 +929,19 @@ impl Gikli {
         notification: &Notification,
         name: &str,
     ) -> Result<NotificationOutcome, Failure> {
-        let not_offered = || Failure::NotificationActionNotOffered {
-            id: notification.id,
-        };
-        let NotificationKind::BranchesDeleted {
+        let Deletion {
             repository,
             branches,
             head,
-        } = &notification.kind
-        else {
-            return Err(not_offered());
-        };
-        let branch = branches
-            .iter()
-            .find(|branch| branch.name == name)
-            .ok_or_else(not_offered)?;
-        let runner = self.runner(&repository.root)?;
-        let commits = delete_branches::unmerged_commits(
-            &runner,
-            repository,
-            &branch.commit,
-            head.as_deref(),
-            None,
+        } = notification.deletion()?;
+        let branch = branches.iter().find(|branch| branch.name == name).ok_or(
+            Failure::NotificationActionNotOffered {
+                id: notification.id,
+            },
         )?;
+        let runner = self.runner(&repository.root)?;
+        let commits =
+            delete_branches::unmerged_commits(&runner, repository, &branch.commit, head, None)?;
         Ok(NotificationOutcome::UnmergedCommits(commits))
     }
 
@@ -963,11 +955,7 @@ impl Gikli {
         action: &NotificationAction,
         upstream: &RemoteBranch,
     ) -> Result<NotificationOutcome, Failure> {
-        let NotificationKind::BranchesDeleted { repository, .. } = &notification.kind else {
-            return Err(Failure::NotificationActionNotOffered {
-                id: notification.id,
-            });
-        };
+        let repository = notification.deletion()?.repository;
         let runner = self.runner(&repository.root)?;
         let root = &repository.root;
         let operation = LongOperation::DeleteRemoteBranch {
@@ -2355,8 +2343,8 @@ impl Gikli {
         names: &[String],
     ) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?;
-        delete_branches::check(&runner, repository, names)?;
-        let head = delete_branches::head(&runner, repository)?;
+        delete_branches::check_deletable(&runner, repository, names)?;
+        let head = delete_branches::head_commit(&runner, repository)?;
         let mut deleted = Vec::new();
         let mut outcome = Ok(());
         for name in names {

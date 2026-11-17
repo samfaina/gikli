@@ -77,6 +77,33 @@ pub enum NotificationOutcome {
     UnmergedCommits(Vec<ListedCommit>),
 }
 
+/// The deletion of branches a notification tells of.
+pub(crate) struct Deletion<'a> {
+    pub repository: &'a Repository,
+    pub branches: &'a [DeletedBranch],
+    /// The commit HEAD was on when they went, if any.
+    pub head: Option<&'a str>,
+}
+
+impl Notification {
+    /// The deletion of branches this notification tells of. One about anything else offers no
+    /// action on deleted branches, and returns [`Failure::NotificationActionNotOffered`].
+    pub(crate) fn deletion(&self) -> Result<Deletion<'_>, Failure> {
+        match &self.kind {
+            NotificationKind::BranchesDeleted {
+                repository,
+                branches,
+                head,
+            } => Ok(Deletion {
+                repository,
+                branches,
+                head: head.as_deref(),
+            }),
+            _ => Err(Failure::NotificationActionNotOffered { id: self.id }),
+        }
+    }
+}
+
 impl NotificationKind {
     /// Whether what the notification says still holds for `project`, the Project it is about.
     fn holds_for(&self, project: &Project) -> bool {
@@ -137,10 +164,11 @@ impl Notifications {
     }
 
     /// Raises a notification about the Project at `project`, unless the same one is already
-    /// raised or the user dismissed it.
+    /// raised or the user dismissed it. One that tells of something that happened once is news
+    /// each time.
     pub fn raise(&self, project: &Path, kind: NotificationKind, actions: Vec<NotificationAction>) {
         let mut state = self.lock();
-        if state.is_raised_or_dismissed(project, &kind) {
+        if !kind.happened_once() && state.is_raised_or_dismissed(project, &kind) {
             return;
         }
         let notification = Notification {
@@ -189,24 +217,20 @@ impl Notifications {
     }
 
     /// Takes `action` away from the notification `id`, when it is still raised, as the user took
-    /// it and it cannot be taken again. The notification stays with the other actions, under a new
-    /// id, and both changes are announced.
+    /// it and it cannot be taken again. The notification stays where it was with the other
+    /// actions, and the change is announced.
     pub fn withdraw_action(&self, id: u64, action: &NotificationAction) {
         let mut state = self.lock();
-        let Some(index) = state
+        let Some(notification) = state
             .raised
-            .iter()
-            .position(|notification| notification.id == id)
+            .iter_mut()
+            .find(|notification| notification.id == id)
         else {
             return;
         };
-        let mut notification = state.raised.remove(index);
         notification.actions.retain(|offered| offered != action);
-        notification.id = state.next_id;
-        state.next_id += 1;
-        state.raised.push(notification.clone());
-        self.events.send(Event::NotificationRemoved { id });
-        self.events.send(Event::NotificationRaised(notification));
+        let changed = notification.clone();
+        self.events.send(Event::NotificationChanged(changed));
     }
 
     /// Removes the notifications about `project` whose message no longer holds, as after the

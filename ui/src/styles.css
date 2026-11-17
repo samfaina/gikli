@@ -1154,6 +1154,16 @@ button:disabled {
   font-size: 1em;
 }
 
+/* The branches pane is narrow: its buttons go on lines of their own under the title. */
+.log-branches .log-pane-header {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.log-branches .log-pane-header h3 {
+  flex-basis: 100%;
+}
+
 .log-side-note {
   color: var(--muted);
 }

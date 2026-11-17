@@ -268,6 +268,8 @@ export const en = {
   failureBranchNotCreated: "git could not create the branch {name} in {folder}. The operation log shows git's output.",
   failureCheckoutFailed: "git could not check out in {folder}. The operation log shows git's output.",
   failureBranchNotRenamed: "git could not rename the branch {name} in {folder}. The operation log shows git's output.",
+  failureUpstreamNotUnset:
+    "The branch is now {name}, but git could not unset its upstream in {folder}. The operation log shows git's output.",
   failureCurrentBranchNotDeleted: "{name} is the current branch, which git does not delete. No branch was deleted.",
   failureBranchNotDeleted: "git could not delete the branch {name} in {folder}. The operation log shows git's output.",
   failureRemoteBranchNotDeleted:

@@ -31,10 +31,17 @@ pub struct RemoteBranch {
     pub branch: String,
 }
 
+impl RemoteBranch {
+    /// Its whole reference on the remote, such as `refs/heads/main`.
+    fn reference(&self) -> String {
+        format!("refs/heads/{}", self.branch)
+    }
+}
+
 /// Checks that `repository` has each of the local branches `names`, which returns
 /// [`Failure::RevisionNotFound`] for the first it lacks, and that HEAD is on none of them, which
 /// returns [`Failure::CurrentBranchNotDeleted`]: git keeps the branch HEAD is on.
-pub(crate) fn check(
+pub(crate) fn check_deletable(
     runner: &GitRunner,
     repository: &Repository,
     names: &[String],
@@ -58,7 +65,10 @@ pub(crate) fn check(
 
 /// The commit HEAD of `repository` is on, which the commits of a deleted branch are merged into or
 /// not. A HEAD on a branch with no commit yet has none.
-pub(crate) fn head(runner: &GitRunner, repository: &Repository) -> Result<Option<String>, Failure> {
+pub(crate) fn head_commit(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<Option<String>, Failure> {
     match details::resolve(runner, repository, "HEAD") {
         Ok(commit) => Ok(Some(commit)),
         Err(Failure::RevisionNotFound { .. }) => Ok(None),
@@ -133,8 +143,7 @@ pub(crate) fn has_remote_branch(
     repository: &Repository,
     upstream: &RemoteBranch,
 ) -> Result<bool, Failure> {
-    let reference = format!("refs/heads/{}", upstream.branch);
-    match sync::fetched_from(runner, repository, &upstream.remote, &reference)? {
+    match sync::fetched_from(runner, repository, &upstream.remote, &upstream.reference())? {
         Some(remote_branch) => details::exists(runner, repository, &remote_branch),
         None => Ok(false),
     }
@@ -148,7 +157,7 @@ pub(crate) fn delete_remote_branch_args(upstream: &RemoteBranch) -> Vec<String> 
         "--progress".to_owned(),
         "--end-of-options".to_owned(),
         upstream.remote.clone(),
-        format!(":refs/heads/{}", upstream.branch),
+        format!(":{}", upstream.reference()),
     ]
 }
 
@@ -202,7 +211,7 @@ fn follow(
     name: &str,
     upstream: &RemoteBranch,
 ) -> Result<(), Failure> {
-    let merge = format!("refs/heads/{}", upstream.branch);
+    let merge = upstream.reference();
     let settings = [
         (format!("branch.{name}.remote"), upstream.remote.as_str()),
         (format!("branch.{name}.merge"), merge.as_str()),

@@ -536,6 +536,12 @@ function handleCoreEvent(event: CoreEvent): void {
       shownNotifications.set(event.payload.id, event.payload);
       showNotifications();
       break;
+    case "notificationChanged":
+      if (shownNotifications.has(event.payload.id)) {
+        shownNotifications.set(event.payload.id, event.payload);
+        showNotifications();
+      }
+      break;
     case "notificationRemoved":
       removedNotifications.add(event.payload.id);
       shownNotifications.delete(event.payload.id);
@@ -2003,6 +2009,8 @@ function describeFailure(failure: Failure): string {
       return t("failureCheckoutFailed", { folder: failure.folder });
     case "branchNotRenamed":
       return t("failureBranchNotRenamed", { folder: failure.folder, name: failure.name });
+    case "upstreamNotUnset":
+      return t("failureUpstreamNotUnset", { folder: failure.folder, name: failure.name });
     case "currentBranchNotDeleted":
       return t("failureCurrentBranchNotDeleted", { name: failure.name });
     case "branchNotDeleted":

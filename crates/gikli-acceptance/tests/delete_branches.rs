@@ -3,7 +3,7 @@
 
 use gikli_acceptance::{Sandbox, TestRepository};
 use gikli_core::{
-    DeletedBranch, Failure, Gikli, Notification, NotificationAction, NotificationKind,
+    DeletedBranch, Event, Failure, Gikli, Notification, NotificationAction, NotificationKind,
     NotificationOutcome, Project, RemoteBranch, Repository,
 };
 
@@ -152,6 +152,13 @@ fn a_branch_with_commits_head_does_not_have_links_to_them() {
         .map(|commit| commit.subject.as_str())
         .collect();
     assert_eq!(subjects, vec!["Login button", "Login form"]);
+    let hashes: Vec<String> = commits.iter().map(|commit| commit.hash.clone()).collect();
+    let by_git: Vec<String> = work
+        .git(&["rev-list", &branches[0].commit, "--not", "HEAD~1"])
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(hashes, by_git, "those HEAD lacked before the merge");
     assert_eq!(
         gikli.notifications(),
         vec![notification],
@@ -402,4 +409,155 @@ fn the_notification_stays_until_gikli_restarts() {
         vec![],
         "a restart forgets it"
     );
+}
+
+#[test]
+fn a_branch_git_cannot_delete_stops_the_deletion_and_the_notification_tells_of_those_gone() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.repository("work");
+    work.commit_at(1, "First");
+    work.git(&["branch", "a"]);
+    let _elsewhere = work.linked_worktree("b");
+    work.git(&["branch", "c"]);
+    let gikli = sandbox.gikli();
+    let (project, root) = opened(&gikli, &work);
+
+    let deleted = gikli.delete_branches(
+        &project.folder,
+        &root,
+        &["a".to_owned(), "b".to_owned(), "c".to_owned()],
+    );
+
+    assert!(
+        deleted.is_err(),
+        "git keeps a branch another worktree has checked out: {deleted:?}"
+    );
+    assert_eq!(branches_by_git(&work), vec!["b", "c", "main"]);
+    let notification = the_notification(&gikli);
+    let NotificationKind::BranchesDeleted { branches, .. } = &notification.kind else {
+        panic!("not a deletion: {notification:?}");
+    };
+    let names: Vec<&str> = branches.iter().map(|branch| branch.name.as_str()).collect();
+    assert_eq!(names, vec!["a"]);
+}
+
+#[test]
+fn branches_that_follow_one_remote_branch_offer_to_delete_it_once() {
+    let sandbox = Sandbox::new();
+    let (_remote, work) = clone_with_pushed_feature(&sandbox);
+    work.git(&["branch", "--track", "feature-copy", "origin/feature"]);
+    let gikli = sandbox.gikli();
+    let (project, root) = opened(&gikli, &work);
+
+    gikli
+        .delete_branches(
+            &project.folder,
+            &root,
+            &["feature".to_owned(), "feature-copy".to_owned()],
+        )
+        .expect("delete the branches");
+
+    let notification = the_notification(&gikli);
+    let offered: Vec<&NotificationAction> = notification
+        .actions
+        .iter()
+        .filter(|action| matches!(action, NotificationAction::DeleteRemoteBranch { .. }))
+        .collect();
+    assert_eq!(
+        offered,
+        vec![&NotificationAction::DeleteRemoteBranch {
+            upstream: RemoteBranch {
+                remote: "origin".to_owned(),
+                branch: "feature".to_owned(),
+            }
+        }]
+    );
+}
+
+#[test]
+fn a_deleted_branch_whose_remote_branch_is_gone_offers_no_deletion_of_it() {
+    let sandbox = Sandbox::new();
+    let (remote, work) = clone_with_pushed_feature(&sandbox);
+    remote.git(&["branch", "-D", "feature"]);
+    work.git(&["fetch", "--quiet", "--prune"]);
+    let gikli = sandbox.gikli();
+    let (project, root) = opened(&gikli, &work);
+
+    gikli
+        .delete_branches(&project.folder, &root, &["feature".to_owned()])
+        .expect("delete the branch");
+
+    let notification = the_notification(&gikli);
+    assert!(
+        !notification
+            .actions
+            .iter()
+            .any(|action| matches!(action, NotificationAction::DeleteRemoteBranch { .. })),
+        "nothing to delete on the remote: {:?}",
+        notification.actions
+    );
+}
+
+#[test]
+fn deleting_the_remote_branch_keeps_the_notification_where_it_was() {
+    let sandbox = Sandbox::new();
+    let (_remote, work) = clone_with_pushed_feature(&sandbox);
+    work.git(&["branch", "other"]);
+    let gikli = sandbox.gikli();
+    let (project, root) = opened(&gikli, &work);
+    gikli
+        .delete_branches(&project.folder, &root, &["feature".to_owned()])
+        .expect("delete the branch");
+    gikli
+        .delete_branches(&project.folder, &root, &["other".to_owned()])
+        .expect("delete the other branch");
+    let before = gikli.notifications();
+    let delete_remote = before[0]
+        .actions
+        .iter()
+        .find(|action| matches!(action, NotificationAction::DeleteRemoteBranch { .. }))
+        .expect("offers to delete the remote branch")
+        .clone();
+    let events = gikli.subscribe();
+
+    gikli
+        .act_on_notification(before[0].id, &delete_remote)
+        .expect("delete the remote branch");
+
+    let after = gikli.notifications();
+    assert_eq!(after.len(), 2);
+    assert_eq!(
+        after[0].id, before[0].id,
+        "the same notification, first still"
+    );
+    assert!(!after[0].actions.contains(&delete_remote));
+    assert_eq!(after[1], before[1]);
+    let changed: Vec<Notification> = events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::NotificationChanged(notification) => Some(notification),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed, vec![after[0].clone()]);
+}
+
+#[test]
+fn deleting_the_same_branch_again_tells_of_it_again() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.repository("work");
+    work.commit_at(1, "First");
+    work.git(&["branch", "feature"]);
+    let gikli = sandbox.gikli();
+    let (project, root) = opened(&gikli, &work);
+    gikli
+        .delete_branches(&project.folder, &root, &["feature".to_owned()])
+        .expect("delete the branch");
+    work.git(&["branch", "feature"]);
+
+    gikli
+        .delete_branches(&project.folder, &root, &["feature".to_owned()])
+        .expect("delete it again");
+
+    assert_eq!(gikli.notifications().len(), 2);
 }

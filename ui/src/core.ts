@@ -351,6 +351,8 @@ export type Failure =
   | { kind: "branchNotCreated"; folder: string; name: string }
   /** git could not rename the branch `name`: the operation log shows why. */
   | { kind: "branchNotRenamed"; folder: string; name: string }
+  /** git renamed the branch to `name` and could not unset its upstream: the operation log shows why. */
+  | { kind: "upstreamNotUnset"; folder: string; name: string }
   /** HEAD is on the branch `name`, which git does not delete, so no branch was deleted. */
   | { kind: "currentBranchNotDeleted"; name: string }
   /** git could not delete the branch `name`: the operation log shows why. */
@@ -547,6 +549,8 @@ export type CoreEvent =
   /** Drop the entries whose id is below `before`. */
   | { event: "operationLogCleared"; payload: { before: number } }
   | { event: "notificationRaised"; payload: Notification }
+  /** A notification still raised changed, as after an action that cannot be taken again: this is it now, with the same id. */
+  | { event: "notificationChanged"; payload: Notification }
   | { event: "notificationRemoved"; payload: { id: number } }
   | { event: "operationStarted"; payload: { id: number; operation: LongOperation; cancellable: boolean } }
   | { event: "operationProgress"; payload: { id: number; progress: Progress } }

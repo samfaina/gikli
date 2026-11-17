@@ -1,8 +1,9 @@
 // The rename dialog: a new name for a local branch, and whether it lets go of its upstream. The core
 // cleans the name as it is typed, and checks and renames the branch; this only draws the dialog.
 
-import { cleanBranchName, localBranches, renameBranch, type Repository } from "./core";
+import { cleanBranchName, isFailure, localBranches, renameBranch, type Repository } from "./core";
 import { element, folderName } from "./dom";
+import { cleanAsTyped } from "./new-branch-dialog";
 import { t } from "./strings";
 
 /** What the rename dialog needs from the window around it. */
@@ -38,7 +39,7 @@ export function createRenameBranchDialog(host: RenameBranchDialogHost): RenameBr
   cancelButton.textContent = t("renameBranchCancel");
   renameButton.addEventListener("click", () => void rename());
   cancelButton.addEventListener("click", close);
-  nameInput.addEventListener("input", () => void clean());
+  nameInput.addEventListener("input", () => void cleanAsTyped(nameInput));
   nameInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -88,18 +89,6 @@ export function createRenameBranchDialog(host: RenameBranchDialogHost): RenameBr
     view.hidden = true;
   }
 
-  /** Puts `-` in place of each character git takes in no branch name, as the user types, as the new branch dialog does. */
-  async function clean(): Promise<void> {
-    const typed = nameInput.value;
-    const cleaned = await cleanBranchName(typed);
-    if (nameInput.value !== typed || cleaned === typed) {
-      return;
-    }
-    const { selectionStart, selectionEnd } = nameInput;
-    nameInput.value = cleaned;
-    nameInput.setSelectionRange(selectionStart, selectionEnd);
-  }
-
   async function rename(): Promise<void> {
     const current = shown;
     if (current === null || renameButton.disabled) {
@@ -119,6 +108,11 @@ export function createRenameBranchDialog(host: RenameBranchDialogHost): RenameBr
         close();
       }
     } catch (error) {
+      // The branch may have taken its new name before its upstream could not be unset: the dialog goes on with that one.
+      if (isFailure(error) && error.kind === "upstreamNotUnset") {
+        current.name = error.name;
+      }
+      host.branchesMoved(current.repository);
       if (shown === current) {
         message.replaceChildren(host.errorView(error));
         renameButton.disabled = false;

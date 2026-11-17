@@ -173,3 +173,20 @@ fn a_branch_deleted_since_is_not_renamed() {
     );
     assert_eq!(branches_by_git(&work), vec!["main"]);
 }
+
+/// The dialog opens on the branch's own name, so keeping it and unsetting the upstream is a rename
+/// too, one that only lets go of the upstream.
+#[test]
+fn keeping_the_name_lets_go_of_the_upstream_alone() {
+    let sandbox = Sandbox::new();
+    let work = clone_following_origin(&sandbox);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    gikli
+        .rename_branch(&root, "main", "main", true)
+        .expect("unset the upstream");
+
+    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(upstream_by_git(&work, "main"), None);
+}

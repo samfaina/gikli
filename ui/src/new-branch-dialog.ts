@@ -24,6 +24,21 @@ export interface NewBranchDialog {
 /** How long the user stops typing before the prefixes are looked up, in milliseconds. */
 const SUGGESTION_DELAY = 150;
 
+/**
+ * Puts `-` in place of each character git takes in no branch name in `input`, as the user types. The name keeps its length, so
+ * the cursor stays where it was. An answer that later typing overtook is dropped.
+ */
+export async function cleanAsTyped(input: HTMLInputElement): Promise<void> {
+  const typed = input.value;
+  const cleaned = await cleanBranchName(typed);
+  if (input.value !== typed || cleaned === typed) {
+    return;
+  }
+  const { selectionStart, selectionEnd } = input;
+  input.value = cleaned;
+  input.setSelectionRange(selectionStart, selectionEnd);
+}
+
 export function createNewBranchDialog(host: NewBranchDialogHost): NewBranchDialog {
   const view = element<HTMLElement>("new-branch");
   const title = element<HTMLElement>("new-branch-title");
@@ -80,20 +95,9 @@ export function createNewBranchDialog(host: NewBranchDialogHost): NewBranchDialo
     view.hidden = true;
   }
 
-  /**
-   * Puts `-` in place of each character git takes in no branch name, as the user types. The name keeps its length, so the
-   * cursor stays where it was. An answer that later typing overtook is dropped.
-   */
   async function clean(): Promise<void> {
     scheduleSuggestions();
-    const typed = nameInput.value;
-    const cleaned = await cleanBranchName(typed);
-    if (nameInput.value !== typed || cleaned === typed) {
-      return;
-    }
-    const { selectionStart, selectionEnd } = nameInput;
-    nameInput.value = cleaned;
-    nameInput.setSelectionRange(selectionStart, selectionEnd);
+    await cleanAsTyped(nameInput);
   }
 
   function scheduleSuggestions(): void {

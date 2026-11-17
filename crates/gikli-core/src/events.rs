@@ -22,6 +22,9 @@ pub enum Event {
     OperationLogCleared { before: u64 },
     /// A feature raised a notification. It stays until the user acts on it or dismisses it.
     NotificationRaised(Notification),
+    /// A notification still raised changed: this is it now, with the same id. It offers fewer
+    /// actions, as after the user took one that cannot be taken again.
+    NotificationChanged(Notification),
     /// A notification went away: the user acted on it or dismissed it, or what it was about no
     /// longer holds.
     NotificationRemoved { id: u64 },
