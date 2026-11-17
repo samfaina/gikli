@@ -19,9 +19,13 @@ const POINTER_COMMANDS = {
   },
 };
 
-/** Scrolls each scrolling container holding `element` just enough to show it. */
-async function bringIntoView(browser, element) {
-  await browser.execute((target) => target.scrollIntoView({ block: "nearest", inline: "nearest" }), element);
+/**
+ * Scrolls each scrolling container holding `element` just enough to show it. As an element command,
+ * the scroll gets WebdriverIO's handling of a stale element, which finds the element again and
+ * scrolls that, as the pointer action after it would.
+ */
+async function bringIntoView(element) {
+  await element.execute((target) => target.scrollIntoView({ block: "nearest", inline: "nearest" }));
 }
 
 /**
@@ -34,7 +38,7 @@ export function bringIntoViewBeforePointerActions(browser) {
       command,
       async function (original, ...args) {
         for (const element of await targets(this, args)) {
-          await bringIntoView(browser, element);
+          await bringIntoView(element);
         }
         return original(...args);
       },

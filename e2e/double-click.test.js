@@ -116,8 +116,8 @@ describe("doubleClickUntilDisplayed", () => {
 
     assert.equal(diff.elementId, "diff");
     assert.equal(state.diffOpen, true);
-    assert.equal(state.targeted.at(0), "row-1");
-    assert.equal(state.doubleClicks.at(-1), "row-2");
+    // Found again before the scroll into view, so no double-click goes to the stale row.
+    assert.deepEqual(state.doubleClicks, ["row-2"]);
   });
 
   it("stops with the stale element error when the row goes stale on every attempt", async (t) => {
@@ -126,8 +126,8 @@ describe("doubleClickUntilDisplayed", () => {
 
     await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES), { name: "stale element reference" });
 
-    // WebdriverIO repeats each attempt with the same id, so an attempt is a distinct id.
-    assert.equal(new Set(state.targeted).size, QUICK_RETRIES.attempts);
+    // WebdriverIO finds a stale row again once before it gives up, so an attempt is two distinct ids.
+    assert.equal(new Set(state.targeted).size, 2 * QUICK_RETRIES.attempts);
     assert.equal(state.diffOpen, false);
   });
 
