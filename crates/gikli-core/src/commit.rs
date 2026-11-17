@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::git::GitRunner;
 use crate::status::{Change, ChangeSet, ChangeStatus, Status};
-use crate::{Failure, failure_of, git_failed_to_start, trace};
+use crate::{Failure, failure_of, git_failed_to_start, in_progress, trace};
 
 /// How many previous commit messages the user can choose from.
 const PREVIOUS_MESSAGES_OFFERED: usize = 20;
@@ -378,7 +378,7 @@ pub(crate) fn warning(runner: &GitRunner, root: &Path) -> Result<Option<CommitWa
             folder: root.to_path_buf(),
         })?;
     // HEAD is detached during a rebase too, so the rebase is looked for first.
-    if is_rebasing(&git_dir) {
+    if in_progress::is_rebasing(&git_dir) {
         return Ok(Some(CommitWarning::Rebase));
     }
     let on_a_branch = runner
@@ -386,19 +386,6 @@ pub(crate) fn warning(runner: &GitRunner, root: &Path) -> Result<Option<CommitWa
         .map_err(git_failed_to_start)?
         .success;
     Ok((!on_a_branch).then_some(CommitWarning::DetachedHead))
-}
-
-/// Whether the git directory `git_dir` holds a merge in progress.
-pub(crate) fn is_merging(git_dir: &Path) -> bool {
-    git_dir.join("MERGE_HEAD").is_file()
-}
-
-/// Whether the git directory `git_dir` holds a rebase in progress. `git am` keeps its state in
-/// `rebase-apply` too, and marks it with a file of its own.
-fn is_rebasing(git_dir: &Path) -> bool {
-    let applying_patches = git_dir.join("rebase-apply");
-    git_dir.join("rebase-merge").is_dir()
-        || (applying_patches.is_dir() && !applying_patches.join("applying").exists())
 }
 
 fn text_of(path: &Path) -> String {

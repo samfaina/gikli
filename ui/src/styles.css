@@ -982,6 +982,19 @@ button:disabled {
   opacity: 0.75;
 }
 
+/* A merge, rebase, revert or cherry-pick half done, with what the user can do about it. */
+.operation-in-progress {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-weight: normal;
+}
+
+.operation-in-progress-kind {
+  font-weight: 600;
+}
+
 .operation {
   display: flex;
   align-items: center;

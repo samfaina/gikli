@@ -49,6 +49,7 @@ import {
   stageTracked,
   startupFolder,
   takeFailureAction,
+  takeOperationAction,
   testGit,
   unwatchChanges,
   watchChanges,
@@ -91,7 +92,8 @@ import { createNewBranchDialog } from "./new-branch-dialog";
 import { createRenameBranchDialog } from "./rename-branch-dialog";
 import { createDeleteBranchesDialog } from "./delete-branches-dialog";
 import { createUnmergedCommitsView } from "./unmerged-commits";
-import { createStatusArea } from "./status-area";
+import { describeOperationAction, describeOperationKind } from "./operation-in-progress";
+import { createStatusArea, type OperationsHost } from "./status-area";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -186,7 +188,26 @@ const diffView = createDiffView({
 
 const logSection = element<HTMLElement>("log");
 
-const statusArea = createStatusArea(describeError, (repository) => branchSelector.toggle(repository));
+/** What shows the operations half done in the Repositories of this window, and takes the actions on them. */
+const operationsHost: OperationsHost = {
+  project: () => shownFolder,
+  take: async (repository, action) => {
+    const project = shownFolder;
+    if (project === null) {
+      return;
+    }
+    try {
+      await takeOperationAction(project, repository, action);
+    } catch (error) {
+      report(error);
+    } finally {
+      // An action that failed may still have moved HEAD, as when a hook after a commit fails.
+      headMoved(repository);
+    }
+  },
+};
+
+const statusArea = createStatusArea(describeError, (repository) => branchSelector.toggle(repository), operationsHost);
 
 const logView = createLogView({
   errorView,
@@ -208,6 +229,7 @@ const branchSelector = createBranchSelector({
   showBranch: (repository, branch) => logView.showBranch(repository, branch.label),
   newBranch: (repository) => newBranchDialog.open(repository, { kind: "head" }, "HEAD"),
   headMoved: (repository) => headMoved(repository),
+  operations: operationsHost,
 });
 
 const newBranchDialog = createNewBranchDialog({
@@ -1520,6 +1542,7 @@ function notificationView(notification: Notification): HTMLElement {
             showProject(outcome.payload);
             break;
           case "branchesChanged":
+          case "headMoved":
             headMoved(outcome.payload);
             break;
           case "unmergedCommits":
@@ -1565,6 +1588,8 @@ function describeNotification(notification: Notification): string {
         ? t("notificationBranchesDeleted", { branches: names, root: repository.root })
         : t("notificationBranchesDeletedUnmerged", { branches: names, root: repository.root, unmerged: unmerged.join(", ") });
     }
+    case "rebaseStopped":
+      return t("notificationRebaseStopped", { root: notification.kind.repository.root });
   }
 }
 
@@ -1575,6 +1600,8 @@ function describeAction(action: NotificationAction): string {
     case "ignoreRepository":
     case "removeRepository":
     case "restoreBranches":
+    case "continueOperation":
+    case "abortOperation":
       return t(action.action);
     case "showUnmergedCommits":
       return t("showUnmergedCommits", { branch: action.branch });
@@ -1758,6 +1785,12 @@ function describeOperation(operation: LongOperation): string {
       return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
     case "deleteRemoteBranch":
       return t("operationDeleteRemoteBranch", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
+    case "takeOperationAction":
+      return t("operationTakeAction", {
+        action: describeOperationAction(operation.action),
+        operation: describeOperationKind(operation.operation),
+        root: operation.repository.root,
+      });
   }
 }
 
@@ -2051,6 +2084,18 @@ function describeFailure(failure: Failure): string {
       return t("failureIndexLockNotRemoved", { lock: failure.lock, message: failure.message });
     case "folderNotTrusted":
       return t("failureFolderNotTrusted", { folder: failure.folder });
+    case "noOperationInProgress":
+      return t("failureNoOperationInProgress");
+    case "operationActionNotOffered":
+      return t("failureOperationActionNotOffered", { action: describeOperationAction(failure.action) });
+    case "conflictsNotResolved":
+      return t("failureConflictsNotResolved");
+    case "operationActionFailed":
+      return t("failureOperationActionFailed", {
+        action: describeOperationAction(failure.action),
+        operation: describeOperationKind(failure.operation),
+        folder: failure.folder,
+      });
     case "notificationGone":
       return t("failureNotificationGone");
     case "notificationActionNotOffered":

@@ -1,11 +1,28 @@
-// The status area: always in view, it shows what HEAD of each Repository shown is on, and how far
-// the current branch is from its upstream. The core reads both; this only draws them. What HEAD is
-// on opens the branch selector.
+// The status area: always in view, it shows what HEAD of each Repository shown is on, how far
+// the current branch is from its upstream, and the operation half done there, with what the user can
+// do about it. The core reads them; this only draws them. What HEAD is on opens the branch selector.
 
-import { currentBranch, type CurrentBranch, type Repository, type Upstream } from "./core";
+import {
+  currentBranch,
+  operationInProgress,
+  type CurrentBranch,
+  type OperationAction,
+  type OperationInProgress,
+  type Repository,
+  type Upstream,
+} from "./core";
 import { element, folderName } from "./dom";
 import { SHORT_HASH_LENGTH } from "./log-details";
+import { operationInProgressView } from "./operation-in-progress";
 import { t } from "./strings";
+
+/** What the status area needs to show the operations in progress. */
+export interface OperationsHost {
+  /** The folder of the Project the window shows, which the Repositories are of. */
+  project(): string | null;
+  /** Takes `action` on the operation half done in `repository`. */
+  take(repository: Repository, action: OperationAction): Promise<void>;
+}
 
 export interface StatusArea {
   /** Shows the status of `repositories`, in place of the ones shown before. */
@@ -24,6 +41,7 @@ interface ShownRepository {
 export function createStatusArea(
   describeError: (error: unknown) => string,
   openBranches: (repository: Repository) => void,
+  operations: OperationsHost,
 ): StatusArea {
   const view = element<HTMLElement>("status-area");
   /** Each Repository shown, by root. */
@@ -53,12 +71,24 @@ export function createStatusArea(
     }
   }
 
-  /** Reads what HEAD of the Repository of `entry` is on; an answer an earlier read gives late is dropped. */
+  /**
+   * Reads what HEAD of the Repository of `entry` is on, and the operation half done there; an answer an earlier read gives late is
+   * dropped.
+   */
   async function read(entry: ShownRepository): Promise<void> {
     const reading = ++entry.latestRead;
+    const { repository } = entry;
     let parts: HTMLElement[];
     try {
-      parts = describe(await currentBranch(entry.repository), () => openBranches(entry.repository));
+      const project = operations.project();
+      const [head, operation] = await Promise.all([
+        currentBranch(repository),
+        project === null ? Promise.resolve(null) : operationInProgress(project, repository),
+      ]);
+      parts = describe(head, () => openBranches(repository));
+      if (operation !== null) {
+        parts.push(operationPart(operation, (action) => operations.take(repository, action)));
+      }
     } catch (error) {
       parts = [part("status-error", describeError(error))];
     }
@@ -89,6 +119,12 @@ function describe(head: CurrentBranch, open: () => void): HTMLElement[] {
   branch.setAttribute("aria-controls", "branch-selector");
   branch.addEventListener("click", open);
   return head.kind === "detached" ? [branch] : [branch, upstreamPart(head.upstream)];
+}
+
+function operationPart(operation: OperationInProgress, take: (action: OperationAction) => Promise<void>): HTMLElement {
+  const view = operationInProgressView(operation, take);
+  view.dataset.testid = "status-operation";
+  return view;
 }
 
 function upstreamPart(upstream: Upstream | null): HTMLElement {

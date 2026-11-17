@@ -16,6 +16,7 @@ mod explainer;
 mod file_history;
 mod git;
 mod host;
+mod in_progress;
 mod log;
 mod new_branch;
 mod notifications;
@@ -62,6 +63,7 @@ pub use events::Event;
 pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use file_history::{FileHistory, FileRevision};
 pub use host::HostEnvironment;
+pub use in_progress::{OperationAction, OperationInProgress, OperationKind};
 pub use log::{
     GraphArrow, GraphLine, GraphRow, LOG_SEARCH_BATCH, LONG_EDGE, LogCursor, LogFilter, LogPage,
     LogRow, RefKind, RefLabel, TextSearch,
@@ -590,6 +592,24 @@ pub enum Failure {
         file: PathBuf,
         message: String,
     },
+    /// No merge, rebase, revert or cherry-pick is half done in the Repository, so there is nothing
+    /// to continue or abort.
+    NoOperationInProgress,
+    /// The operation half done in the Repository does not offer `action`.
+    OperationActionNotOffered {
+        action: OperationAction,
+    },
+    /// Files still have conflicts, so the operation in progress cannot go on. The user resolves
+    /// them first.
+    ConflictsNotResolved,
+    /// git could not take `action` on the `operation` half done in the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    OperationActionFailed {
+        folder: PathBuf,
+        operation: OperationKind,
+        action: OperationAction,
+    },
     /// gikli could not watch the Repository at `folder` for changes made outside it. Its changes
     /// still refresh on request.
     #[serde(rename_all = "camelCase")]
@@ -901,6 +921,12 @@ impl Gikli {
             NotificationAction::DeleteRemoteBranch { upstream } => {
                 return self.delete_remote_branch(&notification, action, upstream);
             }
+            NotificationAction::ContinueOperation => {
+                return self.act_on_stopped_rebase(&notification, OperationAction::Continue);
+            }
+            NotificationAction::AbortOperation => {
+                return self.act_on_stopped_rebase(&notification, OperationAction::Abort);
+            }
         };
         Ok(NotificationOutcome::ProjectChanged(project))
     }
@@ -982,6 +1008,20 @@ impl Gikli {
         }
         self.notifications.withdraw_action(notification.id, action);
         Ok(NotificationOutcome::BranchesChanged(repository.clone()))
+    }
+
+    /// Takes `action` on the rebase `notification` tells stopped, and removes the notification. A
+    /// rebase that goes on and stops again raises it anew.
+    fn act_on_stopped_rebase(
+        &self,
+        notification: &Notification,
+        action: OperationAction,
+    ) -> Result<NotificationOutcome, Failure> {
+        let repository = notification.stopped_rebase()?;
+        self.run_operation_action(repository, action)?;
+        self.notifications.withdraw(notification.id);
+        self.operation_in_progress(&notification.project, repository)?;
+        Ok(NotificationOutcome::HeadMoved(repository.clone()))
     }
 
     /// Takes `action`, one of the actions of an [`Explanation`]. The UI asks the user to confirm
@@ -1657,7 +1697,7 @@ impl Gikli {
             })?;
         let status = read_status(&runner, repository, false)?;
         // A merge resolved to what HEAD already has stages nothing, and still has to be concluded.
-        if status.staged.is_empty() && !commit::is_merging(&git_dir) {
+        if status.staged.is_empty() && !in_progress::is_merging(&git_dir) {
             return Err(Failure::NothingToCommit);
         }
         let selection = commit::Selection::default();
@@ -1861,7 +1901,7 @@ impl Gikli {
             StagingArea::new(
                 status.staged,
                 status.unstaged,
-                commit::is_merging(&git_dir),
+                in_progress::is_merging(&git_dir),
                 settings.change_grouping,
             )
         });
@@ -2485,6 +2525,111 @@ impl Gikli {
             return Err(failure_of(runner, root, &invocation, fallback));
         }
         sync::current_branch(runner, repository)
+    }
+
+    /// The merge, rebase, revert or cherry-pick half done in `repository`, a Repository of the
+    /// Project at `project`, whoever started it, as the status area and the branch selector show
+    /// it. None when there is none. It is the one of the worktree the Repository is, not of
+    /// another worktree of the same repository.
+    ///
+    /// A stopped rebase also raises a notification about the Project that offers to continue or
+    /// abort it, once while it stays stopped. It goes once the rebase is over.
+    pub fn operation_in_progress(
+        &self,
+        project: &Path,
+        repository: &Repository,
+    ) -> Result<Option<OperationInProgress>, Failure> {
+        let operation = in_progress::read(&self.runner(&repository.root)?, repository)?;
+        let stopped = NotificationKind::RebaseStopped {
+            repository: repository.clone(),
+        };
+        if operation
+            .as_ref()
+            .is_some_and(|operation| operation.kind == OperationKind::Rebase)
+        {
+            self.notifications.raise(
+                project,
+                stopped,
+                vec![
+                    NotificationAction::ContinueOperation,
+                    NotificationAction::AbortOperation,
+                ],
+            );
+        } else {
+            self.notifications.settle(project, &stopped);
+        }
+        Ok(operation)
+    }
+
+    /// Takes `action` on the operation half done in `repository`, a Repository of the Project at
+    /// `project`, and returns the operation in progress after that. A rebase, revert or
+    /// cherry-pick that goes on and stops on a conflict at a later commit is still in progress.
+    /// git runs as a [`LongOperation`] that reports the hook it waits on and that the user can
+    /// cancel, and takes the messages it prepared for the commits it makes as they are. With
+    /// nothing half done this returns [`Failure::NoOperationInProgress`], with an action the
+    /// operation does not offer [`Failure::OperationActionNotOffered`], and when going on while
+    /// files still have conflicts [`Failure::ConflictsNotResolved`].
+    pub fn take_operation_action(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        action: OperationAction,
+    ) -> Result<Option<OperationInProgress>, Failure> {
+        self.run_operation_action(repository, action)?;
+        self.operation_in_progress(project, repository)
+    }
+
+    /// Takes `action` on the operation half done in `repository`, as
+    /// [`Self::take_operation_action`] tells.
+    fn run_operation_action(
+        &self,
+        repository: &Repository,
+        action: OperationAction,
+    ) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        let operation =
+            in_progress::read(&runner, repository)?.ok_or(Failure::NoOperationInProgress)?;
+        if !operation.actions.contains(&action) {
+            return Err(Failure::OperationActionNotOffered { action });
+        }
+        // Skipping leaves the conflicts of the commit out with it.
+        let resolved_first = matches!(
+            action,
+            OperationAction::Continue | OperationAction::CommitMerge
+        );
+        if resolved_first && in_progress::has_conflicts(&runner, repository)? {
+            return Err(Failure::ConflictsNotResolved);
+        }
+        let runner = runner.accepting_prepared_messages();
+        let root = &repository.root;
+        let long = LongOperation::TakeOperationAction {
+            repository: repository.clone(),
+            operation: operation.kind,
+            action,
+        };
+        let args = in_progress::action_args(operation.kind, action);
+        let invocation = self.run_operation(&runner, long, root, &args)?;
+        if invocation.success {
+            return Ok(());
+        }
+        // git went on and stopped on a conflict at a later commit, which the user resolves next.
+        if action != OperationAction::Abort
+            && !invocation.cancelled
+            && in_progress::read(&runner, repository)?.is_some()
+            && in_progress::has_conflicts(&runner, repository)?
+        {
+            return Ok(());
+        }
+        Err(failure_of(
+            &runner,
+            root,
+            &invocation,
+            Failure::OperationActionFailed {
+                folder: root.clone(),
+                operation: operation.kind,
+                action,
+            },
+        ))
     }
 
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer

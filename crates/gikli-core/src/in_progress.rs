@@ -1,0 +1,184 @@
+//! Operations in progress: a merge, rebase, revert or cherry-pick that git stopped half done, as
+//! git keeps it in the git directory of the worktree, whoever started it.
+
+use std::fs;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::git::GitRunner;
+use crate::{Failure, Repository, git_failed_to_start};
+
+/// A merge, rebase, revert or cherry-pick that is half done in a Repository, with what the user can
+/// do about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationInProgress {
+    pub kind: OperationKind,
+    /// What the user can do about it, in the order to offer it.
+    pub actions: Vec<OperationAction>,
+}
+
+/// Which operation is half done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationKind {
+    Merge,
+    Rebase,
+    Revert,
+    CherryPick,
+}
+
+impl OperationKind {
+    /// What the user can do about an operation of this kind, in the order to offer it.
+    fn actions(self) -> Vec<OperationAction> {
+        match self {
+            Self::Merge => vec![OperationAction::CommitMerge, OperationAction::Abort],
+            Self::Rebase => vec![
+                OperationAction::Continue,
+                OperationAction::Skip,
+                OperationAction::Abort,
+            ],
+            Self::Revert | Self::CherryPick => {
+                vec![OperationAction::Continue, OperationAction::Abort]
+            }
+        }
+    }
+
+    /// The git command that started it, which continues and aborts it too.
+    fn command(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Rebase => "rebase",
+            Self::Revert => "revert",
+            Self::CherryPick => "cherry-pick",
+        }
+    }
+}
+
+/// What the user can do about an operation in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationAction {
+    /// Goes on with the operation once the user resolved the conflicts it stopped on, or did what
+    /// it stopped for.
+    Continue,
+    /// Leaves out the commit a rebase stopped on, and goes on with the next one.
+    Skip,
+    /// Finishes a merge with a commit, with the message git prepared for it.
+    CommitMerge,
+    /// Gives up the operation, and brings back what HEAD and the files were before it started.
+    Abort,
+}
+
+/// The operation in progress in `repository`, if one is.
+pub(crate) fn read(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<Option<OperationInProgress>, Failure> {
+    let git_dir = git_dir(runner, repository)?;
+    // A rebase that stops on a merge leaves what the merge left too, so it is looked for first.
+    let kind = if is_rebasing(&git_dir) {
+        Some(OperationKind::Rebase)
+    } else if is_merging(&git_dir) {
+        Some(OperationKind::Merge)
+    } else {
+        picking(runner, repository, &git_dir)?
+    };
+    Ok(kind.map(|kind| OperationInProgress {
+        kind,
+        actions: kind.actions(),
+    }))
+}
+
+/// The git directory of the worktree `repository` is, where git keeps what it has half done there.
+fn git_dir(runner: &GitRunner, repository: &Repository) -> Result<std::path::PathBuf, Failure> {
+    runner
+        .git_dir(&repository.root)
+        .map_err(git_failed_to_start)?
+        .ok_or_else(|| Failure::ChangesUnreadable {
+            folder: repository.root.clone(),
+        })
+}
+
+/// The arguments of the git that takes `action` on an operation of `kind`.
+pub(crate) fn action_args(kind: OperationKind, action: OperationAction) -> [&'static str; 2] {
+    let option = match action {
+        OperationAction::Continue | OperationAction::CommitMerge => "--continue",
+        OperationAction::Skip => "--skip",
+        OperationAction::Abort => "--abort",
+    };
+    [kind.command(), option]
+}
+
+/// Whether files of `repository` still have conflicts: the index holds more than one version of
+/// them.
+pub(crate) fn has_conflicts(runner: &GitRunner, repository: &Repository) -> Result<bool, Failure> {
+    let listed = runner
+        .run(&repository.root, &["ls-files", "--unmerged", "-z"])
+        .map_err(git_failed_to_start)?;
+    if !listed.success {
+        return Err(Failure::ChangesUnreadable {
+            folder: repository.root.clone(),
+        });
+    }
+    Ok(!listed.stdout.is_empty())
+}
+
+/// The revert or cherry-pick half done in `repository`, whose git directory is `git_dir`, if one
+/// is. git names the commit it stopped on `REVERT_HEAD` or `CHERRY_PICK_HEAD`, which the refs of
+/// the Repository may keep outside the git directory. A commit the user makes in the middle of a
+/// sequence of several takes that name away, and the sequencer of git still holds the commits
+/// left to pick or revert.
+fn picking(
+    runner: &GitRunner,
+    repository: &Repository,
+    git_dir: &Path,
+) -> Result<Option<OperationKind>, Failure> {
+    let stopped_on = [
+        ("CHERRY_PICK_HEAD", OperationKind::CherryPick),
+        ("REVERT_HEAD", OperationKind::Revert),
+    ];
+    for (name, kind) in stopped_on {
+        let verified = runner
+            .run(
+                &repository.root,
+                &["rev-parse", "--quiet", "--verify", name],
+            )
+            .map_err(git_failed_to_start)?;
+        if verified.success {
+            return Ok(Some(kind));
+        }
+    }
+    Ok(sequence_left(git_dir))
+}
+
+/// What the sequencer in the git directory `git_dir` still has to do, as the first command of its
+/// list says, if it has anything.
+fn sequence_left(git_dir: &Path) -> Option<OperationKind> {
+    let todo = fs::read_to_string(git_dir.join("sequencer").join("todo")).ok()?;
+    let command = todo
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))?
+        .split_whitespace()
+        .next()?;
+    match command {
+        "pick" | "p" => Some(OperationKind::CherryPick),
+        "revert" => Some(OperationKind::Revert),
+        _ => None,
+    }
+}
+
+/// Whether the git directory `git_dir` holds a merge in progress.
+pub(crate) fn is_merging(git_dir: &Path) -> bool {
+    git_dir.join("MERGE_HEAD").is_file()
+}
+
+/// Whether the git directory `git_dir` holds a rebase in progress. `git am` keeps its state in
+/// `rebase-apply` too, and marks it with a file of its own.
+pub(crate) fn is_rebasing(git_dir: &Path) -> bool {
+    let applying_patches = git_dir.join("rebase-apply");
+    git_dir.join("rebase-merge").is_dir()
+        || (applying_patches.is_dir() && !applying_patches.join("applying").exists())
+}

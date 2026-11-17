@@ -281,6 +281,19 @@ impl GitRunner {
         runner
     }
 
+    /// This runner, where git takes the message it prepared for a commit as it is, as when it
+    /// continues a merge or a rebase, instead of opening an editor the user cannot reach.
+    pub fn accepting_prepared_messages(&self) -> Self {
+        let mut runner = self.clone();
+        runner.host.set("GIT_EDITOR", "true");
+        if matches!(runner.program, GitProgram::Wsl { .. }) {
+            let mut shared: OsString = runner.host.get("WSLENV").unwrap_or_default().to_owned();
+            shared.push(":GIT_EDITOR");
+            runner.host.set("WSLENV", shared);
+        }
+        runner
+    }
+
     /// Whether git runs as a process of this machine, one gikli can see. The git inside WSL does
     /// not.
     pub fn runs_natively(&self) -> bool {

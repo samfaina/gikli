@@ -86,6 +86,10 @@ _Avoid_: Recently used, history
 The list of local and remote branches beside the log, where the user filters the log by a branch, goes to its latest commit, and renames and deletes branches.
 _Avoid_: Branch tree, sidebar
 
+**Operation in progress**:
+A merge, rebase, revert or cherry-pick that git stopped half done in a worktree, on a conflict or at a commit to edit, whoever started it. It stays until the user continues, finishes or aborts it.
+_Avoid_: Pending operation, unfinished state
+
 ## Authentication
 
 **Prompt**:

@@ -408,6 +408,14 @@ export type Failure =
   | { kind: "changesNotWatched"; folder: string; message: string }
   | { kind: "cloneFailed"; url: string; folder: string }
   | { kind: "cancelledCloneNotRemoved"; folder: string; message: string }
+  /** No merge, rebase, revert or cherry-pick is half done, so there is nothing to continue or abort. */
+  | { kind: "noOperationInProgress" }
+  /** The operation half done does not offer `action`. */
+  | { kind: "operationActionNotOffered"; action: OperationAction }
+  /** Files still have conflicts, so the operation in progress cannot go on. */
+  | { kind: "conflictsNotResolved" }
+  /** git could not take `action` on the `operation` half done: the operation log shows why. */
+  | { kind: "operationActionFailed"; folder: string; operation: OperationKind; action: OperationAction }
   | { kind: "notificationGone"; id: number }
   | { kind: "notificationActionNotOffered"; id: number }
   | { kind: "promptGone"; id: number };
@@ -437,7 +445,9 @@ export type NotificationKind =
   /** The user cancelled the clone while this hook ran: the clone is complete, and the hook did not finish. */
   | { kind: "hookNotFinished"; repository: Repository; hook: string }
   /** gikli deleted these branches while HEAD was on the commit `head`, null on a branch with no commit yet. */
-  | { kind: "branchesDeleted"; repository: Repository; branches: DeletedBranch[]; head: string | null };
+  | { kind: "branchesDeleted"; repository: Repository; branches: DeletedBranch[]; head: string | null }
+  /** A rebase stopped, on a conflict or at a commit to edit, and waits for the user to continue or abort it. */
+  | { kind: "rebaseStopped"; repository: Repository };
 
 /** A branch of a remote: `branch` is its name there. */
 export interface RemoteBranch {
@@ -466,7 +476,11 @@ export type NotificationAction =
   /** Shows the commits of the deleted branch `branch` that HEAD did not have. */
   | { action: "showUnmergedCommits"; branch: string }
   /** Deletes `upstream`, which a deleted branch followed, on its remote too. */
-  | { action: "deleteRemoteBranch"; upstream: RemoteBranch };
+  | { action: "deleteRemoteBranch"; upstream: RemoteBranch }
+  /** Goes on with the stopped rebase. */
+  | { action: "continueOperation" }
+  /** Gives up the stopped rebase. */
+  | { action: "abortOperation" };
 
 /** A long-lived message about a Project, with the actions the user can take on it. */
 export interface Notification {
@@ -483,7 +497,9 @@ export type NotificationOutcome =
   /** The branches of the Repository changed. */
   | { outcome: "branchesChanged"; payload: Repository }
   /** The commits a deleted branch took away, newest first. */
-  | { outcome: "unmergedCommits"; payload: ListedCommit[] };
+  | { outcome: "unmergedCommits"; payload: ListedCommit[] }
+  /** HEAD of the Repository moved, or the operation in progress there changed. */
+  | { outcome: "headMoved"; payload: Repository };
 
 /** The two forms of the URL of a repository. The form it was typed in stays as it was typed. */
 export interface CloneUrlForms {
@@ -508,7 +524,9 @@ export type LongOperation =
   /** Checking out `target`: a branch, a tag or a commit. */
   | { kind: "checkOut"; repository: Repository; target: string }
   /** Deleting the branch `branch` of `remote`, which a deleted branch followed. */
-  | { kind: "deleteRemoteBranch"; repository: Repository; remote: string; branch: string };
+  | { kind: "deleteRemoteBranch"; repository: Repository; remote: string; branch: string }
+  /** Taking `action` on the `operation` half done. */
+  | { kind: "takeOperationAction"; repository: Repository; operation: OperationKind; action: OperationAction };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -1184,6 +1202,42 @@ export function checkOutRevision(repository: Repository, revision: string): Prom
 /** What HEAD of `repository` is on. Rejects with a {@link Failure}. */
 export function currentBranch(repository: Repository): Promise<CurrentBranch> {
   return invoke("current_branch", { repository });
+}
+
+/** Which operation is half done. */
+export type OperationKind = "merge" | "rebase" | "revert" | "cherryPick";
+
+/**
+ * What the user can do about an operation in progress: go on once the conflicts are resolved, leave out the commit a rebase
+ * stopped on, finish a merge with a commit with the message git prepared, or give it up.
+ */
+export type OperationAction = "continue" | "skip" | "commitMerge" | "abort";
+
+/** A merge, rebase, revert or cherry-pick half done in a Repository, with what the user can do about it, in the order to offer it. */
+export interface OperationInProgress {
+  kind: OperationKind;
+  actions: OperationAction[];
+}
+
+/**
+ * The operation half done in `repository`, a Repository of the Project at `project`, whoever started it, or null. A stopped rebase
+ * also raises a notification that offers to continue or abort it. Rejects with a {@link Failure}.
+ */
+export function operationInProgress(project: string, repository: Repository): Promise<OperationInProgress | null> {
+  return invoke("operation_in_progress", { project, repository });
+}
+
+/**
+ * Takes `action` on the operation half done in `repository`, and returns the operation in progress after that, which a rebase,
+ * revert or cherry-pick that stopped on the next conflict still is. Rejects with a {@link Failure}: `conflictsNotResolved` when
+ * going on while files still have conflicts.
+ */
+export function takeOperationAction(
+  project: string,
+  repository: Repository,
+  action: OperationAction,
+): Promise<OperationInProgress | null> {
+  return invoke("take_operation_action", { project, repository, action });
 }
 
 /** The searches of the log the user ran, newest first, each with its regex and match-case options. */
