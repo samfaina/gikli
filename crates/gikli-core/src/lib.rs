@@ -8,6 +8,7 @@ mod capability;
 mod changelists;
 mod clone_url;
 mod commit;
+mod delete_branches;
 mod details;
 mod diff;
 mod events;
@@ -25,6 +26,7 @@ mod processes;
 mod project;
 mod prompts;
 mod push;
+mod rename_branch;
 mod rollback;
 mod search_history;
 mod settings;
@@ -50,6 +52,7 @@ pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
 pub use clone_url::CloneUrlForms;
 pub use commit::CommitWarning;
+pub use delete_branches::{DeletedBranch, RemoteBranch};
 pub use details::{CommitChanges, CommitDetails, MessagePart};
 pub use diff::{
     DiffContent, Difference, FileDiff, LineRange, LocalReadOnly, RevisionFileDiff, TextDiff,
@@ -68,7 +71,7 @@ pub use notifications::{Notification, NotificationAction, NotificationKind, Noti
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
-pub use push::{PushAfterCommit, PushCommit, PushPlan, PushTags, PushTarget};
+pub use push::{ListedCommit, PushAfterCommit, PushPlan, PushTags, PushTarget};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
 pub use status::{
@@ -441,6 +444,32 @@ pub enum Failure {
     BranchNotCreated {
         folder: PathBuf,
         name: String,
+    },
+    /// git could not rename the branch `name` in the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    BranchNotRenamed {
+        folder: PathBuf,
+        name: String,
+    },
+    /// HEAD is on the branch `name`, which git does not delete, so no branch was deleted.
+    CurrentBranchNotDeleted {
+        name: String,
+    },
+    /// git could not delete the branch `name` in the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    BranchNotDeleted {
+        folder: PathBuf,
+        name: String,
+    },
+    /// git could not delete the branch `branch` of `remote` from the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    RemoteBranchNotDeleted {
+        folder: PathBuf,
+        remote: String,
+        branch: String,
     },
     /// git could not check out a branch, a tag or a commit in the Repository at `folder`. The
     /// operation log holds git's output.
@@ -858,8 +887,113 @@ impl Gikli {
             NotificationAction::RemoveRepository { repository } => {
                 self.remove_repository(folder, repository)?
             }
+            NotificationAction::RestoreBranches => return self.restore_branches(&notification),
+            NotificationAction::ShowUnmergedCommits { branch } => {
+                return self.unmerged_commits(&notification, branch);
+            }
+            NotificationAction::DeleteRemoteBranch { upstream } => {
+                return self.delete_remote_branch(&notification, action, upstream);
+            }
         };
         Ok(NotificationOutcome::ProjectChanged(project))
+    }
+
+    /// Creates the branches `notification` tells were deleted again, each on the commit it was on,
+    /// and removes the notification. When a branch has one of their names by now, none is created
+    /// and this returns [`Failure::BranchNameTaken`].
+    fn restore_branches(
+        &self,
+        notification: &Notification,
+    ) -> Result<NotificationOutcome, Failure> {
+        let NotificationKind::BranchesDeleted {
+            repository,
+            branches,
+            ..
+        } = &notification.kind
+        else {
+            return Err(Failure::NotificationActionNotOffered {
+                id: notification.id,
+            });
+        };
+        delete_branches::restore(&self.runner(&repository.root)?, repository, branches)?;
+        self.notifications.dismiss(notification.id);
+        Ok(NotificationOutcome::BranchesChanged(repository.clone()))
+    }
+
+    /// The commits of the branch `name` that `notification` tells was deleted, which HEAD did not
+    /// have when it went, newest first. The notification stays.
+    fn unmerged_commits(
+        &self,
+        notification: &Notification,
+        name: &str,
+    ) -> Result<NotificationOutcome, Failure> {
+        let not_offered = || Failure::NotificationActionNotOffered {
+            id: notification.id,
+        };
+        let NotificationKind::BranchesDeleted {
+            repository,
+            branches,
+            head,
+        } = &notification.kind
+        else {
+            return Err(not_offered());
+        };
+        let branch = branches
+            .iter()
+            .find(|branch| branch.name == name)
+            .ok_or_else(not_offered)?;
+        let runner = self.runner(&repository.root)?;
+        let commits = delete_branches::unmerged_commits(
+            &runner,
+            repository,
+            &branch.commit,
+            head.as_deref(),
+            None,
+        )?;
+        Ok(NotificationOutcome::UnmergedCommits(commits))
+    }
+
+    /// Deletes `upstream` on its remote, the remote branch a branch `notification` tells was
+    /// deleted followed, as `action` of the notification asks. The push runs as a
+    /// [`LongOperation`] that reports its progress and that the user can cancel. The notification
+    /// stays, without the action.
+    fn delete_remote_branch(
+        &self,
+        notification: &Notification,
+        action: &NotificationAction,
+        upstream: &RemoteBranch,
+    ) -> Result<NotificationOutcome, Failure> {
+        let NotificationKind::BranchesDeleted { repository, .. } = &notification.kind else {
+            return Err(Failure::NotificationActionNotOffered {
+                id: notification.id,
+            });
+        };
+        let runner = self.runner(&repository.root)?;
+        let root = &repository.root;
+        let operation = LongOperation::DeleteRemoteBranch {
+            repository: repository.clone(),
+            remote: upstream.remote.clone(),
+            branch: upstream.branch.clone(),
+        };
+        let args = delete_branches::delete_remote_branch_args(upstream);
+        let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
+        if !invocation.success {
+            let remotes = [upstream.remote.clone()];
+            let contacted = explainer::Contacted::Remotes(&remotes);
+            return Err(failure_of_contacting(
+                &runner,
+                root,
+                &invocation,
+                &contacted,
+                Failure::RemoteBranchNotDeleted {
+                    folder: root.clone(),
+                    remote: upstream.remote.clone(),
+                    branch: upstream.branch.clone(),
+                },
+            ));
+        }
+        self.notifications.withdraw_action(notification.id, action);
+        Ok(NotificationOutcome::BranchesChanged(repository.clone()))
     }
 
     /// Takes `action`, one of the actions of an [`Explanation`]. The UI asks the user to confirm
@@ -2190,6 +2324,82 @@ impl Gikli {
         let args = ["switch", "--create", name, &start];
         let fallback = new_branch::not_created(repository, name);
         self.check_out(&runner, repository, name, &args, fallback)
+    }
+
+    /// Renames the local branch `name` of `repository` to `new_name`, which takes it as a new
+    /// branch's name would, and with `unset_upstream` leaves it following nothing. HEAD moves along
+    /// when it is on the branch. Returns what HEAD is on after that.
+    pub fn rename_branch(
+        &self,
+        repository: &Repository,
+        name: &str,
+        new_name: &str,
+        unset_upstream: bool,
+    ) -> Result<CurrentBranch, Failure> {
+        let runner = self.runner(&repository.root)?;
+        rename_branch::rename(&runner, repository, name, new_name, unset_upstream)?;
+        sync::current_branch(&runner, repository)
+    }
+
+    /// Deletes the local branches `names` of `repository`, merged or not, as `git branch -D`, and
+    /// raises a notification about the Project at `project` that tells of them. It offers to
+    /// restore them, to show the commits of each that HEAD did not have, and to delete the remote
+    /// branch each followed that the Repository knows of. When one of them does not exist, this
+    /// returns [`Failure::RevisionNotFound`], and when HEAD is on one,
+    /// [`Failure::CurrentBranchNotDeleted`], and none goes. When git cannot delete one, the ones
+    /// before it are gone, the notification tells of those, and this returns why.
+    pub fn delete_branches(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        names: &[String],
+    ) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        delete_branches::check(&runner, repository, names)?;
+        let head = delete_branches::head(&runner, repository)?;
+        let mut deleted = Vec::new();
+        let mut outcome = Ok(());
+        for name in names {
+            match delete_branches::delete(&runner, repository, name, head.as_deref()) {
+                Ok(branch) => deleted.push(branch),
+                Err(failure) => {
+                    outcome = Err(failure);
+                    break;
+                }
+            }
+        }
+        if !deleted.is_empty() {
+            let mut actions = vec![NotificationAction::RestoreBranches];
+            actions.extend(
+                deleted
+                    .iter()
+                    .filter(|branch| branch.unmerged)
+                    .map(|branch| NotificationAction::ShowUnmergedCommits {
+                        branch: branch.name.clone(),
+                    }),
+            );
+            for upstream in deleted.iter().filter_map(|branch| branch.upstream.as_ref()) {
+                let action = NotificationAction::DeleteRemoteBranch {
+                    upstream: upstream.clone(),
+                };
+                // Several branches can follow the same remote branch, which goes once.
+                if !actions.contains(&action)
+                    && delete_branches::has_remote_branch(&runner, repository, upstream)?
+                {
+                    actions.push(action);
+                }
+            }
+            self.notifications.raise(
+                project,
+                NotificationKind::BranchesDeleted {
+                    repository: repository.clone(),
+                    branches: deleted,
+                    head,
+                },
+                actions,
+            );
+        }
+        outcome
     }
 
     /// Checks out the local branch `name` of `repository`, which HEAD then is on, and returns what

@@ -83,7 +83,7 @@ The local branches the user checked out last, up to 5, newest first, as the refl
 _Avoid_: Recently used, history
 
 **Branches pane**:
-The list of local and remote branches beside the log, where the user filters the log by a branch and goes to its latest commit.
+The list of local and remote branches beside the log, where the user filters the log by a branch, goes to its latest commit, and renames and deletes branches.
 _Avoid_: Branch tree, sidebar
 
 ## Authentication

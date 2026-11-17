@@ -741,6 +741,27 @@ fn create_branch(
 }
 
 #[tauri::command(async)]
+fn rename_branch(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    name: String,
+    new_name: String,
+    unset_upstream: bool,
+) -> Result<CurrentBranch, Failure> {
+    gikli.rename_branch(&repository, &name, &new_name, unset_upstream)
+}
+
+#[tauri::command(async)]
+fn delete_branches(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    names: Vec<String>,
+) -> Result<(), Failure> {
+    gikli.delete_branches(&project, &repository, &names)
+}
+
+#[tauri::command(async)]
 fn check_out_branch(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -1000,6 +1021,8 @@ fn main() {
             clean_branch_name,
             new_branch_prefixes,
             create_branch,
+            rename_branch,
+            delete_branches,
             check_out_branch,
             check_out_tag,
             check_out_revision,

@@ -33,7 +33,7 @@ pub struct PushPlan {
     /// say, so the push creates it.
     pub new_branch: bool,
     /// The commits the push would send, newest first.
-    pub commits: Vec<PushCommit>,
+    pub commits: Vec<ListedCommit>,
 }
 
 /// What follows a commit made with Commit and push.
@@ -46,10 +46,10 @@ pub enum PushAfterCommit {
     Pushed { target: PushTarget },
 }
 
-/// A commit a push would send.
+/// A commit in a list of commits: one a push would send, or one a deleted branch took away.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PushCommit {
+pub struct ListedCommit {
     /// The full hash of the commit.
     pub hash: String,
     pub subject: String,
@@ -306,11 +306,11 @@ fn remote_branch(
 const FORMAT: &str = "--format=%H%x00%an%x00%ae%x00%ct%x00%s";
 
 /// The commits `revisions` names in `repository`, newest first.
-fn commits(
+pub(crate) fn commits(
     runner: &GitRunner,
     repository: &Repository,
     revisions: &[&str],
-) -> Result<Vec<PushCommit>, Failure> {
+) -> Result<Vec<ListedCommit>, Failure> {
     // `log.showSignature` would add the signatures to what git prints.
     let mut args = vec![
         "log",
@@ -328,14 +328,16 @@ fn commits(
         .as_chunks::<5>()
         .0
         .iter()
-        .map(|[hash, author, email, committed_at, subject]| PushCommit {
-            hash: (*hash).to_owned(),
-            author: (*author).to_owned(),
-            by_other_author: user_email
-                .as_deref()
-                .is_some_and(|user_email| !user_email.eq_ignore_ascii_case(email)),
-            committed_at: committed_at.parse().unwrap_or_default(),
-            subject: (*subject).to_owned(),
-        })
+        .map(
+            |[hash, author, email, committed_at, subject]| ListedCommit {
+                hash: (*hash).to_owned(),
+                author: (*author).to_owned(),
+                by_other_author: user_email
+                    .as_deref()
+                    .is_some_and(|user_email| !user_email.eq_ignore_ascii_case(email)),
+                committed_at: committed_at.parse().unwrap_or_default(),
+                subject: (*subject).to_owned(),
+            },
+        )
         .collect())
 }

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::{Failure, Project, Repository, lock};
+use crate::{DeletedBranch, Failure, ListedCommit, Project, RemoteBranch, Repository, lock};
 
 /// A long-lived message about a Project, with the actions the user can take on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -37,6 +37,14 @@ pub enum NotificationKind {
         repository: Repository,
         hook: String,
     },
+    /// gikli deleted the local branches `branches` of `repository`, as the user asked, while HEAD
+    /// was on the commit `head`, which their commits were merged into or not. A HEAD on a branch
+    /// with no commit yet has none.
+    BranchesDeleted {
+        repository: Repository,
+        branches: Vec<DeletedBranch>,
+        head: Option<String>,
+    },
 }
 
 /// An action a notification offers.
@@ -49,6 +57,12 @@ pub enum NotificationAction {
     IgnoreRepository { repository: Repository },
     /// Unregisters the Repository from the Project.
     RemoveRepository { repository: Repository },
+    /// Creates the deleted branches again, each on the commit it was on.
+    RestoreBranches,
+    /// Shows the commits of the deleted branch `branch` that HEAD did not have when it went.
+    ShowUnmergedCommits { branch: String },
+    /// Deletes `upstream`, which a deleted branch followed, on its remote too.
+    DeleteRemoteBranch { upstream: RemoteBranch },
 }
 
 /// What acting on a notification changed.
@@ -57,6 +71,10 @@ pub enum NotificationAction {
 pub enum NotificationOutcome {
     /// The Repositories of the Project changed; this is the Project now.
     ProjectChanged(Project),
+    /// The branches of the Repository changed.
+    BranchesChanged(Repository),
+    /// The commits a deleted branch took away, newest first.
+    UnmergedCommits(Vec<ListedCommit>),
 }
 
 impl NotificationKind {
@@ -69,8 +87,17 @@ impl NotificationKind {
             Self::InvalidRepository { repository } => {
                 project.invalid_repositories.contains(repository)
             }
-            Self::HookNotFinished { .. } => true,
+            Self::HookNotFinished { .. } | Self::BranchesDeleted { .. } => true,
         }
+    }
+
+    /// Whether the notification tells of something that happened once. It may happen again, and it
+    /// is news then, so dismissing it does not keep it from being raised again.
+    fn happened_once(&self) -> bool {
+        matches!(
+            self,
+            Self::HookNotFinished { .. } | Self::BranchesDeleted { .. }
+        )
     }
 }
 
@@ -153,13 +180,33 @@ impl Notifications {
             return;
         };
         let notification = state.raised.remove(index);
-        // This one tells of something that happened once. It may happen again, and it is news then.
-        if !matches!(notification.kind, NotificationKind::HookNotFinished { .. }) {
+        if !notification.kind.happened_once() {
             state
                 .dismissed
                 .push((notification.project, notification.kind));
         }
         self.events.send(Event::NotificationRemoved { id });
+    }
+
+    /// Takes `action` away from the notification `id`, when it is still raised, as the user took
+    /// it and it cannot be taken again. The notification stays with the other actions, under a new
+    /// id, and both changes are announced.
+    pub fn withdraw_action(&self, id: u64, action: &NotificationAction) {
+        let mut state = self.lock();
+        let Some(index) = state
+            .raised
+            .iter()
+            .position(|notification| notification.id == id)
+        else {
+            return;
+        };
+        let mut notification = state.raised.remove(index);
+        notification.actions.retain(|offered| offered != action);
+        notification.id = state.next_id;
+        state.next_id += 1;
+        state.raised.push(notification.clone());
+        self.events.send(Event::NotificationRemoved { id });
+        self.events.send(Event::NotificationRaised(notification));
     }
 
     /// Removes the notifications about `project` whose message no longer holds, as after the

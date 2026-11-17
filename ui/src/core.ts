@@ -349,6 +349,14 @@ export type Failure =
   | { kind: "branchNameTaken"; name: string }
   /** git could not create the branch `name`: the operation log shows why. */
   | { kind: "branchNotCreated"; folder: string; name: string }
+  /** git could not rename the branch `name`: the operation log shows why. */
+  | { kind: "branchNotRenamed"; folder: string; name: string }
+  /** HEAD is on the branch `name`, which git does not delete, so no branch was deleted. */
+  | { kind: "currentBranchNotDeleted"; name: string }
+  /** git could not delete the branch `name`: the operation log shows why. */
+  | { kind: "branchNotDeleted"; folder: string; name: string }
+  /** git could not delete the branch `branch` of `remote`: the operation log shows why. */
+  | { kind: "remoteBranchNotDeleted"; folder: string; remote: string; branch: string }
   /** git could not check out a branch, a tag or a commit: the operation log shows why. */
   | { kind: "checkoutFailed"; folder: string }
   /** HEAD is detached, so there is no current branch to push. */
@@ -425,13 +433,38 @@ export type NotificationKind =
   | { kind: "unregisteredRepository"; repository: Repository }
   | { kind: "invalidRepository"; repository: Repository }
   /** The user cancelled the clone while this hook ran: the clone is complete, and the hook did not finish. */
-  | { kind: "hookNotFinished"; repository: Repository; hook: string };
+  | { kind: "hookNotFinished"; repository: Repository; hook: string }
+  /** gikli deleted these branches while HEAD was on the commit `head`, null on a branch with no commit yet. */
+  | { kind: "branchesDeleted"; repository: Repository; branches: DeletedBranch[]; head: string | null };
+
+/** A branch of a remote: `branch` is its name there. */
+export interface RemoteBranch {
+  remote: string;
+  branch: string;
+}
+
+/** A local branch gikli deleted, with what it takes to bring it back. */
+export interface DeletedBranch {
+  name: string;
+  /** The full hash of the commit it was on. */
+  commit: string;
+  /** The branch of a remote it followed, if any. */
+  upstream: RemoteBranch | null;
+  /** Whether it had commits that HEAD did not have when it went. */
+  unmerged: boolean;
+}
 
 /** An action a notification offers. */
 export type NotificationAction =
   | { action: "addRepository"; repository: Repository }
   | { action: "ignoreRepository"; repository: Repository }
-  | { action: "removeRepository"; repository: Repository };
+  | { action: "removeRepository"; repository: Repository }
+  /** Creates the deleted branches again, each on the commit it was on. */
+  | { action: "restoreBranches" }
+  /** Shows the commits of the deleted branch `branch` that HEAD did not have. */
+  | { action: "showUnmergedCommits"; branch: string }
+  /** Deletes `upstream`, which a deleted branch followed, on its remote too. */
+  | { action: "deleteRemoteBranch"; upstream: RemoteBranch };
 
 /** A long-lived message about a Project, with the actions the user can take on it. */
 export interface Notification {
@@ -443,7 +476,12 @@ export interface Notification {
 }
 
 /** What acting on a notification changed. */
-export type NotificationOutcome = { outcome: "projectChanged"; payload: Project };
+export type NotificationOutcome =
+  | { outcome: "projectChanged"; payload: Project }
+  /** The branches of the Repository changed. */
+  | { outcome: "branchesChanged"; payload: Repository }
+  /** The commits a deleted branch took away, newest first. */
+  | { outcome: "unmergedCommits"; payload: ListedCommit[] };
 
 /** The two forms of the URL of a repository. The form it was typed in stays as it was typed. */
 export interface CloneUrlForms {
@@ -466,7 +504,9 @@ export type LongOperation =
   /** Pushing the current branch to the branch `branch` of `remote`. */
   | { kind: "push"; repository: Repository; remote: string; branch: string }
   /** Checking out `target`: a branch, a tag or a commit. */
-  | { kind: "checkOut"; repository: Repository; target: string };
+  | { kind: "checkOut"; repository: Repository; target: string }
+  /** Deleting the branch `branch` of `remote`, which a deleted branch followed. */
+  | { kind: "deleteRemoteBranch"; repository: Repository; remote: string; branch: string };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -1106,6 +1146,22 @@ export function createBranch(repository: Repository, name: string, base: NewBran
   return invoke("create_branch", { repository, name, base, checkOut });
 }
 
+/**
+ * Renames the local branch `name` to `newName`, which is checked as a new branch's name is, and with `unsetUpstream` leaves it
+ * following nothing. Returns what HEAD is on after that. Rejects with a {@link Failure}.
+ */
+export function renameBranch(repository: Repository, name: string, newName: string, unsetUpstream: boolean): Promise<CurrentBranch> {
+  return invoke("rename_branch", { repository, name, newName, unsetUpstream });
+}
+
+/**
+ * Deletes the local branches `names`, merged or not, and raises a notification about the Project at `project` that offers to
+ * restore them. Rejects with a {@link Failure}: `currentBranchNotDeleted` when HEAD is on one of them, and nothing goes.
+ */
+export function deleteBranches(project: string, repository: Repository, names: string[]): Promise<void> {
+  return invoke("delete_branches", { project, repository, names });
+}
+
 /** Checks out the local branch `name`, and returns what HEAD is on after that. Rejects with a {@link Failure}. */
 export function checkOutBranch(repository: Repository, name: string): Promise<CurrentBranch> {
   return invoke("check_out_branch", { repository, name });
@@ -1200,8 +1256,8 @@ export interface PushTarget {
 /** Which tags a push sends besides the branch: none unless the user asks, every one, or those of the current branch (`--follow-tags`). */
 export type PushTags = "none" | "all" | "currentBranch";
 
-/** A commit a push would send. */
-export interface PushCommit {
+/** A commit in a list of commits: one a push would send, or one a deleted branch took away. */
+export interface ListedCommit {
   hash: string;
   subject: string;
   author: string;
@@ -1223,7 +1279,7 @@ export interface PushPlan {
   /** Whether the push creates the target. */
   newBranch: boolean;
   /** Newest first. */
-  commits: PushCommit[];
+  commits: ListedCommit[];
 }
 
 /**

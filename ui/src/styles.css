@@ -895,6 +895,25 @@ button:disabled {
   display: none;
 }
 
+.delete-branches-list,
+.unmerged-commits-list {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.delete-branches-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unmerged-commits-list .push-commit {
+  padding: 0;
+}
+
 .branch-selector-empty {
   margin: 0;
   color: var(--muted);
