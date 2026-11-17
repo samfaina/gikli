@@ -1,5 +1,6 @@
-// The menu of a commit in the log. Each action is an entry of COMMIT_ACTIONS, so later actions on
-// commits add theirs there.
+// The menu of a commit in the log. Each action is an entry of COMMIT_ACTIONS, or, for one that acts
+// on the Repository the log shows, one the log gives the menu, so later actions on commits add theirs
+// there.
 
 import { t } from "./strings";
 
@@ -13,7 +14,7 @@ export interface CommitAction {
   run(hash: string): Promise<void>;
 }
 
-/** The actions of the commit menu, in the order they show. */
+/** The actions of the commit menu that need nothing but the commit, in the order they show. */
 export const COMMIT_ACTIONS: CommitAction[] = [
   {
     testId: "commit-copy-hash",
@@ -28,8 +29,8 @@ export interface CommitMenu {
   open(hash: string, x: number, y: number, from: HTMLElement): void;
 }
 
-/** The commit menu, added to `container`. An action that fails tells `failed`. */
-export function createCommitMenu(container: HTMLElement, failed: (error: unknown) => void): CommitMenu {
+/** The commit menu, added to `container`, with `actions` after {@link COMMIT_ACTIONS}. An action that fails tells `failed`. */
+export function createCommitMenu(container: HTMLElement, failed: (error: unknown) => void, actions: CommitAction[] = []): CommitMenu {
   const menu = document.createElement("div");
   menu.className = "context-menu";
   menu.dataset.testid = "commit-menu";
@@ -62,7 +63,7 @@ export function createCommitMenu(container: HTMLElement, failed: (error: unknown
 
   function open(hash: string, x: number, y: number, from: HTMLElement): void {
     returnFocus = from;
-    const items = COMMIT_ACTIONS.map((action) => {
+    const items = [...COMMIT_ACTIONS, ...actions].map((action) => {
       const item = document.createElement("button");
       item.type = "button";
       item.dataset.testid = action.testId;

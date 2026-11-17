@@ -14,10 +14,10 @@ use gikli_core::{
     Branches, CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges,
     CommitDetails, CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory,
     Gikli, GitCheck, HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget,
-    Notification, NotificationAction, NotificationOutcome, OperationLogEntry, Project,
-    ProjectWindow, Prompt, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository,
-    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch,
-    answer_askpass_request,
+    NewBranchBase, Notification, NotificationAction, NotificationOutcome, OperationLogEntry,
+    Project, ProjectWindow, Prompt, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel,
+    Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide,
+    TextSearch, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -715,6 +715,58 @@ fn branches(
     gikli.branches(&repository, &search)
 }
 
+#[tauri::command]
+fn clean_branch_name(gikli: State<'_, Gikli>, name: String) -> String {
+    gikli.clean_branch_name(&name)
+}
+
+#[tauri::command(async)]
+fn new_branch_prefixes(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    typed: String,
+) -> Result<Vec<String>, Failure> {
+    gikli.new_branch_prefixes(&repository, &typed)
+}
+
+#[tauri::command(async)]
+fn create_branch(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    name: String,
+    base: NewBranchBase,
+    check_out: bool,
+) -> Result<CurrentBranch, Failure> {
+    gikli.create_branch(&repository, &name, &base, check_out)
+}
+
+#[tauri::command(async)]
+fn check_out_branch(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    name: String,
+) -> Result<CurrentBranch, Failure> {
+    gikli.check_out_branch(&repository, &name)
+}
+
+#[tauri::command(async)]
+fn check_out_tag(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    name: String,
+) -> Result<CurrentBranch, Failure> {
+    gikli.check_out_tag(&repository, &name)
+}
+
+#[tauri::command(async)]
+fn check_out_revision(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    revision: String,
+) -> Result<CurrentBranch, Failure> {
+    gikli.check_out_revision(&repository, &revision)
+}
+
 #[tauri::command(async)]
 fn go_to_branch(
     gikli: State<'_, Gikli>,
@@ -945,6 +997,12 @@ fn main() {
             log_search_history,
             log_branches,
             branches,
+            clean_branch_name,
+            new_branch_prefixes,
+            create_branch,
+            check_out_branch,
+            check_out_tag,
+            check_out_revision,
             go_to_branch,
             go_to,
             filtered_log_reaches,

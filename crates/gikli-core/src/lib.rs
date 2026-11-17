@@ -16,6 +16,7 @@ mod file_history;
 mod git;
 mod host;
 mod log;
+mod new_branch;
 mod notifications;
 mod operation_log;
 mod operations;
@@ -62,6 +63,7 @@ pub use log::{
     GraphArrow, GraphLine, GraphRow, LOG_SEARCH_BATCH, LONG_EDGE, LogCursor, LogFilter, LogPage,
     LogRow, RefKind, RefLabel, TextSearch,
 };
+pub use new_branch::NewBranchBase;
 pub use notifications::{Notification, NotificationAction, NotificationKind, NotificationOutcome};
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
@@ -401,6 +403,10 @@ pub enum Failure {
     BranchNameInvalid {
         name: String,
     },
+    /// Another branch of the Repository is already called `name`, so no branch was created.
+    BranchNameTaken {
+        name: String,
+    },
     /// Another remote of the Repository is already called `name`, so no remote was defined.
     RemoteNameTaken {
         name: String,
@@ -427,6 +433,19 @@ pub enum Failure {
     /// git could not push from the Repository at `folder`. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     PushFailed {
+        folder: PathBuf,
+    },
+    /// git could not create the branch `name` in the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    BranchNotCreated {
+        folder: PathBuf,
+        name: String,
+    },
+    /// git could not check out a branch, a tag or a commit in the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    CheckoutFailed {
         folder: PathBuf,
     },
     /// git could not read the branches of the Repository at `folder`, or how far they are from
@@ -2134,6 +2153,142 @@ impl Gikli {
         )
     }
 
+    /// `name`, as the user types it for a new branch, with each character git takes in no branch
+    /// name replaced by `-`, so that it keeps its length. What else git rejects is left for
+    /// [`Self::create_branch`] to reject.
+    pub fn clean_branch_name(&self, name: &str) -> String {
+        new_branch::clean_name(name)
+    }
+
+    /// The prefixes the name field of a new branch in `repository` suggests once the user has typed
+    /// `typed`: the directories of its local and remote branches, such as `feature/`, that start
+    /// with it, ignoring case, by name.
+    pub fn new_branch_prefixes(
+        &self,
+        repository: &Repository,
+        typed: &str,
+    ) -> Result<Vec<String>, Failure> {
+        new_branch::prefixes(&self.runner(&repository.root)?, repository, typed)
+    }
+
+    /// Creates the branch `name` of `repository` at the commit `base` names, and checks it out when
+    /// `check_out` says so. Returns what HEAD is on after that.
+    pub fn create_branch(
+        &self,
+        repository: &Repository,
+        name: &str,
+        base: &NewBranchBase,
+        check_out: bool,
+    ) -> Result<CurrentBranch, Failure> {
+        let runner = self.runner(&repository.root)?;
+        new_branch::check_name(&runner, repository, name)?;
+        let start = new_branch::start_point(&runner, repository, base)?;
+        if !check_out {
+            new_branch::create(&runner, repository, name, &start)?;
+            return sync::current_branch(&runner, repository);
+        }
+        let args = ["switch", "--create", name, &start];
+        let fallback = new_branch::not_created(repository, name);
+        self.check_out(&runner, repository, name, &args, fallback)
+    }
+
+    /// Checks out the local branch `name` of `repository`, which HEAD then is on, and returns what
+    /// HEAD is on after that. The checkout runs as a [`LongOperation`] that reports the hook it
+    /// waits on and that the user can cancel. A branch that no longer exists returns
+    /// [`Failure::RevisionNotFound`] with its name.
+    pub fn check_out_branch(
+        &self,
+        repository: &Repository,
+        name: &str,
+    ) -> Result<CurrentBranch, Failure> {
+        let runner = self.runner(&repository.root)?;
+        if !new_branch::has_local_branch(&runner, repository, name)? {
+            return Err(Failure::RevisionNotFound {
+                revision: name.to_owned(),
+            });
+        }
+        let args = ["switch", "--no-guess", name];
+        self.check_out(
+            &runner,
+            repository,
+            name,
+            &args,
+            checkout_failed(repository),
+        )
+    }
+
+    /// Checks out the tag `name` of `repository`, which leaves a detached HEAD on the commit it
+    /// points at, and returns what HEAD is on after that. The tag goes by its whole reference, so a
+    /// branch with the same name does not get in the way. The checkout runs as in
+    /// [`Self::check_out_branch`]. A tag that no longer exists returns
+    /// [`Failure::RevisionNotFound`] with its name.
+    pub fn check_out_tag(
+        &self,
+        repository: &Repository,
+        name: &str,
+    ) -> Result<CurrentBranch, Failure> {
+        let tag = RefLabel {
+            name: name.to_owned(),
+            kind: RefKind::Tag,
+        };
+        self.check_out_detached(repository, name, &tag.full_name())
+    }
+
+    /// Checks out the commit `revision` names in `repository`, as the commit menu of the log does,
+    /// which leaves a detached HEAD on it, and returns what HEAD is on after that. The checkout
+    /// runs as in [`Self::check_out_branch`]. A revision that names no commit returns
+    /// [`Failure::RevisionNotFound`].
+    pub fn check_out_revision(
+        &self,
+        repository: &Repository,
+        revision: &str,
+    ) -> Result<CurrentBranch, Failure> {
+        self.check_out_detached(repository, revision, revision)
+    }
+
+    /// Checks out the commit `revision` names in `repository`, which the user knows as `target`,
+    /// on a detached HEAD.
+    fn check_out_detached(
+        &self,
+        repository: &Repository,
+        target: &str,
+        revision: &str,
+    ) -> Result<CurrentBranch, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let hash = details::resolve_known_as(&runner, repository, revision, target)?;
+        let args = ["switch", "--detach", &hash];
+        self.check_out(
+            &runner,
+            repository,
+            target,
+            &args,
+            checkout_failed(repository),
+        )
+    }
+
+    /// Runs git with `args`, a checkout of `target` in `repository`, as a [`LongOperation`], and
+    /// returns what HEAD is on after it. When it fails, this returns the failure that git's output
+    /// explains, or `fallback` when nothing does.
+    fn check_out(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        target: &str,
+        args: &[&str],
+        fallback: Failure,
+    ) -> Result<CurrentBranch, Failure> {
+        let operation = LongOperation::CheckOut {
+            repository: repository.clone(),
+            target: target.to_owned(),
+        };
+        let root = &repository.root;
+        let invocation = self.run_operation(runner, operation, root, args)?;
+        if !invocation.success {
+            return Err(failure_of(runner, root, &invocation, fallback));
+        }
+        sync::current_branch(runner, repository)
+    }
+
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer
     /// needs it, as when the user closes it or it starts over. That page can still be read, only
     /// more slowly.
@@ -2168,17 +2323,12 @@ impl Gikli {
         repository: &Repository,
         branch: &RefLabel,
     ) -> Result<String, Failure> {
-        details::resolve(
+        details::resolve_known_as(
             &self.runner(&repository.root)?,
             repository,
             &branch.full_name(),
+            &branch.name,
         )
-        .map_err(|failure| match failure {
-            Failure::RevisionNotFound { .. } => Failure::RevisionNotFound {
-                revision: branch.name.clone(),
-            },
-            failure => failure,
-        })
     }
 
     /// Whether the log of `repository` filtered by `filter` reaches the commit `hash`, which
@@ -2688,6 +2838,13 @@ fn failure_of_contacting(
     match explainer::explain_contacting(runner, folder, invocation, contacted) {
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,
+    }
+}
+
+/// The failure of git that could not check out a branch, a tag or a commit in `repository`.
+fn checkout_failed(repository: &Repository) -> Failure {
+    Failure::CheckoutFailed {
+        folder: repository.root.clone(),
     }
 }
 

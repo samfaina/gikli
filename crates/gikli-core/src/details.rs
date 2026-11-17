@@ -329,6 +329,39 @@ pub(crate) fn resolve(
     Ok(hash)
 }
 
+/// The full hash of the commit `revision` names in `repository`, as [`resolve`] finds it, with
+/// [`Failure::RevisionNotFound`] naming the revision as the user knows it, `known_as`, when it
+/// names none: a branch by its name rather than its whole reference, for example.
+pub(crate) fn resolve_known_as(
+    runner: &GitRunner,
+    repository: &Repository,
+    revision: &str,
+    known_as: &str,
+) -> Result<String, Failure> {
+    resolve(runner, repository, revision).map_err(|failure| match failure {
+        Failure::RevisionNotFound { .. } => Failure::RevisionNotFound {
+            revision: known_as.to_owned(),
+        },
+        failure => failure,
+    })
+}
+
+/// Whether the reference `reference`, a full name such as `refs/heads/main`, exists in
+/// `repository`.
+pub(crate) fn exists(
+    runner: &GitRunner,
+    repository: &Repository,
+    reference: &str,
+) -> Result<bool, Failure> {
+    Ok(runner
+        .run(
+            &repository.root,
+            &["rev-parse", "--verify", "--quiet", reference],
+        )
+        .map_err(git_failed_to_start)?
+        .success)
+}
+
 /// The failure of a `revision` that names no commit.
 fn not_found(revision: &str) -> Failure {
     Failure::RevisionNotFound {

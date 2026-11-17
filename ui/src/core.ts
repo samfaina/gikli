@@ -345,6 +345,12 @@ export type Failure =
   | { kind: "remoteNotFound"; remote: string }
   /** `name` is no name git takes for a branch. */
   | { kind: "branchNameInvalid"; name: string }
+  /** Another branch is already called `name`, so no branch was created. */
+  | { kind: "branchNameTaken"; name: string }
+  /** git could not create the branch `name`: the operation log shows why. */
+  | { kind: "branchNotCreated"; folder: string; name: string }
+  /** git could not check out a branch, a tag or a commit: the operation log shows why. */
+  | { kind: "checkoutFailed"; folder: string }
   /** HEAD is detached, so there is no current branch to push. */
   | { kind: "detachedHeadNotPushed" }
   /** The current branch has no commit yet, so there is nothing to push. */
@@ -458,7 +464,9 @@ export type LongOperation =
   /** Fetching a remote the user just defined. */
   | { kind: "fetchRemote"; repository: Repository; remote: string }
   /** Pushing the current branch to the branch `branch` of `remote`. */
-  | { kind: "push"; repository: Repository; remote: string; branch: string };
+  | { kind: "push"; repository: Repository; remote: string; branch: string }
+  /** Checking out `target`: a branch, a tag or a commit. */
+  | { kind: "checkOut"; repository: Repository; target: string };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -1075,6 +1083,42 @@ export function branches(repository: Repository, search: string): Promise<Branch
 /** The full hash of the latest commit of `branch`. Rejects with a {@link Failure}, a branch that no longer exists with `revisionNotFound`. */
 export function goToBranch(repository: Repository, branch: RefLabel): Promise<string> {
   return invoke("go_to_branch", { repository, branch });
+}
+
+/** What a new branch starts from: the commit HEAD is on, the latest commit of a branch or a tag, or a commit. */
+export type NewBranchBase = { kind: "head" } | { kind: "branch"; label: RefLabel } | { kind: "commit"; hash: string };
+
+/** `name`, as the user types it for a new branch, with each character git takes in no branch name replaced by `-`, so it keeps its length. */
+export function cleanBranchName(name: string): Promise<string> {
+  return invoke("clean_branch_name", { name });
+}
+
+/** The prefixes of existing branches, such as `feature/`, that start with what the user `typed` for a new branch, by name. Rejects with a {@link Failure}. */
+export function newBranchPrefixes(repository: Repository, typed: string): Promise<string[]> {
+  return invoke("new_branch_prefixes", { repository, typed });
+}
+
+/**
+ * Creates the branch `name` at `base`, checked out when `checkOut` says so, and returns what HEAD is on after that. Rejects with a
+ * {@link Failure}: `branchNameInvalid` for a name git does not take as it is, `branchNameTaken` for one a branch has.
+ */
+export function createBranch(repository: Repository, name: string, base: NewBranchBase, checkOut: boolean): Promise<CurrentBranch> {
+  return invoke("create_branch", { repository, name, base, checkOut });
+}
+
+/** Checks out the local branch `name`, and returns what HEAD is on after that. Rejects with a {@link Failure}. */
+export function checkOutBranch(repository: Repository, name: string): Promise<CurrentBranch> {
+  return invoke("check_out_branch", { repository, name });
+}
+
+/** Checks out the tag `name` on a detached HEAD, and returns what HEAD is on after that. Rejects with a {@link Failure}. */
+export function checkOutTag(repository: Repository, name: string): Promise<CurrentBranch> {
+  return invoke("check_out_tag", { repository, name });
+}
+
+/** Checks out the commit `revision` names on a detached HEAD, and returns what HEAD is on after that. Rejects with a {@link Failure}. */
+export function checkOutRevision(repository: Repository, revision: string): Promise<CurrentBranch> {
+  return invoke("check_out_revision", { repository, revision });
 }
 
 /** What HEAD of `repository` is on. Rejects with a {@link Failure}. */

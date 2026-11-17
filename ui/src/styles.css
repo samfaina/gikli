@@ -872,6 +872,29 @@ button:disabled {
   overflow: auto;
 }
 
+.new-branch-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.new-branch-name input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+}
+
+.new-branch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.new-branch-message:empty {
+  display: none;
+}
+
 .branch-selector-empty {
   margin: 0;
   color: var(--muted);

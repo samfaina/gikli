@@ -7,6 +7,7 @@ import { branchGroup, branchList, sameLabel, type BranchActions, type BranchGrou
 import { createCommitMenu } from "./commit-menu";
 import {
   branches as readBranches,
+  checkOutRevision,
   endLogRead,
   fetchAll,
   fetchBranch,
@@ -26,6 +27,7 @@ import {
   type LogCursor,
   type LogFilter,
   type LogRow,
+  type NewBranchBase,
   type RefLabel,
   type Repository,
   type TextSearch,
@@ -44,6 +46,10 @@ export interface LogViewHost {
   closed(): void;
   /** Opens the history of the file at `path` in `repository`. */
   showFileHistory(repository: Repository, path: string): void;
+  /** Opens the new branch dialog on a branch of `repository` that starts from `base`, which the user knows as `baseName`. */
+  newBranch(repository: Repository, base: NewBranchBase, baseName: string): void;
+  /** HEAD of `repository` moved to another branch or commit. */
+  headMoved(repository: Repository): void;
 }
 
 export interface LogView {
@@ -51,6 +57,8 @@ export interface LogView {
   open(repository: Repository): void;
   /** Shows the log of `repository`, opening it if it is not shown, at the latest commit of `branch`. */
   showBranch(repository: Repository, branch: RefLabel): void;
+  /** Reads the log of `repository` again, with its branches, when it is the one shown. */
+  refreshIfShown(repository: Repository): void;
   /** Goes back to the changes view. */
   close(): void;
 }
@@ -95,6 +103,7 @@ export function createLogView(host: LogViewHost): LogView {
   const matchCaseInput = element<HTMLInputElement>("log-search-match-case");
   const branchesPane = element<HTMLElement>("log-branches-list");
   const goToBranchButton = element<HTMLButtonElement>("log-go-to-branch");
+  const newBranchButton = element<HTMLButtonElement>("log-new-branch");
   const goToInput = element<HTMLInputElement>("log-go-to");
   const goToList = element<HTMLDataListElement>("log-go-to-suggestions");
 
@@ -124,12 +133,35 @@ export function createLogView(host: LogViewHost): LogView {
     goToCommit: (hash) => void goToCommit(hash, hash.slice(0, SHORT_HASH_LENGTH)),
     showFileHistory: (shown, path) => host.showFileHistory(shown, path),
   });
-  const menu = createCommitMenu(view, (error) => message.replaceChildren(host.errorView(error)));
+  const menu = createCommitMenu(view, (error) => message.replaceChildren(host.errorView(error)), [
+    {
+      testId: "commit-check-out",
+      label: () => t("logCommitMenuCheckOut"),
+      run: (hash) => checkOutCommit(hash),
+    },
+    {
+      testId: "commit-new-branch",
+      label: () => t("logCommitMenuNewBranch"),
+      run: async (hash) => {
+        if (repository !== null) {
+          host.newBranch(repository, { kind: "commit", hash }, hash.slice(0, SHORT_HASH_LENGTH));
+        }
+      },
+    },
+  ]);
 
   element<HTMLElement>("log-long-edges-label").textContent = t("logLongEdges");
   element<HTMLElement>("log-search-regex-label").textContent = t("logSearchRegex");
   element<HTMLElement>("log-search-match-case-label").textContent = t("logSearchMatchCase");
   element<HTMLElement>("log-branches-title").textContent = t("logBranchesTitle");
+  newBranchButton.textContent = t("logNewBranch");
+  newBranchButton.title = t("logNewBranchTitle");
+  newBranchButton.addEventListener("click", () => {
+    if (repository !== null) {
+      const base: NewBranchBase = chosen === null ? { kind: "head" } : { kind: "branch", label: chosen };
+      host.newBranch(repository, base, chosen === null ? "HEAD" : chosen.name);
+    }
+  });
   goToBranchButton.textContent = t("logGoToBranch");
   goToBranchButton.title = t("logGoToBranchTitle");
   goToBranchButton.addEventListener("click", () => {
@@ -211,6 +243,29 @@ export function createLogView(host: LogViewHost): LogView {
       chooseBranch(null);
     }
     void goToBranchTip(branch);
+  }
+
+  /** Checks out the commit `hash` on a detached HEAD, and reads the log again, as the labels on it moved. */
+  async function checkOutCommit(hash: string): Promise<void> {
+    const shown = repository;
+    if (shown === null) {
+      return;
+    }
+    try {
+      await checkOutRevision(shown, hash);
+    } finally {
+      // A checkout that failed may still have moved HEAD, as when a hook after it fails.
+      host.headMoved(shown);
+      if (repository === shown) {
+        refresh();
+      }
+    }
+  }
+
+  function refreshIfShown(toRefresh: Repository): void {
+    if (repository?.root === toRefresh.root && !view.hidden) {
+      refresh();
+    }
   }
 
   /** Reads the log again, and the branches it can be filtered by, which may have changed. */
@@ -680,7 +735,7 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  return { open, showBranch, close };
+  return { open, showBranch, refreshIfShown, close };
 }
 
 /** Lets the core go of the read that the page at `cursor` goes on with, which the log does not read, if any. Nothing depends on it. */
