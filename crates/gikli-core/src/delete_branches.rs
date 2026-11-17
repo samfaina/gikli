@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::GitRunner;
 use crate::{
     CurrentBranch, Failure, ListedCommit, RefKind, RefLabel, Repository, details, failure_of,
-    git_failed_to_start, new_branch, push, sync,
+    git_failed_to_start, listed_commit, new_branch, sync,
 };
 
 /// A local branch gikli deleted, with what it takes to bring it back.
@@ -176,7 +176,7 @@ pub(crate) fn unmerged_commits(
     if let Some(head) = head {
         revisions.extend(["--not", head]);
     }
-    push::commits(runner, repository, &revisions)
+    listed_commit::list(runner, repository, &revisions)
 }
 
 /// Creates the branches `branches` of `repository` again, each on the commit it was on. When a
