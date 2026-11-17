@@ -22,6 +22,7 @@ import {
 } from "./core";
 import { createDiffPreview } from "./diff-view";
 import { element } from "./dom";
+import { cell, fillCommitRow } from "./listed-commit";
 import { note, SHORT_HASH_LENGTH } from "./log-details";
 import { t } from "./strings";
 
@@ -41,8 +42,6 @@ export interface FileHistoryView {
   /** Goes back to the view the user opened it from. */
   close(): void;
 }
-
-const dates = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
 
 export function createFileHistoryView(host: FileHistoryViewHost): FileHistoryView {
   const view = element<HTMLElement>("file-history");
@@ -199,23 +198,10 @@ export function createFileHistoryView(host: FileHistoryViewHost): FileHistoryVie
       row.dataset.testid = "file-history-row";
       row.dataset.index = String(index);
       row.setAttribute("role", "option");
-      const cell = (className: string, text: string, full = text): HTMLElement => {
-        const made = document.createElement("span");
-        made.className = className;
-        made.textContent = text;
-        made.title = full;
-        return made;
-      };
       const pathText = revision.originalPath === null ? revision.path : t("logRenamedFrom", { path: revision.path, from: revision.originalPath });
       const pathCell = cell("file-history-path", pathText);
       pathCell.classList.toggle("file-history-path-other", revision.path !== read.path);
-      row.append(
-        cell("log-hash", revision.hash.slice(0, SHORT_HASH_LENGTH), revision.hash),
-        cell("log-subject", revision.subject),
-        pathCell,
-        cell("log-author", revision.author),
-        cell("log-date", dates.format(new Date(revision.committedAt * 1000))),
-      );
+      fillCommitRow(row, revision).after(pathCell);
       row.addEventListener("click", () => {
         select(revision);
         list.focus();
