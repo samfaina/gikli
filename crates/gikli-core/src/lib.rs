@@ -921,10 +921,10 @@ impl Gikli {
             NotificationAction::DeleteRemoteBranch { upstream } => {
                 return self.delete_remote_branch(&notification, action, upstream);
             }
-            NotificationAction::ContinueOperation => {
+            NotificationAction::ContinueRebase => {
                 return self.act_on_stopped_rebase(&notification, OperationAction::Continue);
             }
-            NotificationAction::AbortOperation => {
+            NotificationAction::AbortRebase => {
                 return self.act_on_stopped_rebase(&notification, OperationAction::Abort);
             }
         };
@@ -2551,8 +2551,8 @@ impl Gikli {
                 project,
                 stopped,
                 vec![
-                    NotificationAction::ContinueOperation,
-                    NotificationAction::AbortOperation,
+                    NotificationAction::ContinueRebase,
+                    NotificationAction::AbortRebase,
                 ],
             );
         } else {
@@ -2563,7 +2563,8 @@ impl Gikli {
 
     /// Takes `action` on the operation half done in `repository`, a Repository of the Project at
     /// `project`, and returns the operation in progress after that. A rebase, revert or
-    /// cherry-pick that goes on and stops on a conflict at a later commit is still in progress.
+    /// cherry-pick that goes on and stops at a later commit, on a conflict or on one the
+    /// resolution left empty, is still in progress.
     /// git runs as a [`LongOperation`] that reports the hook it waits on and that the user can
     /// cancel, and takes the messages it prepared for the commits it makes as they are. With
     /// nothing half done this returns [`Failure::NoOperationInProgress`], with an action the
@@ -2602,6 +2603,7 @@ impl Gikli {
         }
         let runner = runner.accepting_prepared_messages();
         let root = &repository.root;
+        let head_before = in_progress::head(&runner, repository)?;
         let long = LongOperation::TakeOperationAction {
             repository: repository.clone(),
             operation: operation.kind,
@@ -2612,11 +2614,13 @@ impl Gikli {
         if invocation.success {
             return Ok(());
         }
-        // git went on and stopped on a conflict at a later commit, which the user resolves next.
+        // git went on and stopped at a later commit, which the user resolves or skips next: on a
+        // conflict, or after committing what it could, on one the resolution left empty.
         if action != OperationAction::Abort
             && !invocation.cancelled
             && in_progress::read(&runner, repository)?.is_some()
-            && in_progress::has_conflicts(&runner, repository)?
+            && (in_progress::has_conflicts(&runner, repository)?
+                || in_progress::head(&runner, repository)? != head_before)
         {
             return Ok(());
         }

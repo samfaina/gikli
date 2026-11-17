@@ -2,7 +2,7 @@
 //! git keeps it in the git directory of the worktree, whoever started it.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,14 +34,12 @@ impl OperationKind {
     fn actions(self) -> Vec<OperationAction> {
         match self {
             Self::Merge => vec![OperationAction::CommitMerge, OperationAction::Abort],
-            Self::Rebase => vec![
+            // A commit the resolution left empty cannot be continued, only skipped.
+            Self::Rebase | Self::Revert | Self::CherryPick => vec![
                 OperationAction::Continue,
                 OperationAction::Skip,
                 OperationAction::Abort,
             ],
-            Self::Revert | Self::CherryPick => {
-                vec![OperationAction::Continue, OperationAction::Abort]
-            }
         }
     }
 
@@ -63,7 +61,8 @@ pub enum OperationAction {
     /// Goes on with the operation once the user resolved the conflicts it stopped on, or did what
     /// it stopped for.
     Continue,
-    /// Leaves out the commit a rebase stopped on, and goes on with the next one.
+    /// Leaves out the commit a rebase, revert or cherry-pick stopped on, and goes on with the next
+    /// one.
     Skip,
     /// Finishes a merge with a commit, with the message git prepared for it.
     CommitMerge,
@@ -92,7 +91,7 @@ pub(crate) fn read(
 }
 
 /// The git directory of the worktree `repository` is, where git keeps what it has half done there.
-fn git_dir(runner: &GitRunner, repository: &Repository) -> Result<std::path::PathBuf, Failure> {
+fn git_dir(runner: &GitRunner, repository: &Repository) -> Result<PathBuf, Failure> {
     runner
         .git_dir(&repository.root)
         .map_err(git_failed_to_start)?
@@ -123,6 +122,19 @@ pub(crate) fn has_conflicts(runner: &GitRunner, repository: &Repository) -> Resu
         });
     }
     Ok(!listed.stdout.is_empty())
+}
+
+/// The commit HEAD of `repository` is on, if it is on one.
+pub(crate) fn head(runner: &GitRunner, repository: &Repository) -> Result<Option<String>, Failure> {
+    let head = runner
+        .run(
+            &repository.root,
+            &["rev-parse", "--quiet", "--verify", "HEAD"],
+        )
+        .map_err(git_failed_to_start)?;
+    Ok(head
+        .success
+        .then(|| head.stdout_text().trim_end().to_owned()))
 }
 
 /// The revert or cherry-pick half done in `repository`, whose git directory is `git_dir`, if one

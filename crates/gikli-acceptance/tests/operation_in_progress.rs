@@ -336,8 +336,8 @@ fn a_stopped_rebase_raises_one_notification_that_offers_to_continue_or_abort() {
     assert_eq!(
         raised[0].actions,
         vec![
-            NotificationAction::ContinueOperation,
-            NotificationAction::AbortOperation
+            NotificationAction::ContinueRebase,
+            NotificationAction::AbortRebase
         ]
     );
 }
@@ -356,7 +356,7 @@ fn abort_in_the_notification_aborts_the_rebase_and_the_notification_goes() {
     let id = rebase_notifications(&gikli, &root)[0].id;
 
     let outcome = gikli
-        .act_on_notification(id, &NotificationAction::AbortOperation)
+        .act_on_notification(id, &NotificationAction::AbortRebase)
         .expect("abort the rebase");
 
     assert_eq!(outcome, NotificationOutcome::HeadMoved(root.clone()));
@@ -379,7 +379,7 @@ fn continue_in_the_notification_that_stops_again_raises_it_again() {
     let id = rebase_notifications(&gikli, &root)[0].id;
 
     gikli
-        .act_on_notification(id, &NotificationAction::ContinueOperation)
+        .act_on_notification(id, &NotificationAction::ContinueRebase)
         .expect("continue the rebase");
 
     let raised = rebase_notifications(&gikli, &root);
@@ -436,7 +436,7 @@ fn a_dismissed_notification_comes_back_for_the_next_rebase() {
 }
 
 #[test]
-fn a_stopped_revert_offers_to_continue_or_abort_and_can_be_aborted() {
+fn a_stopped_revert_offers_to_continue_skip_or_abort_and_can_be_aborted() {
     let sandbox = Sandbox::new();
     let work = diverged_twice(&sandbox);
     let before = commit_of(&work, "HEAD");
@@ -450,7 +450,11 @@ fn a_stopped_revert_offers_to_continue_or_abort_and_can_be_aborted() {
         operation,
         Some(OperationInProgress {
             kind: OperationKind::Revert,
-            actions: vec![OperationAction::Continue, OperationAction::Abort],
+            actions: vec![
+                OperationAction::Continue,
+                OperationAction::Skip,
+                OperationAction::Abort
+            ],
         })
     );
 
@@ -477,7 +481,7 @@ fn three_to_pick(sandbox: &Sandbox) -> TestRepository {
 }
 
 #[test]
-fn a_stopped_cherry_pick_offers_to_continue_or_abort() {
+fn a_stopped_cherry_pick_offers_to_continue_skip_or_abort() {
     let sandbox = Sandbox::new();
     let work = three_to_pick(&sandbox);
     assert!(!work.git_succeeds(&["cherry-pick", "other~2", "other~1", "other"]));
@@ -492,13 +496,17 @@ fn a_stopped_cherry_pick_offers_to_continue_or_abort() {
         operation,
         Some(OperationInProgress {
             kind: OperationKind::CherryPick,
-            actions: vec![OperationAction::Continue, OperationAction::Abort],
+            actions: vec![
+                OperationAction::Continue,
+                OperationAction::Skip,
+                OperationAction::Abort
+            ],
         })
     );
 }
 
 #[test]
-fn a_cherry_pick_sequence_stays_unfinished_after_a_commit_in_its_middle() {
+fn a_cherry_pick_sequence_is_still_in_progress_after_a_commit_in_its_middle() {
     let sandbox = Sandbox::new();
     let work = three_to_pick(&sandbox);
     assert!(!work.git_succeeds(&["cherry-pick", "other~2", "other~1", "other"]));
@@ -562,4 +570,113 @@ fn an_operation_in_progress_belongs_to_the_worktree_it_is_half_done_in() {
         in_linked.map(|operation| operation.kind),
         Some(OperationKind::Merge)
     );
+}
+
+#[test]
+fn a_cherry_pick_stopped_on_a_commit_left_empty_can_skip_it_and_pick_the_rest() {
+    let sandbox = Sandbox::new();
+    let work = three_to_pick(&sandbox);
+    assert!(!work.git_succeeds(&["cherry-pick", "other~2", "other~1", "other"]));
+    // Resolved to what HEAD already has, the commit picks nothing.
+    work.git(&["checkout", "--ours", "file.txt"]);
+    work.git(&["add", "file.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    assert_eq!(
+        gikli
+            .operation_in_progress(work.root(), &root)
+            .expect("read the operation in progress")
+            .map(|operation| operation.actions),
+        Some(vec![
+            OperationAction::Continue,
+            OperationAction::Skip,
+            OperationAction::Abort
+        ])
+    );
+
+    let operation = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Skip)
+        .expect("skip the commit");
+
+    assert_eq!(operation, None);
+    assert_eq!(subjects(&work), vec!["Three", "Two", "Ours", "Base"]);
+}
+
+#[test]
+fn continuing_a_resolved_revert_commits_it() {
+    let sandbox = Sandbox::new();
+    let work = diverged_twice(&sandbox);
+    assert!(!work.git_succeeds(&["revert", "--no-edit", "HEAD~1"]));
+    work.write("file.txt", "base again\n");
+    work.git(&["add", "file.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    let operation = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Continue)
+        .expect("continue the revert");
+
+    assert_eq!(operation, None);
+    assert_eq!(
+        subjects(&work),
+        vec!["Revert \"Ours\"", "Ours again", "Ours", "Base"]
+    );
+    assert_eq!(work.git(&["show", "HEAD:file.txt"]), "base again\n");
+}
+
+#[test]
+fn a_rebase_stopped_at_a_commit_to_edit_is_in_progress_and_continues() {
+    let sandbox = Sandbox::new();
+    let work = diverged(&sandbox);
+    work.git(&[
+        "-c",
+        "sequence.editor=sed -i -e s/^pick/edit/",
+        "rebase",
+        "--quiet",
+        "--interactive",
+        "HEAD~1",
+    ]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    assert_eq!(
+        gikli
+            .operation_in_progress(work.root(), &root)
+            .expect("read the operation in progress")
+            .map(|operation| operation.kind),
+        Some(OperationKind::Rebase)
+    );
+
+    let operation = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Continue)
+        .expect("continue the rebase");
+
+    assert_eq!(operation, None);
+    assert_eq!(
+        work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
+        "main"
+    );
+}
+
+#[test]
+fn a_cherry_pick_that_continues_onto_a_commit_left_empty_is_still_in_progress() {
+    let sandbox = Sandbox::new();
+    let work = three_to_pick(&sandbox);
+    // `main` already has what `Two` adds, so picking it picks nothing.
+    work.write("two.txt", "two\n");
+    work.commit_all("Two already");
+    assert!(!work.git_succeeds(&["cherry-pick", "other~2", "other~1", "other"]));
+    work.write("file.txt", "both\n");
+    work.git(&["add", "file.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    let operation = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Continue)
+        .expect("continue the cherry-pick");
+
+    assert_eq!(
+        operation.map(|operation| operation.kind),
+        Some(OperationKind::CherryPick)
+    );
+    assert_eq!(subjects(&work)[0], "Theirs");
 }

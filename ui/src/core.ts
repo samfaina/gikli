@@ -478,9 +478,9 @@ export type NotificationAction =
   /** Deletes `upstream`, which a deleted branch followed, on its remote too. */
   | { action: "deleteRemoteBranch"; upstream: RemoteBranch }
   /** Goes on with the stopped rebase. */
-  | { action: "continueOperation" }
+  | { action: "continueRebase" }
   /** Gives up the stopped rebase. */
-  | { action: "abortOperation" };
+  | { action: "abortRebase" };
 
 /** A long-lived message about a Project, with the actions the user can take on it. */
 export interface Notification {
@@ -498,7 +498,7 @@ export type NotificationOutcome =
   | { outcome: "branchesChanged"; payload: Repository }
   /** The commits a deleted branch took away, newest first. */
   | { outcome: "unmergedCommits"; payload: ListedCommit[] }
-  /** HEAD of the Repository moved, or the operation in progress there changed. */
+  /** HEAD of the Repository moved, as continuing or aborting a rebase moves it. */
   | { outcome: "headMoved"; payload: Repository };
 
 /** The two forms of the URL of a repository. The form it was typed in stays as it was typed. */

@@ -2,27 +2,11 @@
 // the current branch is from its upstream, and the operation half done there, with what the user can
 // do about it. The core reads them; this only draws them. What HEAD is on opens the branch selector.
 
-import {
-  currentBranch,
-  operationInProgress,
-  type CurrentBranch,
-  type OperationAction,
-  type OperationInProgress,
-  type Repository,
-  type Upstream,
-} from "./core";
+import { currentBranch, type CurrentBranch, type Repository, type Upstream } from "./core";
 import { element, folderName } from "./dom";
 import { SHORT_HASH_LENGTH } from "./log-details";
-import { operationInProgressView } from "./operation-in-progress";
+import { operationInProgressView, type OperationsHost } from "./operation-in-progress";
 import { t } from "./strings";
-
-/** What the status area needs to show the operations in progress. */
-export interface OperationsHost {
-  /** The folder of the Project the window shows, which the Repositories are of. */
-  project(): string | null;
-  /** Takes `action` on the operation half done in `repository`. */
-  take(repository: Repository, action: OperationAction): Promise<void>;
-}
 
 export interface StatusArea {
   /** Shows the status of `repositories`, in place of the ones shown before. */
@@ -80,14 +64,10 @@ export function createStatusArea(
     const { repository } = entry;
     let parts: HTMLElement[];
     try {
-      const project = operations.project();
-      const [head, operation] = await Promise.all([
-        currentBranch(repository),
-        project === null ? Promise.resolve(null) : operationInProgress(project, repository),
-      ]);
+      const [head, operation] = await Promise.all([currentBranch(repository), operations.read(repository)]);
       parts = describe(head, () => openBranches(repository));
       if (operation !== null) {
-        parts.push(operationPart(operation, (action) => operations.take(repository, action)));
+        parts.push(operationInProgressView(operation, (action) => operations.take(repository, action)));
       }
     } catch (error) {
       parts = [part("status-error", describeError(error))];
@@ -119,12 +99,6 @@ function describe(head: CurrentBranch, open: () => void): HTMLElement[] {
   branch.setAttribute("aria-controls", "branch-selector");
   branch.addEventListener("click", open);
   return head.kind === "detached" ? [branch] : [branch, upstreamPart(head.upstream)];
-}
-
-function operationPart(operation: OperationInProgress, take: (action: OperationAction) => Promise<void>): HTMLElement {
-  const view = operationInProgressView(operation, take);
-  view.dataset.testid = "status-operation";
-  return view;
 }
 
 function upstreamPart(upstream: Upstream | null): HTMLElement {

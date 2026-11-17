@@ -67,9 +67,9 @@ pub enum NotificationAction {
     /// Deletes `upstream`, which a deleted branch followed, on its remote too.
     DeleteRemoteBranch { upstream: RemoteBranch },
     /// Goes on with the stopped rebase, once the user resolved the conflicts it stopped on.
-    ContinueOperation,
+    ContinueRebase,
     /// Gives up the stopped rebase, and brings the branch back to where it was.
-    AbortOperation,
+    AbortRebase,
 }
 
 /// What acting on a notification changed.
@@ -82,7 +82,8 @@ pub enum NotificationOutcome {
     BranchesChanged(Repository),
     /// The commits a deleted branch took away, newest first.
     UnmergedCommits(Vec<ListedCommit>),
-    /// HEAD of the Repository moved, or the operation in progress there changed.
+    /// HEAD of the Repository moved, as continuing or aborting a rebase moves it, and the operation
+    /// in progress there may have changed or ended.
     HeadMoved(Repository),
 }
 
@@ -221,35 +222,33 @@ impl Notifications {
     /// again while what it says holds.
     pub fn dismiss(&self, id: u64) {
         let mut state = self.lock();
-        let Some(index) = state
-            .raised
-            .iter()
-            .position(|notification| notification.id == id)
-        else {
+        let Some(notification) = self.remove(&mut state, id) else {
             return;
         };
-        let notification = state.raised.remove(index);
         if !notification.kind.happened_once() {
             state
                 .dismissed
                 .push((notification.project, notification.kind));
         }
-        self.events.send(Event::NotificationRemoved { id });
     }
 
     /// Removes the notification `id`, when it is still raised, and announces it, as what it said
     /// was dealt with. Unlike [`Self::dismiss`], it may be raised again whenever it holds again.
     pub fn withdraw(&self, id: u64) {
         let mut state = self.lock();
-        let Some(index) = state
+        self.remove(&mut state, id);
+    }
+
+    /// Takes the notification `id` out of `state`, when it is still raised, announces it and
+    /// returns it.
+    fn remove(&self, state: &mut State, id: u64) -> Option<Notification> {
+        let index = state
             .raised
             .iter()
-            .position(|notification| notification.id == id)
-        else {
-            return;
-        };
-        state.raised.remove(index);
+            .position(|notification| notification.id == id)?;
+        let notification = state.raised.remove(index);
         self.events.send(Event::NotificationRemoved { id });
+        Some(notification)
     }
 
     /// Removes the notifications about `project` that say `kind`, which no longer holds, and

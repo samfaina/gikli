@@ -23,6 +23,7 @@ import {
   notifications,
   onCoreEvent,
   openProject,
+  operationInProgress,
   operationLog,
   pendingPrompts,
   readChanges,
@@ -92,8 +93,8 @@ import { createNewBranchDialog } from "./new-branch-dialog";
 import { createRenameBranchDialog } from "./rename-branch-dialog";
 import { createDeleteBranchesDialog } from "./delete-branches-dialog";
 import { createUnmergedCommitsView } from "./unmerged-commits";
-import { describeOperationAction, describeOperationKind } from "./operation-in-progress";
-import { createStatusArea, type OperationsHost } from "./status-area";
+import { describeOperationAction, describeOperationKind, type OperationsHost } from "./operation-in-progress";
+import { createStatusArea } from "./status-area";
 import { t, type StringKey } from "./strings";
 
 const openButton = element<HTMLButtonElement>("open-folder");
@@ -190,7 +191,7 @@ const logSection = element<HTMLElement>("log");
 
 /** What shows the operations half done in the Repositories of this window, and takes the actions on them. */
 const operationsHost: OperationsHost = {
-  project: () => shownFolder,
+  read: (repository) => (shownFolder === null ? Promise.resolve(null) : operationInProgress(shownFolder, repository)),
   take: async (repository, action) => {
     const project = shownFolder;
     if (project === null) {
@@ -1600,8 +1601,8 @@ function describeAction(action: NotificationAction): string {
     case "ignoreRepository":
     case "removeRepository":
     case "restoreBranches":
-    case "continueOperation":
-    case "abortOperation":
+    case "continueRebase":
+    case "abortRebase":
       return t(action.action);
     case "showUnmergedCommits":
       return t("showUnmergedCommits", { branch: action.branch });

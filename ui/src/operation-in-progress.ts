@@ -2,9 +2,17 @@
 // show it, with a button for each thing the user can do about it. The core tells what is half done and what it offers, and takes
 // the action; this only draws them.
 
-import type { OperationAction, OperationInProgress, OperationKind } from "./core";
+import type { OperationAction, OperationInProgress, OperationKind, Repository } from "./core";
 import type { StringKey } from "./strings";
 import { t } from "./strings";
+
+/** What the views that show the operations in progress need from the window around them. */
+export interface OperationsHost {
+  /** The operation half done in `repository`, a Repository of the Project the window shows, or null. */
+  read(repository: Repository): Promise<OperationInProgress | null>;
+  /** Takes `action` on the operation half done in `repository`. */
+  take(repository: Repository, action: OperationAction): Promise<void>;
+}
 
 const KIND_LABELS: Record<OperationKind, StringKey> = {
   merge: "operationInProgressMerge",

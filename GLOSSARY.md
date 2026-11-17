@@ -65,7 +65,7 @@ The commits of the local branch that its upstream does not have yet: what a push
 _Avoid_: Ahead (git's word for it), unpushed
 
 **Status area**:
-The strip at the foot of every window that always shows what HEAD of each Repository is on, with the incoming and outgoing commits of the current branch.
+The strip at the foot of every window that always shows what HEAD of each Repository is on, with the incoming and outgoing commits of the current branch and the Operation in progress there.
 _Avoid_: Status bar, footer
 
 **Cut history**:
@@ -75,7 +75,7 @@ _Avoid_: Truncated history, partial history, grafts (an old git mechanism)
 ## Branches
 
 **Branch selector**:
-The list that opens from what HEAD is on in the Status area, with every branch and tag of a Repository in the groups Recent, Local, Remote and Tags, and a search across them.
+The list that opens from what HEAD is on in the Status area, with the Operation in progress there, every branch and tag of a Repository in the groups Recent, Local, Remote and Tags, and a search across them.
 _Avoid_: Branch popup, branch menu
 
 **Recent branches**:

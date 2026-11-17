@@ -1,14 +1,14 @@
 // The branch selector: opened from the current branch in the status area, it shows what HEAD is
 // on with the operation half done there, and every branch and tag in the groups Recent, Local,
-// Remote and Tags, with a search across them. Picking a local branch or a tag checks it out, and a new branch starts from HEAD. The core
-// lists, groups and searches them, and checks them out; this draws them and keeps the options.
+// Remote and Tags, with a search across them. Picking a local branch or a tag checks it out, and a
+// new branch starts from HEAD. The core lists, groups and searches them, and checks them out; this
+// draws them and keeps the options.
 
 import { branchGroup, branchList, flatBranchList, upstreamMark, type BranchActions } from "./branch-tree";
 import {
   branches as readBranches,
   checkOutBranch,
   checkOutTag,
-  operationInProgress,
   setGroupBranchesByDirectory,
   setShowRecentBranches,
   setShowTagsInBranchSelector,
@@ -24,8 +24,7 @@ import {
 } from "./core";
 import { element, folderName } from "./dom";
 import { SHORT_HASH_LENGTH } from "./log-details";
-import { operationInProgressView } from "./operation-in-progress";
-import type { OperationsHost } from "./status-area";
+import { operationInProgressView, type OperationsHost } from "./operation-in-progress";
 import { t } from "./strings";
 
 /** What the branch selector needs from the window around it. */
@@ -165,11 +164,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     const reading = ++latestRead;
     const search = searchInput.value;
     try {
-      const project = host.operations.project();
-      const [listed, operation] = await Promise.all([
-        readBranches(shown, search),
-        project === null ? Promise.resolve(null) : operationInProgress(project, shown),
-      ]);
+      const [listed, operation] = await Promise.all([readBranches(shown, search), host.operations.read(shown)]);
       if (reading === latestRead) {
         draw(shown, listed, operation, search);
       }
