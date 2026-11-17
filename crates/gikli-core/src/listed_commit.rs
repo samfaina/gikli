@@ -18,7 +18,7 @@ pub struct ListedCommit {
     /// When it was committed, in seconds since the epoch.
     pub committed_at: i64,
     /// Whether someone other than the user wrote it: its author does not have the email of their
-    /// Commit identity. The dialog marks it with `*`. Without an email, no commit is marked.
+    /// Commit identity. The push dialog marks it with `*`. Without an email, no commit is marked.
     pub by_other_author: bool,
 }
 

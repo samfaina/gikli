@@ -220,8 +220,9 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
         row.dataset.hash = commit.hash;
         row.setAttribute("role", "option");
         // A commit someone else wrote carries `*`, so the user notices they publish another's work.
-        const subject = fillCommitRow(row, commit, commit.byOtherAuthor ? `* ${commit.subject}` : commit.subject);
+        const subject = fillCommitRow(row, commit);
         if (commit.byOtherAuthor) {
+          subject.textContent = `* ${commit.subject}`;
           subject.dataset.testid = "push-commit-other-author";
           subject.title = t("pushOtherAuthor", { author: commit.author });
         }

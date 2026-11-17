@@ -7,18 +7,18 @@ import { SHORT_HASH_LENGTH } from "./log-details";
 const dates = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
 
 /**
- * Fills `row` with the hash, subject, author and date cells of `commit`, showing `subject` as its
- * subject, and returns the subject cell for the caller to mark.
+ * Fills `row` with the hash, subject, author and date cells of `commit`, and returns the subject
+ * cell for the caller to mark.
  */
-export function fillCommitRow(row: HTMLElement, commit: ListedCommit, subject = commit.subject): HTMLElement {
-  const subjectCell = cell("log-subject", subject);
+export function fillCommitRow(row: HTMLElement, commit: ListedCommit): HTMLElement {
+  const subject = cell("log-subject", commit.subject);
   row.append(
     cell("log-hash", commit.hash.slice(0, SHORT_HASH_LENGTH), commit.hash),
-    subjectCell,
+    subject,
     cell("log-author", commit.author),
     cell("log-date", dates.format(new Date(commit.committedAt * 1000))),
   );
-  return subjectCell;
+  return subject;
 }
 
 /** A cell showing `text`, and all of `full` as its tooltip. */
