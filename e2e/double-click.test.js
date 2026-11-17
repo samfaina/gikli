@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { remote } from "webdriverio";
 
 import { doubleClickUntilDisplayed } from "./double-click.js";
+import { bringIntoViewBeforePointerActions } from "./into-view.js";
 
 const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
 const ROW = '[data-testid="change"][data-path="smoke file.txt"]';
@@ -37,10 +38,11 @@ function reply(response, value, status = 200) {
  * - `failure`: the WebDriver error every double-click gets, as `{ error, message }`.
  * - `opensAfter`: how many ms the diff takes to open after the double-click that opens it.
  *
- * `doubleClicks` holds the element id of each double-click received, in order.
+ * `doubleClicks` holds the element id of each double-click received, in order, and `targeted` that
+ * of each double-click and each scroll into view before one.
  */
 function changesViewServer({ rebuildsAfterFind = 0, lostDoubleClicks = 0, failure, opensAfter = 0 } = {}) {
-  const state = { doubleClicks: [], rebuilds: rebuildsAfterFind, lost: lostDoubleClicks, row: 1, diffOpen: false };
+  const state = { doubleClicks: [], targeted: [], rebuilds: rebuildsAfterFind, lost: lostDoubleClicks, row: 1, diffOpen: false };
 
   const find = (selector) => {
     const id = selector === ROW ? `row-${state.row}` : "diff";
@@ -73,6 +75,7 @@ function changesViewServer({ rebuildsAfterFind = 0, lostDoubleClicks = 0, failur
     } else if (route === "POST /actions") {
       const id = body.actions[0].actions.find((action) => action.type === "pointerMove").origin[ELEMENT_KEY];
       state.doubleClicks.push(id);
+      state.targeted.push(id);
       if (failure !== undefined) {
         reply(response, failure, 500);
       } else if (id !== `row-${state.row}`) {
@@ -84,6 +87,15 @@ function changesViewServer({ rebuildsAfterFind = 0, lostDoubleClicks = 0, failur
           setTimeout(() => (state.diffOpen = true), opensAfter);
         }
         reply(response, null);
+      }
+    } else if (route === "POST /execute/sync" && body.script.includes("scrollIntoView")) {
+      // The scroll into view before a double-click, which meets a stale row as the double-click would.
+      const id = body.args[0][ELEMENT_KEY];
+      state.targeted.push(id);
+      if (id === `row-${state.row}`) {
+        reply(response, null);
+      } else {
+        reply(response, STALE, 404);
       }
     } else if (route === "POST /execute/sync") {
       // WebdriverIO's isDisplayed runs its checks as scripts.
@@ -98,14 +110,17 @@ function changesViewServer({ rebuildsAfterFind = 0, lostDoubleClicks = 0, failur
   return { server, state };
 }
 
-/** Starts `server` and a WebdriverIO session on it, both ended when the test `t` ends. */
+/**
+ * Starts `server` and a WebdriverIO session on it, both ended when the test `t` ends. The session
+ * brings an element into view before a pointer action on it, as the smoke test's does.
+ */
 async function connect(t, server) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => {
     server.closeAllConnections();
     server.close();
   });
-  return remote({
+  const browser = await remote({
     hostname: "127.0.0.1",
     port: server.address().port,
     path: "/",
@@ -113,6 +128,8 @@ async function connect(t, server) {
     connectionRetryCount: 0,
     capabilities: { browserName: "mock", "wdio:enforceWebDriverClassic": true },
   });
+  bringIntoViewBeforePointerActions(browser);
+  return browser;
 }
 
 describe("doubleClickUntilDisplayed", () => {
@@ -124,7 +141,7 @@ describe("doubleClickUntilDisplayed", () => {
 
     assert.equal(diff.elementId, "diff");
     assert.equal(state.diffOpen, true);
-    assert.equal(state.doubleClicks.at(0), "row-1");
+    assert.equal(state.targeted.at(0), "row-1");
     assert.equal(state.doubleClicks.at(-1), "row-2");
   });
 
@@ -135,7 +152,7 @@ describe("doubleClickUntilDisplayed", () => {
     await assert.rejects(doubleClickUntilDisplayed(browser, ROW, DIFF, QUICK_RETRIES), { name: "stale element reference" });
 
     // WebdriverIO repeats each attempt with the same id, so an attempt is a distinct id.
-    assert.equal(new Set(state.doubleClicks).size, QUICK_RETRIES.attempts);
+    assert.equal(new Set(state.targeted).size, QUICK_RETRIES.attempts);
     assert.equal(state.diffOpen, false);
   });
 

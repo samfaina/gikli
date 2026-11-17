@@ -18,6 +18,7 @@ import { SevereServiceError } from "webdriverio";
 
 import { appEnvironment } from "./app-environment.js";
 import { attachPort, respondsBefore, waitForDevTools } from "./attach.js";
+import { bringIntoViewBeforePointerActions } from "./into-view.js";
 import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -304,6 +305,12 @@ export const config = {
       env: appEnvironment(process.env),
     });
     await new Promise((resolve) => setTimeout(resolve, 1000));
+  },
+
+  // For every spec: WebKitGTK's WebDriver does not scroll an element into view before a pointer
+  // action, so a case would pass on Windows and fail on Linux once its target is out of view.
+  before: (capabilities, specs, browser) => {
+    bringIntoViewBeforePointerActions(browser);
   },
 
   afterSession: () => {

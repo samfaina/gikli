@@ -419,6 +419,38 @@ describe("gikli", () => {
       await expectDiffStaysOn(SECOND_FILE);
       await closeDiff();
     });
+
+    // On Linux, WebKitGTK's WebDriver does not scroll a row into view before the double-click.
+    it("opens the diff of a file whose row starts below the window", async () => {
+      const setting = $('[data-testid="use-credential-helper"]');
+      if (!(await setting.isDisplayed())) {
+        await $('[data-testid="toggle-settings"]').click();
+      }
+      await setting.waitForDisplayed({ timeout: 30000 });
+      const row = `[data-testid="change"][data-path="${FIRST_FILE}"]`;
+      await $(row).waitForDisplayed({ timeout: 30000 });
+      // The settings taller than the window push the Project below it, whatever the layout caps them at.
+      const rowTop = await browser.execute((selector) => {
+        const settings = document.getElementById("settings");
+        settings.style.maxHeight = "none";
+        settings.style.height = "150vh";
+        document.querySelector(".window-body").scrollTop = 0;
+        return document.querySelector(selector).getBoundingClientRect().top - window.innerHeight;
+      }, row);
+      try {
+        assert.ok(rowTop >= 0, `the row starts ${-rowTop} px above the bottom of the window`);
+
+        await openDiff(FIRST_FILE);
+
+        await closeDiff();
+      } finally {
+        await browser.execute(() => {
+          const settings = document.getElementById("settings");
+          settings.style.removeProperty("max-height");
+          settings.style.removeProperty("height");
+        });
+      }
+    });
   });
 
   // After the cases that count on which Changelist is active.
