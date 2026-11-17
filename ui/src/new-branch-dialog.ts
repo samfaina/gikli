@@ -135,7 +135,12 @@ export function createNewBranchDialog(host: NewBranchDialogHost): NewBranchDialo
     createButton.disabled = true;
     message.textContent = t("newBranchCreating");
     try {
-      await createBranch(current.repository, nameInput.value, current.base, checkOutInput.checked);
+      // Cleaned here too, as a name pasted and created at once may not have been yet.
+      const name = await cleanBranchName(nameInput.value);
+      if (shown === current) {
+        nameInput.value = name;
+      }
+      await createBranch(current.repository, name, current.base, checkOutInput.checked);
       host.branchesMoved(current.repository);
       if (shown === current) {
         close();

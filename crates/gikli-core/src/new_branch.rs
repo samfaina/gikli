@@ -99,9 +99,9 @@ fn within_remote<'a>(name: &'a str, remotes: &[String]) -> Option<&'a str> {
 
 /// Checks that git takes `name` for a new branch of `repository` as it is, and that no branch has
 /// it yet. As it is means that `git check-ref-format --branch` accepts it and does not expand it to
-/// another name, as it does `@{-1}` to the branch checked out before. `HEAD` is no name for a branch either, which older
-/// git does not say. Any other name returns [`Failure::BranchNameInvalid`], and the name of
-/// a branch there is [`Failure::BranchNameTaken`].
+/// another name, as it does `@{-1}` to the branch checked out before. `HEAD` is no name for a
+/// branch either, which older git does not say. Any other name returns
+/// [`Failure::BranchNameInvalid`], and the name of a branch there is [`Failure::BranchNameTaken`].
 pub(crate) fn check_name(
     runner: &GitRunner,
     repository: &Repository,
@@ -130,20 +130,7 @@ pub(crate) fn has_local_branch(
     repository: &Repository,
     name: &str,
 ) -> Result<bool, Failure> {
-    let reference = format!("refs/heads/{name}");
-    Ok(runner
-        .run(
-            &repository.root,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                "--end-of-options",
-                &reference,
-            ],
-        )
-        .map_err(git_failed_to_start)?
-        .success)
+    details::exists(runner, repository, &format!("refs/heads/{name}"))
 }
 
 /// The revision a new branch of `repository` starts from at `base`, once it is known to name a
@@ -154,18 +141,8 @@ pub(crate) fn start_point(
     base: &NewBranchBase,
 ) -> Result<String, Failure> {
     let revision = base.revision();
-    match details::resolve(runner, repository, &revision) {
-        Ok(_) => Ok(revision),
-        Err(Failure::RevisionNotFound { .. }) => Err(Failure::RevisionNotFound {
-            revision: base.name().to_owned(),
-        }),
-        Err(failure) => Err(failure),
-    }
-}
-
-/// The arguments of the git that creates the branch `name` at `start` and checks it out.
-pub(crate) fn create_and_check_out_args<'a>(name: &'a str, start: &'a str) -> [&'a str; 4] {
-    ["switch", "--create", name, start]
+    details::resolve_known_as(runner, repository, &revision, base.name())?;
+    Ok(revision)
 }
 
 /// Creates the branch `name` of `repository` at `start`, without checking it out.

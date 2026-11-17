@@ -44,6 +44,10 @@ fn a_new_branch_from_head_stays_unchecked_out_unless_asked() {
         .expect("create the branch");
 
     assert_eq!(head, on_branch("main"), "HEAD stays where it was");
+    assert_eq!(
+        work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
+        "main"
+    );
     assert_eq!(commit_of(&work, "feature/login"), commit_of(&work, "HEAD"));
 }
 
@@ -107,6 +111,10 @@ fn a_new_branch_from_a_commit_starts_at_that_commit() {
         .expect("create the branch");
 
     assert_eq!(head, on_branch("from-first"));
+    assert_eq!(
+        work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
+        "from-first"
+    );
     assert_eq!(commit_of(&work, "from-first"), first);
 }
 
@@ -259,8 +267,8 @@ fn the_name_field_suggests_prefixes_from_existing_branches() {
     assert_eq!(prefixes("feature/login"), Vec::<String>::new());
 }
 
-/// git sets the remote branch as the upstream of a branch started from it, as `branch.autoSetupMerge`
-/// says by default.
+/// git sets the remote branch as the upstream of a branch started from it, as
+/// `branch.autoSetupMerge` says by default.
 #[test]
 fn a_new_branch_from_a_remote_branch_follows_it_as_git_is_configured() {
     let sandbox = Sandbox::new();
@@ -294,5 +302,10 @@ fn a_new_branch_from_a_remote_branch_follows_it_as_git_is_configured() {
                 }),
             }),
         }
+    );
+    assert_eq!(
+        work.git(&["rev-parse", "--abbrev-ref", "feature/x@{upstream}"])
+            .trim(),
+        "origin/feature/x"
     );
 }

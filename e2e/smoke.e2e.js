@@ -296,7 +296,8 @@ describe("gikli", () => {
     const target = path.join(sandbox, "cancelled clone");
     const windowsBefore = await browser.getWindowHandles();
 
-    fs.writeFileSync(path.join(sandbox, "block-post-checkout"), "");
+    const block = path.join(sandbox, "block-post-checkout");
+    fs.writeFileSync(block, "");
     await $('[data-testid="toggle-clone"]').click();
     await startClone(target);
 
@@ -312,6 +313,9 @@ describe("gikli", () => {
       timeout: 30000,
       timeoutMsg: "the operation stayed in the view",
     });
+    // gikli shows the hook as git starts it, so the cancel can end the hook before it took the
+    // marker away, and the next checkout, such as one from the branch selector, would block.
+    fs.rmSync(block, { force: true });
     await inNewWindow(windowsBefore, async () => {
       await expectRepositoryRoot(target);
       const notification = await $('[data-testid="notification"][data-kind="hookNotFinished"]');
@@ -769,7 +773,9 @@ describe("gikli", () => {
           await selector.waitForDisplayed({ timeout: 30000, reverse: true });
         } catch {
           // A checkout that failed says why in the selector.
-          throw new Error(`the selector stayed open: ${await $('[data-testid="branch-selector-groups"]').getText()}`);
+          const said = await $('[data-testid="branch-selector-groups"]').getText();
+          const running = await $('[data-testid="operations"]').getProperty("textContent");
+          throw new Error(`the selector stayed open: ${said} (running: ${running})`);
         }
         await expectStatusBranch(name);
         assert.equal(onBranch(), name);

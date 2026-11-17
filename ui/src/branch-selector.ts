@@ -212,20 +212,23 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     progress.className = "branch-selector-empty";
     progress.textContent = t("branchSelectorCheckingOut", { target: name });
     groups.replaceChildren(progress);
+    let failure: { error: unknown } | null = null;
     try {
       await (kind === "local" ? checkOutBranch(shown, name) : checkOutTag(shown, name));
-      checkingOut = false;
-      host.headMoved(shown);
-      if (repository === shown) {
-        close();
-      }
     } catch (error) {
+      failure = { error };
+    } finally {
       checkingOut = false;
       // A checkout that failed may still have moved HEAD, as when a hook after it fails.
       host.headMoved(shown);
-      if (repository === shown) {
-        groups.replaceChildren(host.errorView(error));
-      }
+    }
+    if (repository !== shown) {
+      return;
+    }
+    if (failure === null) {
+      close();
+    } else {
+      groups.replaceChildren(host.errorView(failure.error));
     }
   }
 

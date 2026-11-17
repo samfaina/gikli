@@ -58,7 +58,7 @@ export interface LogView {
   /** Shows the log of `repository`, opening it if it is not shown, at the latest commit of `branch`. */
   showBranch(repository: Repository, branch: RefLabel): void;
   /** Reads the log of `repository` again, with its branches, when it is the one shown. */
-  refresh(repository: Repository): void;
+  refreshIfShown(repository: Repository): void;
   /** Goes back to the changes view. */
   close(): void;
 }
@@ -262,7 +262,7 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  function refreshShown(toRefresh: Repository): void {
+  function refreshIfShown(toRefresh: Repository): void {
     if (repository?.root === toRefresh.root && !view.hidden) {
       refresh();
     }
@@ -735,7 +735,7 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  return { open, showBranch, refresh: refreshShown, close };
+  return { open, showBranch, refreshIfShown, close };
 }
 
 /** Lets the core go of the read that the page at `cursor` goes on with, which the log does not read, if any. Nothing depends on it. */

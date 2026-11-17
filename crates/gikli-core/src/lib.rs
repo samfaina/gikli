@@ -2187,7 +2187,7 @@ impl Gikli {
             new_branch::create(&runner, repository, name, &start)?;
             return sync::current_branch(&runner, repository);
         }
-        let args = new_branch::create_and_check_out_args(name, &start);
+        let args = ["switch", "--create", name, &start];
         let fallback = new_branch::not_created(repository, name);
         self.check_out(&runner, repository, name, &args, fallback)
     }
@@ -2208,10 +2208,13 @@ impl Gikli {
             });
         }
         let args = ["switch", "--no-guess", name];
-        let fallback = Failure::CheckoutFailed {
-            folder: repository.root.clone(),
-        };
-        self.check_out(&runner, repository, name, &args, fallback)
+        self.check_out(
+            &runner,
+            repository,
+            name,
+            &args,
+            checkout_failed(repository),
+        )
     }
 
     /// Checks out the tag `name` of `repository`, which leaves a detached HEAD on the commit it
@@ -2252,18 +2255,15 @@ impl Gikli {
         revision: &str,
     ) -> Result<CurrentBranch, Failure> {
         let runner = self.runner(&repository.root)?;
-        let hash =
-            details::resolve(&runner, repository, revision).map_err(|failure| match failure {
-                Failure::RevisionNotFound { .. } => Failure::RevisionNotFound {
-                    revision: target.to_owned(),
-                },
-                failure => failure,
-            })?;
+        let hash = details::resolve_known_as(&runner, repository, revision, target)?;
         let args = ["switch", "--detach", &hash];
-        let fallback = Failure::CheckoutFailed {
-            folder: repository.root.clone(),
-        };
-        self.check_out(&runner, repository, target, &args, fallback)
+        self.check_out(
+            &runner,
+            repository,
+            target,
+            &args,
+            checkout_failed(repository),
+        )
     }
 
     /// Runs git with `args`, a checkout of `target` in `repository`, as a [`LongOperation`], and
@@ -2323,17 +2323,12 @@ impl Gikli {
         repository: &Repository,
         branch: &RefLabel,
     ) -> Result<String, Failure> {
-        details::resolve(
+        details::resolve_known_as(
             &self.runner(&repository.root)?,
             repository,
             &branch.full_name(),
+            &branch.name,
         )
-        .map_err(|failure| match failure {
-            Failure::RevisionNotFound { .. } => Failure::RevisionNotFound {
-                revision: branch.name.clone(),
-            },
-            failure => failure,
-        })
     }
 
     /// Whether the log of `repository` filtered by `filter` reaches the commit `hash`, which
@@ -2843,6 +2838,13 @@ fn failure_of_contacting(
     match explainer::explain_contacting(runner, folder, invocation, contacted) {
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,
+    }
+}
+
+/// The failure of git that could not check out a branch, a tag or a commit in `repository`.
+fn checkout_failed(repository: &Repository) -> Failure {
+    Failure::CheckoutFailed {
+        folder: repository.root.clone(),
     }
 }
 

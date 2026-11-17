@@ -217,7 +217,7 @@ const newBranchDialog = createNewBranchDialog({
 function headMoved(repository: Repository): void {
   statusArea.refresh(repository.root);
   shownRepositories.get(repository.root)?.refresh();
-  logView.refresh(repository);
+  logView.refreshIfShown(repository);
 }
 
 /** The views the file history took the place of, which come back when it closes. */

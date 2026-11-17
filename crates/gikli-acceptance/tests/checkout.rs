@@ -56,7 +56,7 @@ fn checking_out_a_local_branch_switches_to_it() {
     assert_eq!(commit_of(&work, "HEAD"), commit_of(&work, "feature/login"));
 }
 
-/// git would otherwise create a local branch that tracks a remote branch of that name, which
+/// git would otherwise create a local branch that follows a remote branch of that name, which
 /// checking out a remote branch does.
 #[test]
 fn checking_out_a_local_branch_deleted_since_says_so() {

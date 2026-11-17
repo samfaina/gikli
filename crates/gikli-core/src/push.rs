@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::GitRunner;
 use crate::log::run_git;
 use crate::sync::{configured, fetch_destinations, fetched_from, remotes};
-use crate::{Failure, Repository, commit, git_failed_to_start};
+use crate::{Failure, Repository, commit, details, git_failed_to_start};
 
 /// Where a push sends the current branch: the branch `branch` of the remote `remote`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,7 +155,7 @@ pub(crate) fn plan(
             for destination in fetch_destinations(runner, repository, &target.remote)? {
                 if destination.contains('*') {
                     revisions.push(format!("--glob={destination}"));
-                } else if exists(runner, repository, &destination)? {
+                } else if details::exists(runner, repository, &destination)? {
                     revisions.push(destination);
                 }
             }
@@ -237,7 +237,7 @@ pub(crate) fn current_branch(
     else {
         return Err(Failure::DetachedHeadNotPushed);
     };
-    if !exists(runner, repository, &format!("refs/heads/{branch}"))? {
+    if !details::exists(runner, repository, &format!("refs/heads/{branch}"))? {
         return Err(Failure::BranchWithoutCommits {
             branch: branch.to_owned(),
         });
@@ -297,20 +297,9 @@ fn remote_branch(
     let reference = format!("refs/heads/{}", target.branch);
     let fetched = fetched_from(runner, repository, &target.remote, &reference)?;
     match fetched {
-        Some(fetched) if exists(runner, repository, &fetched)? => Ok(Some(fetched)),
+        Some(fetched) if details::exists(runner, repository, &fetched)? => Ok(Some(fetched)),
         _ => Ok(None),
     }
-}
-
-/// Whether the reference `reference` exists in `repository`.
-fn exists(runner: &GitRunner, repository: &Repository, reference: &str) -> Result<bool, Failure> {
-    Ok(runner
-        .run(
-            &repository.root,
-            &["rev-parse", "--verify", "--quiet", reference],
-        )
-        .map_err(git_failed_to_start)?
-        .success)
 }
 
 /// What git prints of each commit, a field per NUL, with `-z` putting a NUL between commits too.
