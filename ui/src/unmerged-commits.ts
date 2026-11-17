@@ -3,7 +3,7 @@
 
 import type { ListedCommit } from "./core";
 import { element } from "./dom";
-import { SHORT_HASH_LENGTH } from "./log-details";
+import { fillCommitRow } from "./listed-commit";
 import { t } from "./strings";
 
 export interface UnmergedCommitsView {
@@ -12,8 +12,6 @@ export interface UnmergedCommitsView {
   /** Closes the view. */
   close(): void;
 }
-
-const dates = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
 
 export function createUnmergedCommitsView(): UnmergedCommitsView {
   const view = element<HTMLElement>("unmerged-commits");
@@ -38,19 +36,7 @@ export function createUnmergedCommitsView(): UnmergedCommitsView {
         item.className = "push-commit";
         item.dataset.testid = "unmerged-commit";
         item.dataset.hash = commit.hash;
-        const cell = (className: string, text: string, full = text): HTMLElement => {
-          const made = document.createElement("span");
-          made.className = className;
-          made.textContent = text;
-          made.title = full;
-          return made;
-        };
-        item.append(
-          cell("log-hash", commit.hash.slice(0, SHORT_HASH_LENGTH), commit.hash),
-          cell("log-subject", commit.subject),
-          cell("log-author", commit.author),
-          cell("log-date", dates.format(new Date(commit.committedAt * 1000))),
-        );
+        fillCommitRow(item, commit);
         return item;
       }),
     );

@@ -20,7 +20,8 @@ import {
 } from "./core";
 import { createDiffPreview } from "./diff-view";
 import { element, folderName } from "./dom";
-import { note, SHORT_HASH_LENGTH } from "./log-details";
+import { fillCommitRow } from "./listed-commit";
+import { note } from "./log-details";
 import { t } from "./strings";
 
 /** What the push dialog needs from the window around it. */
@@ -44,8 +45,6 @@ export interface PushDialog {
 
 /** How long the target waits for the user to stop typing before the commits are read again. */
 const TARGET_TYPING_PAUSE_MS = 300;
-
-const dates = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
 
 export function createPushDialog(host: PushDialogHost): PushDialog {
   const view = element<HTMLElement>("push-dialog");
@@ -220,25 +219,13 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
         row.dataset.index = String(index);
         row.dataset.hash = commit.hash;
         row.setAttribute("role", "option");
-        const cell = (className: string, text: string, full = text): HTMLElement => {
-          const made = document.createElement("span");
-          made.className = className;
-          made.textContent = text;
-          made.title = full;
-          return made;
-        };
         // A commit someone else wrote carries `*`, so the user notices they publish another's work.
-        const subject = cell("log-subject", commit.byOtherAuthor ? `* ${commit.subject}` : commit.subject);
+        const subject = fillCommitRow(row, commit);
         if (commit.byOtherAuthor) {
+          subject.textContent = `* ${commit.subject}`;
           subject.dataset.testid = "push-commit-other-author";
           subject.title = t("pushOtherAuthor", { author: commit.author });
         }
-        row.append(
-          cell("log-hash", commit.hash.slice(0, SHORT_HASH_LENGTH), commit.hash),
-          subject,
-          cell("log-author", commit.author),
-          cell("log-date", dates.format(new Date(commit.committedAt * 1000))),
-        );
         row.addEventListener("click", () => {
           select(commit);
           commitList.focus();

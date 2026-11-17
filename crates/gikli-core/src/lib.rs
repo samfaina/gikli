@@ -17,6 +17,7 @@ mod file_history;
 mod git;
 mod host;
 mod in_progress;
+mod listed_commit;
 mod log;
 mod new_branch;
 mod notifications;
@@ -64,6 +65,7 @@ pub use explainer::{ExplainedMessage, Explanation, FailureAction, NextStep};
 pub use file_history::{FileHistory, FileRevision};
 pub use host::HostEnvironment;
 pub use in_progress::{OperationAction, OperationInProgress, OperationKind};
+pub use listed_commit::ListedCommit;
 pub use log::{
     GraphArrow, GraphLine, GraphRow, LOG_SEARCH_BATCH, LONG_EDGE, LogCursor, LogFilter, LogPage,
     LogRow, RefKind, RefLabel, TextSearch,
@@ -73,7 +75,7 @@ pub use notifications::{Notification, NotificationAction, NotificationKind, Noti
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
-pub use push::{ListedCommit, PushAfterCommit, PushPlan, PushTags, PushTarget};
+pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
 pub use status::{
