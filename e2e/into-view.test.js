@@ -5,24 +5,12 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { describe, it } from "node:test";
-import { remote } from "webdriverio";
 
 import { bringIntoViewBeforePointerActions } from "./into-view.js";
+import { connect, ELEMENT_KEY, readJson, reply } from "./webdriver-stand-in.js";
 
-const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
 const OUT_OF_BOUNDS = { error: "move target out of bounds", message: "move target out of bounds" };
 
-async function readJson(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-  return chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString());
-}
-
-function reply(response, value, status = 200) {
-  response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ value }));
-}
 
 /**
  * A WebDriver server whose page holds an element for each selector, every one below the visible
@@ -80,23 +68,6 @@ function pageBelowTheFoldServer() {
   return { server, state };
 }
 
-/** Starts `server` and a WebdriverIO session on it, both ended when the test `t` ends. */
-async function connect(t, server) {
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => {
-    server.closeAllConnections();
-    server.close();
-  });
-  return remote({
-    hostname: "127.0.0.1",
-    port: server.address().port,
-    path: "/",
-    logLevel: "silent",
-    connectionRetryCount: 0,
-    capabilities: { browserName: "mock", "wdio:enforceWebDriverClassic": true },
-  });
-}
-
 describe("bringIntoViewBeforePointerActions", () => {
   it("double-clicks an element that starts below the visible area", async (t) => {
     const { server, state } = pageBelowTheFoldServer();
@@ -142,6 +113,17 @@ describe("bringIntoViewBeforePointerActions", () => {
 
     assert.deepEqual(state.refused, []);
     assert.equal(state.received.length, 1);
+    assert.deepEqual(state.received[0].targets, ["row", "list"]);
+  });
+
+  it("drags an element to another given as the query that finds it", async (t) => {
+    const { server, state } = pageBelowTheFoldServer();
+    const browser = await connect(t, server);
+    bringIntoViewBeforePointerActions(browser);
+
+    await (await browser.$("row")).dragAndDrop(browser.$("list"));
+
+    assert.deepEqual(state.refused, []);
     assert.deepEqual(state.received[0].targets, ["row", "list"]);
   });
 });

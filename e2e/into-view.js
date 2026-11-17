@@ -4,12 +4,19 @@
 
 /**
  * The element commands that move the pointer to an element, each with the elements it moves to:
- * the one it runs on, and for a drag the one it drops on, unless that is a point.
+ * the one it runs on, and for a drag the one it drops on, unless that is a point. A drag's target
+ * may come as the query that finds it, which dragAndDrop awaits too.
+ *
+ * A drag needs both in view at once, which scrolling each into view in turn gives only when the
+ * window can show both.
  */
 const POINTER_COMMANDS = {
-  click: (element) => [element],
-  doubleClick: (element) => [element],
-  dragAndDrop: (element, [target]) => (typeof target?.elementId === "string" ? [element, target] : [element]),
+  click: async (element) => [element],
+  doubleClick: async (element) => [element],
+  dragAndDrop: async (element, [target]) => {
+    const dropTarget = await target;
+    return typeof dropTarget?.elementId === "string" ? [element, dropTarget] : [element];
+  },
 };
 
 /** Scrolls each scrolling container holding `element` just enough to show it. */
@@ -26,7 +33,7 @@ export function bringIntoViewBeforePointerActions(browser) {
     browser.overwriteCommand(
       command,
       async function (original, ...args) {
-        for (const element of targets(this, args)) {
+        for (const element of await targets(this, args)) {
           await bringIntoView(browser, element);
         }
         return original(...args);
