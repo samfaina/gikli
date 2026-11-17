@@ -87,6 +87,7 @@ import { createFileHistoryView } from "./file-history";
 import { createPushDialog } from "./push-dialog";
 import { createLogView } from "./log-view";
 import { createBranchSelector } from "./branch-selector";
+import { createNewBranchDialog } from "./new-branch-dialog";
 import { createStatusArea } from "./status-area";
 import { t, type StringKey } from "./strings";
 
@@ -193,12 +194,31 @@ const logView = createLogView({
     projectView.hidden = false;
   },
   showFileHistory: (repository, path) => fileHistoryView.open(repository, path),
+  newBranch: (repository, base, baseName) => newBranchDialog.open(repository, base, baseName),
+  headMoved: (repository) => headMoved(repository),
 });
 
 const branchSelector = createBranchSelector({
   errorView,
   showBranch: (repository, branch) => logView.showBranch(repository, branch.label),
+  newBranch: (repository) => newBranchDialog.open(repository, { kind: "head" }, "HEAD"),
+  headMoved: (repository) => headMoved(repository),
 });
+
+const newBranchDialog = createNewBranchDialog({
+  errorView,
+  branchesMoved: (repository) => headMoved(repository),
+});
+
+/**
+ * HEAD of `repository` moved, or its branches changed: the status area, its changes and the log, when it shows it, are read
+ * again at once, without waiting for the watcher.
+ */
+function headMoved(repository: Repository): void {
+  statusArea.refresh(repository.root);
+  shownRepositories.get(repository.root)?.refresh();
+  logView.refresh(repository);
+}
 
 /** The views the file history took the place of, which come back when it closes. */
 let underFileHistory: HTMLElement[] = [];
@@ -648,6 +668,7 @@ function showProject(project: Project): void {
     void diffView.close();
     logView.close();
     branchSelector.close();
+    newBranchDialog.close();
   }
   shownFolder = project.folder;
   showNotifications();
@@ -1679,6 +1700,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationFetchRemote", { root: operation.repository.root, remote: operation.remote });
     case "push":
       return t("operationPush", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
+    case "checkOut":
+      return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
   }
 }
 
@@ -1922,6 +1945,12 @@ function describeFailure(failure: Failure): string {
       return t("failureRemoteNotFound", { remote: failure.remote });
     case "branchNameInvalid":
       return t("failureBranchNameInvalid", { name: failure.name });
+    case "branchNameTaken":
+      return t("failureBranchNameTaken", { name: failure.name });
+    case "branchNotCreated":
+      return t("failureBranchNotCreated", { folder: failure.folder, name: failure.name });
+    case "checkoutFailed":
+      return t("failureCheckoutFailed", { folder: failure.folder });
     case "detachedHeadNotPushed":
       return t("failureDetachedHeadNotPushed");
     case "branchWithoutCommits":

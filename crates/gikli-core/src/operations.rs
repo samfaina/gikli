@@ -47,6 +47,12 @@ pub enum LongOperation {
         remote: String,
         branch: String,
     },
+    /// Checking out `target` in `repository`, a branch, a tag or a commit, where a hook can take as
+    /// long as it likes.
+    CheckOut {
+        repository: Repository,
+        target: String,
+    },
     /// Fetching the rest of the history of `repository`, whose history is cut, from `remote`.
     FetchRestOfHistory {
         repository: Repository,

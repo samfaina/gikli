@@ -1,10 +1,13 @@
 // The branch selector: opened from the current branch in the status area, it shows what HEAD is
 // on, and every branch and tag in the groups Recent, Local, Remote and Tags, with a search across
-// them. The core lists, groups and searches them; this draws them and keeps the options.
+// them. Picking a local branch or a tag checks it out, and a new branch starts from HEAD. The core
+// lists, groups and searches them, and checks them out; this draws them and keeps the options.
 
 import { branchGroup, branchList, flatBranchList, upstreamMark, type BranchActions } from "./branch-tree";
 import {
   branches as readBranches,
+  checkOutBranch,
+  checkOutTag,
   setGroupBranchesByDirectory,
   setShowRecentBranches,
   setShowTagsInBranchSelector,
@@ -24,8 +27,12 @@ import { t } from "./strings";
 export interface BranchSelectorHost {
   /** What to show for an error from the core. */
   errorView(error: unknown): HTMLElement;
-  /** Shows the latest commit of `branch` of `repository` in the log. */
+  /** Shows the latest commit of `branch` of `repository` in the log, as picking a remote branch does until checking one out ships. */
   showBranch(repository: Repository, branch: Branch): void;
+  /** Opens the new branch dialog on a branch of `repository` that starts from HEAD. */
+  newBranch(repository: Repository): void;
+  /** HEAD of `repository` moved to another branch or commit. */
+  headMoved(repository: Repository): void;
 }
 
 export interface BranchSelector {
@@ -45,6 +52,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   const searchInput = element<HTMLInputElement>("branch-selector-search");
   const groups = element<HTMLElement>("branch-selector-groups");
   const closeButton = element<HTMLButtonElement>("branch-selector-close");
+  const newBranchButton = element<HTMLButtonElement>("branch-selector-new-branch");
   const options: { input: HTMLInputElement; save: (on: boolean) => Promise<Settings>; read: (saved: Settings) => boolean }[] = [
     {
       input: element<HTMLInputElement>("branch-selector-show-recent"),
@@ -67,11 +75,21 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   /** Tells the answer to the latest read from one that a later search overtook. */
   let latestRead = 0;
   let searchTimer: number | undefined;
+  /** Whether a branch or tag the user picked is being checked out. */
+  let checkingOut = false;
 
   element<HTMLElement>("branch-selector-show-recent-label").textContent = t("branchSelectorShowRecent");
   element<HTMLElement>("branch-selector-show-tags-label").textContent = t("branchSelectorShowTags");
   element<HTMLElement>("branch-selector-group-by-directory-label").textContent = t("branchesGroupByDirectory");
   closeButton.textContent = t("branchSelectorClose");
+  newBranchButton.textContent = t("branchSelectorNewBranch");
+  newBranchButton.addEventListener("click", () => {
+    const shown = repository;
+    if (shown !== null) {
+      close();
+      host.newBranch(shown);
+    }
+  });
   searchInput.placeholder = t("branchSelectorSearch");
   searchInput.setAttribute("aria-label", t("branchSelectorSearch"));
   closeButton.addEventListener("click", close);
@@ -134,7 +152,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   /** Lists the branches the search finds; an answer an earlier read gives late is dropped. */
   async function listBranches(): Promise<void> {
     const shown = repository;
-    if (shown === null) {
+    if (shown === null || checkingOut) {
       return;
     }
     const reading = ++latestRead;
@@ -154,10 +172,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   function draw(shown: Repository, listed: Branches, search: string): void {
     current.replaceChildren(...describeCurrent(listed.current));
     const actions: BranchActions = {
-      pick: (branch) => {
-        close();
-        host.showBranch(shown, branch);
-      },
+      pick: (branch) => void pick(shown, branch),
     };
     const drawn = [
       group("recent", t("branchesRecent"), listed.recent.length === 0 ? null : flatBranchList(listed.recent, actions)),
@@ -173,6 +188,45 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
       return;
     }
     groups.replaceChildren(...drawn);
+  }
+
+  /**
+   * Checks out a local branch or a tag the user picked, and closes the selector once HEAD is on it; a failure shows in the
+   * selector. A remote branch shows its latest commit in the log.
+   */
+  async function pick(shown: Repository, branch: Branch): Promise<void> {
+    const { name, kind } = branch.label;
+    if (checkingOut) {
+      return;
+    }
+    if (kind !== "local" && kind !== "tag") {
+      close();
+      host.showBranch(shown, branch);
+      return;
+    }
+    // The lists are not read again while the checkout runs, so they do not take the place of what it says.
+    window.clearTimeout(searchTimer);
+    latestRead += 1;
+    checkingOut = true;
+    const progress = document.createElement("p");
+    progress.className = "branch-selector-empty";
+    progress.textContent = t("branchSelectorCheckingOut", { target: name });
+    groups.replaceChildren(progress);
+    try {
+      await (kind === "local" ? checkOutBranch(shown, name) : checkOutTag(shown, name));
+      checkingOut = false;
+      host.headMoved(shown);
+      if (repository === shown) {
+        close();
+      }
+    } catch (error) {
+      checkingOut = false;
+      // A checkout that failed may still have moved HEAD, as when a hook after it fails.
+      host.headMoved(shown);
+      if (repository === shown) {
+        groups.replaceChildren(host.errorView(error));
+      }
+    }
   }
 
   return { toggle, close };

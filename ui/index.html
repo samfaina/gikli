@@ -105,6 +105,7 @@
           <aside class="log-branches" data-testid="log-branches">
             <div class="log-pane-header">
               <h3 id="log-branches-title"></h3>
+              <button id="log-new-branch" type="button" data-testid="log-new-branch"></button>
               <button id="log-go-to-branch" type="button" data-testid="log-go-to-branch"></button>
             </div>
             <div id="log-branches-list" class="log-branches-list" data-testid="log-branches-list"></div>
@@ -208,9 +209,23 @@
       </section>
     </div>
     <footer class="window-foot">
+      <section id="new-branch" class="branch-selector new-branch" data-testid="new-branch" role="dialog" aria-labelledby="new-branch-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="new-branch-title"></h2>
+          <button id="new-branch-cancel" type="button" data-testid="new-branch-cancel"></button>
+        </div>
+        <label class="new-branch-name"><span id="new-branch-name-label"></span><input id="new-branch-name" type="text" list="new-branch-prefixes" autocomplete="off" spellcheck="false" data-testid="new-branch-name" /></label>
+        <datalist id="new-branch-prefixes" data-testid="new-branch-prefixes"></datalist>
+        <div class="new-branch-actions">
+          <label><input id="new-branch-check-out" type="checkbox" data-testid="new-branch-check-out" /><span id="new-branch-check-out-label"></span></label>
+          <button id="new-branch-create" type="button" data-testid="new-branch-create"></button>
+        </div>
+        <div id="new-branch-message" class="new-branch-message" data-testid="new-branch-message" role="status"></div>
+      </section>
       <section id="branch-selector" class="branch-selector" data-testid="branch-selector" role="dialog" aria-labelledby="branch-selector-title" hidden>
         <div class="branch-selector-header">
           <h2 id="branch-selector-title"></h2>
+          <button id="branch-selector-new-branch" type="button" data-testid="branch-selector-new-branch"></button>
           <button id="branch-selector-close" type="button" data-testid="branch-selector-close"></button>
         </div>
         <div id="branch-selector-current" class="branch-selector-current" data-testid="branch-selector-current"></div>
