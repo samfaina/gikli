@@ -19,6 +19,16 @@ async function idleRefresh() {
   return refresh;
 }
 
+/** The setting `testId`, once on screen, with the settings opened if they are not. */
+async function showSetting(testId) {
+  const setting = await $(`[data-testid="${testId}"]`);
+  if (!(await setting.isDisplayed())) {
+    await $('[data-testid="toggle-settings"]').click();
+  }
+  await setting.waitForDisplayed({ timeout: 30000 });
+  return setting;
+}
+
 /** Waits for the current window to show a Repository, and checks that its root is `folder`. */
 async function expectRepositoryRoot(folder) {
   const root = await $('[data-testid="repository-root"]');
@@ -419,6 +429,34 @@ describe("gikli", () => {
       await expectDiffStaysOn(SECOND_FILE);
       await closeDiff();
     });
+
+    // On Linux, WebKitGTK's WebDriver does not scroll a row into view before the double-click.
+    it("opens the diff of a file whose row starts below the window", async () => {
+      await showSetting("use-credential-helper");
+      const row = `[data-testid="change"][data-path="${FIRST_FILE}"]`;
+      await $(row).waitForDisplayed({ timeout: 30000 });
+      // The settings taller than the window push the Project below it, whatever the layout caps them at.
+      const belowWindow = await browser.execute((selector) => {
+        const settings = document.getElementById("settings");
+        settings.style.maxHeight = "none";
+        settings.style.height = "150vh";
+        document.querySelector(".window-body").scrollTop = 0;
+        return document.querySelector(selector).getBoundingClientRect().top - window.innerHeight;
+      }, row);
+      try {
+        assert.ok(belowWindow >= 0, `the row starts ${-belowWindow} px above the bottom of the window`);
+
+        await openDiff(FIRST_FILE);
+
+        await closeDiff();
+      } finally {
+        await browser.execute(() => {
+          const settings = document.getElementById("settings");
+          settings.style.removeProperty("max-height");
+          settings.style.removeProperty("height");
+        });
+      }
+    });
   });
 
   // After the cases that count on which Changelist is active.
@@ -607,11 +645,7 @@ describe("gikli", () => {
     it("keeps the message after a commit when the option to clear it is off", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
-      const setting = $('[data-testid="clear-commit-message-after-commit"]');
-      if (!(await setting.isDisplayed())) {
-        await $('[data-testid="toggle-settings"]').click();
-      }
-      await setting.waitForDisplayed({ timeout: 30000 });
+      const setting = await showSetting("clear-commit-message-after-commit");
       assert.equal(await setting.isSelected(), true);
       await setting.click();
 
@@ -748,11 +782,7 @@ describe("gikli", () => {
     it("works with the index in Staging mode, and brings the Changelists back", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
-      const setting = $('[data-testid="staging-mode"]');
-      if (!(await setting.isDisplayed())) {
-        await $('[data-testid="toggle-settings"]').click();
-      }
-      await setting.waitForDisplayed({ timeout: 30000 });
+      const setting = await showSetting("staging-mode");
       assert.equal(await setting.isSelected(), false, "Changelist mode is the default");
 
       const kept = "kept in its changelist.txt";
