@@ -15,13 +15,14 @@ export interface StatusArea {
   refresh(root?: string): void;
 }
 
-/** One Repository the status area shows, with the number of its latest read. */
+/** One Repository the status area shows, with its branch button and the number of its latest read. */
 interface ShownRepository {
   repository: Repository;
   view: HTMLElement;
   /**
-   * What HEAD is on, which opens the branch selector. Each read keeps it in the page: a browser drops a click whose target left the page
-   * between the press and the release, as a read the watcher starts just after a checkout would make it do (issue #154).
+   * What HEAD is on, which opens the branch selector. A read that shows what HEAD is on keeps it in the page: a browser drops a click
+   * whose target left the page between the press and the release, as a read the changes watcher starts just after a checkout would make
+   * it do (issue #154).
    */
   branch: HTMLButtonElement;
   latestRead: number;
@@ -83,7 +84,7 @@ export function createStatusArea(
     }
     // Several Repositories each say which one they are.
     const name = shown.size > 1 ? [part("status-name", t("statusRepository", { name: folderName(entry.repository.root) }))] : [];
-    const after = describe(entry.branch, answer.head);
+    const after = showHead(entry.branch, answer.head);
     if (answer.operation !== null) {
       after.push(operationInProgressView(answer.operation, (action) => operations.take(repository, action)));
     }
@@ -126,7 +127,7 @@ function branchButton(open: () => void): HTMLButtonElement {
  * Shows the current branch, or the commit of a detached HEAD, on `branch`, and returns how far the
  * branch is from its upstream.
  */
-function describe(branch: HTMLButtonElement, head: CurrentBranch): HTMLElement[] {
+function showHead(branch: HTMLButtonElement, head: CurrentBranch): HTMLElement[] {
   const name = head.kind === "detached" ? t("statusDetached", { hash: head.hash.slice(0, SHORT_HASH_LENGTH) }) : head.name;
   // Its text is only set when it changes, as the text the user presses on is part of the click too.
   if (branch.textContent !== name) {

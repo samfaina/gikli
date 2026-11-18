@@ -852,12 +852,13 @@ describe("gikli", () => {
     });
 
     // A browser drops a click whose button was taken out of the page between the press and the
-    // release. The status area reads again whenever the watcher sees the Repository change, as just
+    // release. The status area reads again whenever the changes watcher sees the Repository change, as just
     // after a checkout, so a click on the branch there could be lost on its way (issue #154).
     it("opens the branch selector from the status area when it reads again during the click", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
       const branch = $('[data-testid="status-branch"]');
+      const counts = $('[data-testid="status-counts"]');
       await browser.waitUntil(async () => (await branch.getText()) === "main", { timeout: 30000, timeoutMsg: "the status area did not show main" });
       runGit(repository, gitconfig, "branch", "smoke/upstream", "HEAD~1");
 
@@ -865,9 +866,9 @@ describe("gikli", () => {
       // One pointer for the press and the release: WebdriverIO gives each action a pointer of its own unless it is named.
       const pointer = () => browser.action("pointer", { id: "status-branch-click" });
       await pointer().move({ origin: await branch }).down().perform(true);
-      // Only the configuration changes, which the watcher sees, and the status area reads again.
+      // Only the configuration changes, which the changes watcher sees, and the status area reads again.
       runGit(repository, gitconfig, "branch", "--set-upstream-to=smoke/upstream");
-      await $('[data-testid="status-counts"]').waitForDisplayed({ timeout: 30000 });
+      await counts.waitForDisplayed({ timeout: 30000 });
       await pointer().up().perform();
 
       const selector = $('[data-testid="branch-selector"]');
@@ -876,7 +877,7 @@ describe("gikli", () => {
       await selector.waitForDisplayed({ timeout: 30000, reverse: true });
       runGit(repository, gitconfig, "branch", "--unset-upstream");
       runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/upstream");
-      await $('[data-testid="status-counts"]').waitForDisplayed({ timeout: 30000, reverse: true });
+      await counts.waitForDisplayed({ timeout: 30000, reverse: true });
     });
 
     it("renames a branch and deletes it from the branches pane, and restores it from the notification", async () => {
