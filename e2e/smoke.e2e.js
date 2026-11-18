@@ -978,57 +978,6 @@ describe("gikli", () => {
         assert.equal(await row.$(".log-subject").getProperty("textContent"), commit.subject);
       }
 
-      /**
-       * Clicks the log row of the commit `hash` until the log selects it, finding the row afresh on
-       * each of up to `attempts` attempts. The log draws its rows anew on every scroll, as on the
-       * scroll that brings a row into view before a click on Linux, and WebKitWebDriver then answers
-       * that the row it found is not interactable rather than stale. So the row is scrolled into view
-       * first, and a click that fails, or that does not select it, leads to another attempt.
-       */
-      async function selectInLog(hash, attempts = 4) {
-        const selector = `[data-testid="log-row"][data-hash="${hash}"]`;
-        await $(selector).waitForDisplayed({ timeout: 30000 });
-        await $(selector).execute((target) => target.scrollIntoView({ block: "nearest", inline: "nearest" }));
-        let failure = null;
-        for (let attempt = 1; attempt <= attempts; attempt++) {
-          try {
-            await $(selector).click();
-          } catch (error) {
-            failure = error;
-            // TEMPORARY diagnostic for CI on Linux.
-            const layout = await browser.execute((sel) => {
-              const describe = (e) => `${e.tagName}.${e.className?.baseVal ?? e.className}#${e.id}[${e.dataset?.testid ?? ""}]`;
-              const box = (e) => {
-                const r = e.getBoundingClientRect();
-                return `${describe(e)} x=${r.x} y=${r.y} w=${r.width} h=${r.height} st=${e.scrollTop} sh=${e.scrollHeight} ch=${e.clientHeight} cw=${e.clientWidth} sw=${e.scrollWidth} ov=${getComputedStyle(e).overflow} pe=${getComputedStyle(e).pointerEvents}`;
-              };
-              const row = document.querySelector(sel);
-              const lines = [`inner=${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio} rows=${document.querySelectorAll("[data-testid=log-row]").length} vis=${document.visibilityState}`];
-              for (let e = row; e !== null; e = e.parentElement) {
-                lines.push(box(e));
-              }
-              const r = row.getBoundingClientRect();
-              const cx = r.x + r.width / 2;
-              const cy = r.y + r.height / 2;
-              lines.push(`at center ${cx},${cy}: ${document.elementsFromPoint(cx, cy).map(describe).join(" > ")}`);
-              lines.push(`visible: ${[...document.querySelectorAll("body *")].filter((e) => !e.hidden && e.parentElement?.classList.contains("window-body")).map(box).join(" | ")}`);
-              return lines.join("\n");
-            }, selector);
-            console.warn(`LAYOUT ${attempt}:\n${layout}`);
-            console.warn(`Click ${attempt} of ${attempts} on ${selector} failed (${error.message}); finding the row again.`);
-            continue;
-          }
-          try {
-            await browser.waitUntil(async () => (await $(selector).getAttribute("aria-selected")) === "true", { timeout: 5000 });
-            return;
-          } catch (error) {
-            failure = error;
-            console.warn(`Click ${attempt} of ${attempts} on ${selector} did not select it; finding the row again.`);
-          }
-        }
-        throw new Error(`the log did not select ${hash} after ${attempts} clicks: ${failure?.message}`);
-      }
-
       it("lists the commits a push would send in the push dialog", async () => {
         const repository = process.env.GIKLI_E2E_REPOSITORY;
         const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
@@ -1096,25 +1045,42 @@ describe("gikli", () => {
         // one to another as a rename.
         const file = FIRST_FILE;
         const commit = newestCommit("--", file);
+        // The settings the cases before left open leave the log so little room that the commit's row
+        // is the last one it shows, and on Linux the list's horizontal scrollbar overlays the bottom
+        // of it and takes the click on the row's center: WebKitWebDriver answers "not interactable".
+        const settings = $('[data-testid="settings"]');
+        const settingsShown = await settings.isDisplayed();
+        if (settingsShown) {
+          await $('[data-testid="toggle-settings"]').click();
+          await settings.waitForDisplayed({ timeout: 30000, reverse: true });
+        }
+        try {
+          await $('[data-testid="open-log"]').click();
+          const logRow = $(`[data-testid="log-row"][data-hash="${commit.hash}"]`);
+          await logRow.waitForDisplayed({ timeout: 30000 });
+          await logRow.click();
+          const showHistory = $(`[data-testid="log-changes-content"] .change:has(> .change-path[title="${file}"]) [data-testid="show-file-history"]`);
+          await showHistory.waitForDisplayed({ timeout: 30000 });
+          await showHistory.click();
+          const view = $('[data-testid="file-history"]');
+          await view.waitForDisplayed({ timeout: 30000 });
+          const row = $('[data-testid="file-history-row"]');
+          await row.waitForDisplayed({ timeout: 30000 });
+          await expectCommitRow(row, commit);
+          const afterSubject = row.$(".log-subject + .file-history-path");
+          assert.ok(await afterSubject.isExisting(), "the path comes right after the subject");
+          assert.equal(await afterSubject.getProperty("textContent"), file);
 
-        await $('[data-testid="open-log"]').click();
-        await selectInLog(commit.hash);
-        const showHistory = $(`[data-testid="log-changes-content"] .change:has(> .change-path[title="${file}"]) [data-testid="show-file-history"]`);
-        await showHistory.waitForDisplayed({ timeout: 30000 });
-        await showHistory.click();
-        const view = $('[data-testid="file-history"]');
-        await view.waitForDisplayed({ timeout: 30000 });
-        const row = $('[data-testid="file-history-row"]');
-        await row.waitForDisplayed({ timeout: 30000 });
-        await expectCommitRow(row, commit);
-        const afterSubject = row.$(".log-subject + .file-history-path");
-        assert.ok(await afterSubject.isExisting(), "the path comes right after the subject");
-        assert.equal(await afterSubject.getProperty("textContent"), file);
-
-        await $('[data-testid="file-history-close"]').click();
-        await view.waitForDisplayed({ timeout: 30000, reverse: true });
-        await $('[data-testid="log-close"]').click();
-        await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+          await $('[data-testid="file-history-close"]').click();
+          await view.waitForDisplayed({ timeout: 30000, reverse: true });
+          await $('[data-testid="log-close"]').click();
+          await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+        } finally {
+          if (settingsShown) {
+            await $('[data-testid="toggle-settings"]').click();
+            await settings.waitForDisplayed({ timeout: 30000 });
+          }
+        }
       });
     });
   });
