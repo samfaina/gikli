@@ -20,7 +20,10 @@ export function runGit(cwd, gitconfig, ...args) {
   return String(git.stdout);
 }
 
+/** The options that give git who commits for the smoke test's own fixtures. */
+export const FIXTURE_IDENTITY = ["-c", "user.name=gikli", "-c", "user.email=gikli@example.com"];
+
 /** Commits what is staged in `cwd`. */
 export function commitStaged(cwd, gitconfig, message) {
-  runGit(cwd, gitconfig, "-c", "user.name=gikli", "-c", "user.email=gikli@example.com", "commit", "--quiet", "--message", message);
+  runGit(cwd, gitconfig, ...FIXTURE_IDENTITY, "commit", "--quiet", "--message", message);
 }

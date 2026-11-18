@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { Key } from "webdriverio";
 
 import { doubleClickUntilDisplayed } from "./double-click.js";
-import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
+import { commitStaged, FIXTURE_IDENTITY, runGit, sandboxGitconfig } from "./sandbox-git.js";
 
 /**
  * The Refresh button, once no read of the changes is under way. It is disabled during one, as when
@@ -1004,7 +1004,7 @@ describe("gikli", () => {
         const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
         const branch = "smoke/unmerged";
         // On HEAD's tree, so the working tree stays as it is.
-        const unmerged = runGit(repository, gitconfig, "-c", "user.name=gikli", "-c", "user.email=gikli@example.com", "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Only on the deleted branch").trim();
+        const unmerged = runGit(repository, gitconfig, ...FIXTURE_IDENTITY, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Only on the deleted branch").trim();
         runGit(repository, gitconfig, "branch", branch, unmerged);
         const inPane = $(`[data-testid="log-branches-list"] [data-testid="branch"][data-name="${branch}"]`);
         try {
@@ -1012,11 +1012,11 @@ describe("gikli", () => {
           await inPane.waitForDisplayed({ timeout: 30000 });
           await inPane.click();
           await $('[data-testid="log-delete-branches"]').click();
-          const remove = $('[data-testid="delete-branches"]');
-          await remove.waitForDisplayed({ timeout: 30000 });
+          const deleteDialog = $('[data-testid="delete-branches"]');
+          await deleteDialog.waitForDisplayed({ timeout: 30000 });
           await $(`[data-testid="delete-branches-branch"][data-name="${branch}"]`).waitForDisplayed({ timeout: 30000 });
           await $('[data-testid="delete-branches-delete"]').click();
-          await remove.waitForDisplayed({ timeout: 30000, reverse: true });
+          await deleteDialog.waitForDisplayed({ timeout: 30000, reverse: true });
           const notification = $('[data-testid="notification"][data-kind="branchesDeleted"]');
           await notification.waitForDisplayed({ timeout: 30000 });
 
@@ -1058,8 +1058,8 @@ describe("gikli", () => {
         const row = $('[data-testid="file-history-row"]');
         await row.waitForDisplayed({ timeout: 30000 });
         await expectCommitRow(row, commit);
-        const afterSubject = await row.$(".log-subject").nextElement();
-        assert.ok((await afterSubject.getAttribute("class")).split(" ").includes("file-history-path"), "the path comes right after the subject");
+        const afterSubject = row.$(".log-subject + .file-history-path");
+        assert.ok(await afterSubject.isExisting(), "the path comes right after the subject");
         assert.equal(await afterSubject.getProperty("textContent"), file);
 
         await $('[data-testid="file-history-close"]').click();
