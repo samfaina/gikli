@@ -116,8 +116,8 @@ fn the_log_of_several_hundred_thousand_commits_reads_each_page_within_its_budget
         (came_while_reading, reading.join().expect("the read ended"))
     });
     assert_eq!(page.expect("read the log").rows.len(), PAGE_SIZE);
-    // A read of the changes takes a fraction of the first page here, a margin a loaded machine
-    // need not keep.
+    // A read of the changes takes a fraction of the first page on an idle machine, a margin a
+    // loaded machine need not keep.
     if checks_budgets() {
         assert!(
             changes_came_while_reading,
