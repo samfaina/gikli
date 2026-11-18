@@ -90,6 +90,14 @@ _Avoid_: Branch tree, sidebar
 A merge, rebase, revert or cherry-pick that git stopped half done in a worktree, on a conflict or at a commit to edit, whoever started it. It stays until the user continues, finishes or aborts it.
 _Avoid_: Pending operation, unfinished state
 
+**Conflict**:
+A file an operation could not combine on its own, which the index holds more than one version of. The user resolves it by accepting yours or theirs, or by editing it by hand and marking it resolved. Until then it shows in its own group in the changes view, in no Changelist.
+_Avoid_: Merge conflict, unmerged file
+
+**Yours and theirs**:
+The two sides of a Conflict as the user sees them. Yours is the branch the user is on, and theirs is what the operation brings in. During a rebase git calls them the other way round, `--theirs` and `--ours`, and gikli keeps the user's names.
+_Avoid_: Ours, local and remote, left and right
+
 ## Authentication
 
 **Prompt**:

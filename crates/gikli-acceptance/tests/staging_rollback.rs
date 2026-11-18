@@ -136,7 +136,7 @@ fn a_file_only_unstaged_goes_back_to_the_last_commit() {
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
-/// A conflicted file is an Unstaged change, and the index holds no one version of it to go back to.
+/// A conflicted file rolls back as an Unstaged change: the index holds no one version of it to go back to.
 #[test]
 fn a_conflicted_file_goes_back_to_our_side() {
     let sandbox = Sandbox::new();

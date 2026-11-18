@@ -247,6 +247,14 @@
         </div>
         <div id="delete-branches-message" class="new-branch-message" data-testid="delete-branches-message" role="status"></div>
       </section>
+      <section id="conflicts" class="branch-selector new-branch" data-testid="conflicts" role="dialog" aria-labelledby="conflicts-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="conflicts-title"></h2>
+          <button id="conflicts-close" type="button" data-testid="conflicts-close"></button>
+        </div>
+        <ul id="conflicts-list" class="conflicts-list" data-testid="conflicts-list"></ul>
+        <div id="conflicts-message" class="new-branch-message" data-testid="conflicts-message" role="status"></div>
+      </section>
       <section id="unmerged-commits" class="branch-selector new-branch" data-testid="unmerged-commits" role="dialog" aria-labelledby="unmerged-commits-title" hidden>
         <div class="branch-selector-header">
           <h2 id="unmerged-commits-title"></h2>

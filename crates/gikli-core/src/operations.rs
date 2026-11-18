@@ -67,6 +67,8 @@ pub enum LongOperation {
         operation: OperationKind,
         action: OperationAction,
     },
+    /// Resolving files in conflict in `repository`, where a filter can take as long as a hook.
+    ResolveConflicts { repository: Repository },
     /// Fetching the rest of the history of `repository`, whose history is cut, from `remote`.
     FetchRestOfHistory {
         repository: Repository,

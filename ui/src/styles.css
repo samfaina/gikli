@@ -896,7 +896,8 @@ button:disabled {
 }
 
 .delete-branches-list,
-.unmerged-commits-list {
+.unmerged-commits-list,
+.conflicts-list {
   min-height: 0;
   margin: 0;
   padding: 0;
@@ -1626,4 +1627,29 @@ button:disabled {
 
 .push-footer-gap {
   flex: 1 1 auto;
+}
+
+/* A file in conflict: its path, what each side did, and the ways to resolve it. */
+.conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 4px 0;
+}
+
+.conflict-path {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.conflict-sides {
+  flex: 1;
+  color: var(--muted);
+}
+
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
