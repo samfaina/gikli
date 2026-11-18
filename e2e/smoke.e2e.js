@@ -19,6 +19,30 @@ async function idleRefresh() {
   return refresh;
 }
 
+/**
+ * Waits for the log to be read, as after opening it or choosing a branch in its branches pane.
+ * During a read the log says so above its body, which moves the branches pane down, and back up
+ * when the read ends. WebKitWebDriver picks the point it clicks before it clicks, so a read that
+ * ends in between moves the target away and the click lands on what was below it: the Rename or
+ * Delete button of the pane, clicked during the read of a branch, clicks Go to branch (issue #152).
+ */
+async function untilLogRead() {
+  const message = $('[data-testid="log-message"]');
+  try {
+    await browser.waitUntil(async () => (await message.getProperty("textContent")) === "", { timeout: 30000 });
+  } catch {
+    // Not only a read that never ends: an error, or an empty log, leaves its message too.
+    throw new Error(`the log did not come: it says "${await message.getProperty("textContent")}"`);
+  }
+}
+
+/** Chooses `branch`, an element of the log's branches pane, and waits for the log to be read again. */
+async function chooseInBranchesPane(branch) {
+  await untilLogRead();
+  await branch.click();
+  await untilLogRead();
+}
+
 /** The setting `testId`, once on screen, with the settings opened if they are not. */
 async function showSetting(testId) {
   const setting = await $(`[data-testid="${testId}"]`);
@@ -836,7 +860,7 @@ describe("gikli", () => {
 
       await $('[data-testid="open-log"]').click();
       await inPane("smoke/rename").waitForDisplayed({ timeout: 30000 });
-      await inPane("smoke/rename").click();
+      await chooseInBranchesPane(inPane("smoke/rename"));
       await $('[data-testid="log-rename-branch"]').click();
       const rename = $('[data-testid="rename-branch"]');
       await rename.waitForDisplayed({ timeout: 30000 });
@@ -847,7 +871,8 @@ describe("gikli", () => {
       assert.equal(hasBranch("smoke/rename"), false);
       assert.equal(hasBranch("smoke/renamed"), true);
 
-      await inPane("smoke/renamed").click();
+      // The log was filtered by the renamed branch, and shows every branch again.
+      await chooseInBranchesPane(inPane("smoke/renamed"));
       await $('[data-testid="log-delete-branches"]').click();
       const remove = $('[data-testid="delete-branches"]');
       await remove.waitForDisplayed({ timeout: 30000 });
@@ -1010,7 +1035,7 @@ describe("gikli", () => {
         try {
           await $('[data-testid="open-log"]').click();
           await inPane.waitForDisplayed({ timeout: 30000 });
-          await inPane.click();
+          await chooseInBranchesPane(inPane);
           await $('[data-testid="log-delete-branches"]').click();
           const deleteDialog = $('[data-testid="delete-branches"]');
           await deleteDialog.waitForDisplayed({ timeout: 30000 });
