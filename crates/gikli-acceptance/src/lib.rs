@@ -45,10 +45,12 @@ pub fn minute_as_seconds(minute: i64) -> i64 {
     FIRST_MINUTE + minute * 60
 }
 
-/// Whether the test runs on a CI runner, which sets this variable, and not on the development
-/// machine, where the tests of speed check their budgets.
-pub fn on_ci() -> bool {
-    std::env::var_os("CI").is_some()
+/// Whether the tests of speed check their budgets, which they do only when `GIKLI_CHECK_BUDGETS`
+/// is set, as `npm run test:performance` sets it. Without it they report their timings and check
+/// only what does not depend on time, so a loaded machine or a shared CI runner does not fail
+/// them.
+pub fn checks_budgets() -> bool {
+    std::env::var_os("GIKLI_CHECK_BUDGETS").is_some()
 }
 
 /// A temporary folder with its own git configuration, holding the repositories of one test.
