@@ -978,6 +978,37 @@ describe("gikli", () => {
         assert.equal(await row.$(".log-subject").getProperty("textContent"), commit.subject);
       }
 
+      /**
+       * Clicks the log row of the commit `hash` until the log selects it, finding the row afresh on
+       * each of up to `attempts` attempts. The log draws its rows anew on every scroll, as on the
+       * scroll that brings a row into view before a click on Linux, and WebKitWebDriver then answers
+       * that the row it found is not interactable rather than stale. So the row is scrolled into view
+       * first, and a click that fails, or that does not select it, leads to another attempt.
+       */
+      async function selectInLog(hash, attempts = 4) {
+        const selector = `[data-testid="log-row"][data-hash="${hash}"]`;
+        await $(selector).waitForDisplayed({ timeout: 30000 });
+        await $(selector).execute((target) => target.scrollIntoView({ block: "nearest", inline: "nearest" }));
+        let failure = null;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          try {
+            await $(selector).click();
+          } catch (error) {
+            failure = error;
+            console.warn(`Click ${attempt} of ${attempts} on ${selector} failed (${error.message}); finding the row again.`);
+            continue;
+          }
+          try {
+            await browser.waitUntil(async () => (await $(selector).getAttribute("aria-selected")) === "true", { timeout: 5000 });
+            return;
+          } catch (error) {
+            failure = error;
+            console.warn(`Click ${attempt} of ${attempts} on ${selector} did not select it; finding the row again.`);
+          }
+        }
+        throw new Error(`the log did not select ${hash} after ${attempts} clicks: ${failure?.message}`);
+      }
+
       it("lists the commits a push would send in the push dialog", async () => {
         const repository = process.env.GIKLI_E2E_REPOSITORY;
         const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
@@ -1047,9 +1078,7 @@ describe("gikli", () => {
         const commit = newestCommit("--", file);
 
         await $('[data-testid="open-log"]').click();
-        const logRow = $(`[data-testid="log-row"][data-hash="${commit.hash}"]`);
-        await logRow.waitForDisplayed({ timeout: 30000 });
-        await logRow.click();
+        await selectInLog(commit.hash);
         const showHistory = $(`[data-testid="log-changes-content"] .change:has(> .change-path[title="${file}"]) [data-testid="show-file-history"]`);
         await showHistory.waitForDisplayed({ timeout: 30000 });
         await showHistory.click();
