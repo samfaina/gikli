@@ -1,14 +1,14 @@
 //! Going to a commit stays quick on a Repository with hundreds of thousands of commits, when the
 //! log is filtered by a branch that does not reach it, or searched for a text it does not match.
 //!
-//! The budget holds on the development machine, where the test checks it. A CI runner is slower
-//! and shared, so there the test only reports what it measured, and still checks the answer. This
-//! is the only test in its file, so no other test of the suite runs beside it and slows what it
-//! measures.
+//! The test reports its timings and checks the answer. It checks the budget only when
+//! `GIKLI_CHECK_BUDGETS` is set, as `npm run test:performance` sets it, since a loaded machine or a
+//! shared CI runner misses it for changes that never touched the log. This is the only test in its
+//! file, so no other test of the suite runs beside it and slows what it measures.
 
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{ImportedHistory, Sandbox, on_ci};
+use gikli_acceptance::{ImportedHistory, Sandbox, checks_budgets};
 use gikli_core::{Gikli, LogFilter, RefKind, RefLabel, Repository, TextSearch};
 
 /// The commits of the generated history.
@@ -18,7 +18,7 @@ const COMMITS: usize = 300_000;
 const NOT_SHOWN_BUDGET: Duration = Duration::from_secs(1);
 
 /// Goes to `main` in the log of `root` filtered by `filter`, which does not show it, as `what`
-/// tells, and checks the answer and, off CI, its budget.
+/// tells, and checks the answer and, when the budgets are checked, its budget.
 fn goes_to_main_not_shown(gikli: &Gikli, root: &Repository, filter: &LogFilter, what: &str) {
     let started = Instant::now();
     let hash = gikli.go_to(root, "main").expect("go to main");
@@ -32,8 +32,10 @@ fn goes_to_main_not_shown(gikli: &Gikli, root: &Repository, filter: &LogFilter, 
         "going to a commit the log of {COMMITS} commits {what} does not show: answered in \
          {took:?} (budget {NOT_SHOWN_BUDGET:?})"
     );
-    if !on_ci() {
+    if checks_budgets() {
         assert!(took < NOT_SHOWN_BUDGET, "the answer took {took:?}");
+    } else {
+        eprintln!("skipped: the budget, as GIKLI_CHECK_BUDGETS is not set");
     }
 }
 

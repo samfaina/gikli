@@ -23,10 +23,10 @@ terms, `docs/adr/` for the architecture and `docs/product-decisions.md` for sett
   a pause is announced once, since real files cannot make a burst whose timing does not depend on
   the machine.
   The test of the log's speed, `log_performance.rs`, generates a history of 300,000 commits with
-  `git fast-import` and checks the budget of each page on the development machine. On CI, where
-  the `CI` variable is set, it only reports its timings.
+  `git fast-import`, reports how long each page took and checks what the pages show.
   `go_to_performance.rs` does the same for going to a commit that the log, filtered by a branch
-  or searched for a text, does not show.
+  or searched for a text, does not show. They check their budgets only when `GIKLI_CHECK_BUDGETS`
+  is set, as `npm run test:performance` sets it, so a loaded machine does not fail the suite.
 - `src-tauri`: the Tauri 2 shell. Each core command is a Tauri command that forwards to `Gikli`,
   and core events reach the UI as `gikli://event`. The shell adds only `startup_folder`, the
   folder to open at launch. The app is also its own askpass program: when git or ssh start it to
@@ -56,6 +56,7 @@ npm run typecheck       # typecheck the UI
 npm run test:e2e-helpers # tests of how the smoke test attaches on Windows CI and double-clicks
 npm run test:e2e        # smoke test: builds the app, launches it, opens a Project
 npm test                # all of the above checks
+npm run test:performance # the two tests of speed, checking their budgets
 ```
 
 The smoke test needs `tauri-driver` (`cargo install tauri-driver --locked`). On Windows it
