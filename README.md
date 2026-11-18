@@ -53,7 +53,7 @@ npm run dev             # run the app with the UI hot-reloading
 npm run build           # build the app for this platform
 cargo test --workspace  # core tests, all but one through the application interface
 npm run typecheck       # typecheck the UI
-npm run test:e2e-helpers # tests of how the smoke test attaches on Windows CI and double-clicks
+npm run test:e2e-helpers # tests of the smoke test's own helpers, such as how it attaches on Windows CI
 npm run test:e2e        # smoke test: builds the app, launches it, opens a Project
 npm test                # all of the above checks
 npm run test:performance # the two tests of speed, checking their budgets
@@ -72,6 +72,13 @@ start a session on the GitHub-hosted runner (#54): a CI step opens a WebView2 De
 `AdditionalBrowserArguments` policy for `gikli.exe` and names it in
 `GIKLI_E2E_WEBVIEW2_DEBUG_PORT`, and with that variable set the smoke test launches the app itself
 and attaches the Edge WebDriver to that port. Without the variable it goes through tauri-driver.
+
+With `GIKLI_E2E_OUTPUT` set to a folder, the smoke test writes its WebDriver logs there instead of
+to the terminal, and a screenshot of each case that fails. CI sets it, and keeps the folder as an
+artifact of a job whose smoke test failed. CI can also be run by hand (`gh workflow run ci.yml
+--ref <branch>`), to measure how often the smoke test fails on Linux: each Linux job then runs it
+the number of times its `smoke-runs` input asks for (20 by default), in a row, and says how many of
+those runs failed.
 
 To open a folder at startup, pass it as the first argument (`gikli <folder>`) or set
 `GIKLI_PROJECT_FOLDER`.

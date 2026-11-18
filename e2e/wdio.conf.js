@@ -18,6 +18,7 @@ import { SevereServiceError } from "webdriverio";
 
 import { appEnvironment } from "./app-environment.js";
 import { attachPort, respondsBefore, waitForDevTools } from "./attach.js";
+import { failureOutputFolder, screenshotPath } from "./failure-output.js";
 import { bringIntoViewBeforePointerActions } from "./into-view.js";
 import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
 
@@ -218,6 +219,10 @@ const debugPort = attachPort();
 let tauriDriver;
 let attached = { app: undefined, driver: undefined };
 
+// With GIKLI_E2E_OUTPUT set, as CI sets it, the run writes the WebDriver logs, every command and
+// its answer, to that folder instead of the terminal, and a screenshot of each case that fails.
+const outputFolder = failureOutputFolder(process.env);
+
 /**
  * Launches gikli, waits for WebView2's DevTools on {@link debugPort}, and starts msedgedriver on
  * {@link driverPort}. Throws, having stopped what it started, if either does not come up.
@@ -265,7 +270,8 @@ export const config = {
         : { browserName: "webview2", "ms:edgeOptions": { debuggerAddress: `127.0.0.1:${debugPort}` } }),
     },
   ],
-  logLevel: "warn",
+  logLevel: outputFolder === undefined ? "warn" : "info",
+  ...(outputFolder === undefined ? {} : { outputDir: outputFolder }),
   framework: "mocha",
   reporters: ["spec"],
   mochaOpts: { ui: "bdd", timeout: 60000 },
@@ -311,6 +317,21 @@ export const config = {
   // action, so a case would pass on Windows and fail on Linux once its target is out of view.
   before: (capabilities, specs, browser) => {
     bringIntoViewBeforePointerActions(browser);
+  },
+
+  afterTest: async (test, context, { passed }) => {
+    if (passed || outputFolder === undefined) {
+      return;
+    }
+    // Not test.fullTitle(): the test comes as a copy of mocha's, without its methods, and with the
+    // title of its suite in `parent`.
+    const title = [test.parent, test.title].filter(Boolean).join(" ");
+    try {
+      fs.mkdirSync(outputFolder, { recursive: true });
+      await browser.saveScreenshot(screenshotPath(outputFolder, title));
+    } catch (error) {
+      console.warn(`No screenshot of "${title}": ${error.message}`);
+    }
   },
 
   afterSession: () => {

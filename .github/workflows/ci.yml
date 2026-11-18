@@ -1,6 +1,10 @@
 # Builds gikli and runs its suite on Windows, macOS and Linux. On Windows the suite runs twice: once
 # against the runner's preinstalled git and once against the oldest git gikli supports. On Linux it
 # also runs twice: once against the latest stable git and once against that oldest git.
+#
+# Run by hand (workflow_dispatch), it measures how often the smoke test fails on Linux (issue
+# #152): each Linux job runs the smoke test the number of times asked for, in a row, and says how
+# many of those runs failed. The other jobs run as on a push.
 name: CI
 
 on:
@@ -8,9 +12,16 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      smoke-runs:
+        description: How many times in a row each Linux job runs the smoke test (about 3 minutes a run)
+        type: number
+        default: 20
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A run by hand is a measurement: neither a push nor another run by hand cancels it.
+  group: ci-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -24,8 +35,9 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     # Well above the slowest job's usual 8 minutes, so a step that hangs stops its job long before
-    # GitHub's 6-hour default.
-    timeout-minutes: 30
+    # GitHub's 6-hour default. A Linux job of a run by hand repeats the smoke test, and gets the most
+    # a job can.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && startsWith(matrix.os, 'ubuntu') && 360 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -208,15 +220,48 @@ jobs:
           New-ItemProperty -Path $key -Name 'gikli.exe' -Value "--remote-debugging-port=$env:PORT" -PropertyType String -Force | Out-Null
           "GIKLI_E2E_WEBVIEW2_DEBUG_PORT=$env:PORT" >> $env:GITHUB_ENV
 
+      # Each run writes its WebDriver logs, and a screenshot of each case that failed, to a folder
+      # of its own (see e2e/failure-output.js), which the step after the smoke test keeps.
       - name: Smoke test (Linux)
+        id: smoke-linux
         if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum npm run test:e2e
+        env:
+          RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.smoke-runs || 1 }}
+          JOB: ${{ matrix.name }}
+        run: |
+          [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "::error::smoke-runs is $RUNS, not a whole number of at least 1"; exit 1; }
+          failed=()
+          for run in $(seq 1 "$RUNS"); do
+            echo "::group::Smoke test, run $run of $RUNS"
+            if ! GIKLI_E2E_OUTPUT="$RUNNER_TEMP/smoke-output/run-$run" xvfb-run --auto-servernum npm run test:e2e; then
+              failed+=("$run")
+              echo "::error::Smoke test run $run of $RUNS failed"
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$RUNS" -gt 1 ]; then
+            message="${#failed[@]} of $RUNS smoke test runs failed${failed[*]:+ (numbers ${failed[*]})}."
+            echo "$message"
+            echo "**Smoke test on $JOB:** $message" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          [ "${#failed[@]}" -eq 0 ]
 
       # Not in bash: Git for Windows' bash puts its own git first on the PATH, so the minimum git
       # job would test the app against the runner's preinstalled git without saying so.
       - name: Smoke test (Windows)
+        id: smoke-windows
         if: runner.os == 'Windows'
+        env:
+          GIKLI_E2E_OUTPUT: ${{ runner.temp }}/smoke-output/run-1
         run: npm run test:e2e
+
+      - name: Keep the smoke test's screenshots and WebDriver logs
+        if: failure() && (steps.smoke-linux.outcome == 'failure' || steps.smoke-windows.outcome == 'failure')
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-output-${{ matrix.name }}
+          path: ${{ runner.temp }}/smoke-output
+          if-no-files-found: warn
 
       - name: Smoke test (skipped)
         if: runner.os == 'macOS'

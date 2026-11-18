@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "test": "cargo test --workspace && npm run typecheck && npm run test:e2e-helpers && npm run test:e2e",
-    "test:e2e-helpers": "node --test e2e/app-environment.test.js e2e/attach.test.js e2e/double-click.test.js e2e/into-view.test.js",
+    "test:e2e-helpers": "node --test e2e/app-environment.test.js e2e/attach.test.js e2e/double-click.test.js e2e/failure-output.test.js e2e/into-view.test.js",
     "test:e2e": "wdio run e2e/wdio.conf.js",
     "test:performance": "cargo test --config \"env.GIKLI_CHECK_BUDGETS='1'\" -p gikli-acceptance --test log_performance --test go_to_performance"
   },

@@ -325,8 +325,9 @@ export function createLogView(host: LogViewHost): LogView {
     drawBranches();
     labelFetchButton();
     if (gone) {
-      // The log was filtered by the branch, as when the user deleted or renamed it: it shows every branch again.
-      void startOver();
+      // The log was filtered by the branch, as when the user deleted or renamed it: it shows every branch
+      // again. Not startOver alone, which would read the log filtered by the branch that is gone.
+      applyFilter();
     }
   }
 
