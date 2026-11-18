@@ -995,6 +995,26 @@ describe("gikli", () => {
             await $(selector).click();
           } catch (error) {
             failure = error;
+            // TEMPORARY diagnostic for CI on Linux.
+            const layout = await browser.execute((sel) => {
+              const describe = (e) => `${e.tagName}.${e.className?.baseVal ?? e.className}#${e.id}[${e.dataset?.testid ?? ""}]`;
+              const box = (e) => {
+                const r = e.getBoundingClientRect();
+                return `${describe(e)} x=${r.x} y=${r.y} w=${r.width} h=${r.height} st=${e.scrollTop} sh=${e.scrollHeight} ch=${e.clientHeight} cw=${e.clientWidth} sw=${e.scrollWidth} ov=${getComputedStyle(e).overflow} pe=${getComputedStyle(e).pointerEvents}`;
+              };
+              const row = document.querySelector(sel);
+              const lines = [`inner=${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio} rows=${document.querySelectorAll("[data-testid=log-row]").length} vis=${document.visibilityState}`];
+              for (let e = row; e !== null; e = e.parentElement) {
+                lines.push(box(e));
+              }
+              const r = row.getBoundingClientRect();
+              const cx = r.x + r.width / 2;
+              const cy = r.y + r.height / 2;
+              lines.push(`at center ${cx},${cy}: ${document.elementsFromPoint(cx, cy).map(describe).join(" > ")}`);
+              lines.push(`visible: ${[...document.querySelectorAll("body *")].filter((e) => !e.hidden && e.parentElement?.classList.contains("window-body")).map(box).join(" | ")}`);
+              return lines.join("\n");
+            }, selector);
+            console.warn(`LAYOUT ${attempt}:\n${layout}`);
             console.warn(`Click ${attempt} of ${attempts} on ${selector} failed (${error.message}); finding the row again.`);
             continue;
           }
