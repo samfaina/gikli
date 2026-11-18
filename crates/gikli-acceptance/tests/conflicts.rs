@@ -33,8 +33,8 @@ fn diverged(sandbox: &Sandbox) -> TestRepository {
     work
 }
 
-/// The paths git lists as unmerged in `repository`, once each.
-fn unmerged_by_git(repository: &TestRepository) -> Vec<String> {
+/// The paths git lists as in conflict in `repository`, once each.
+fn conflicted_by_git(repository: &TestRepository) -> Vec<String> {
     let mut paths: Vec<String> = repository
         .git(&["diff", "--name-only", "--diff-filter=U"])
         .lines()
@@ -64,7 +64,7 @@ fn a_merge_that_stops_on_a_conflict_lists_the_conflicted_file() {
             theirs: SideChange::Modified,
         }]
     );
-    assert_eq!(unmerged_by_git(&work), vec!["file.txt"]);
+    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
 }
 
 /// A repository where `main` deleted `file.txt` and `other` changed it since they parted.
@@ -121,7 +121,7 @@ fn accepting_theirs_in_a_merge_takes_their_version_and_resolves_the_file() {
         .expect("accept theirs");
 
     assert_eq!(left, vec![]);
-    assert_eq!(unmerged_by_git(&work), Vec::<String>::new());
+    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
     assert_eq!(
         work.git(&["show", ":file.txt"]),
         "theirs
@@ -152,7 +152,7 @@ fn accepting_yours_during_a_rebase_keeps_the_deletion_of_the_branch_being_rebase
         .expect("accept yours");
 
     assert_eq!(left, vec![]);
-    assert_eq!(unmerged_by_git(&work), Vec::<String>::new());
+    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
     assert!(
         !work.git_succeeds(&["cat-file", "-e", ":file.txt"]),
         "git no longer tracks it"
@@ -191,7 +191,7 @@ fn accepting_theirs_in_a_delete_modify_conflict_keeps_the_file_they_changed() {
         .expect("accept theirs");
 
     assert_eq!(left, vec![]);
-    assert_eq!(unmerged_by_git(&work), Vec::<String>::new());
+    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
     assert_eq!(work.git(&["show", ":file.txt"]), "theirs\n");
     assert_eq!(
         std::fs::read_to_string(work.root().join("file.txt")).expect("read the file"),
@@ -219,10 +219,10 @@ fn accepting_a_side_of_a_file_not_in_conflict_resolves_nothing() {
     assert_eq!(
         result,
         Err(Failure::FileNotInConflict {
-            path: "second.txt".to_owned()
+            path: PathBuf::from("second.txt")
         })
     );
-    assert_eq!(unmerged_by_git(&work), vec!["file.txt"]);
+    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn a_file_edited_by_hand_can_be_marked_resolved() {
         .expect("mark the file resolved");
 
     assert_eq!(left, vec![]);
-    assert_eq!(unmerged_by_git(&work), Vec::<String>::new());
+    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
     assert_eq!(work.git(&["show", ":file.txt"]), "both\n");
 }
 
@@ -281,7 +281,7 @@ fn a_file_deleted_by_hand_is_marked_resolved_as_deleted() {
         .expect("mark the file resolved");
 
     assert_eq!(left, vec![]);
-    assert_eq!(unmerged_by_git(&work), Vec::<String>::new());
+    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
     assert!(
         !work.git_succeeds(&["cat-file", "-e", ":file.txt"]),
         "git no longer tracks it"
@@ -406,7 +406,7 @@ fn an_operation_that_stops_on_a_conflict_says_so_so_the_conflicts_dialog_opens()
         .expect("continue the rebase");
 
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
-    assert_eq!(unmerged_by_git(&work), vec!["file.txt"]);
+    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn closing_the_conflicts_dialog_raises_one_notification_that_offers_resolve_and_
             NotificationAction::AbortOperation
         ]
     );
-    assert_eq!(unmerged_by_git(&work), vec!["file.txt"]);
+    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
 }
 
 #[test]
@@ -485,7 +485,7 @@ fn resolve_in_the_notification_opens_the_conflicts_dialog_again() {
 
     assert_eq!(outcome, NotificationOutcome::ResolveConflicts(root.clone()));
     assert_eq!(conflict_notifications(&gikli, &root), vec![]);
-    assert_eq!(unmerged_by_git(&work), vec!["file.txt"]);
+    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
 }
 
 #[test]
@@ -623,4 +623,122 @@ fn closing_the_dialog_with_every_file_resolved_raises_nothing() {
         .expect("close the conflicts dialog");
 
     assert_eq!(conflict_notifications(&gikli, &root), vec![]);
+}
+
+#[test]
+fn a_file_one_side_never_had_is_absent_on_that_side_not_deleted() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.repository("work");
+    work.write("a.txt", "base\n");
+    work.commit_all("Base");
+    work.git(&["switch", "--quiet", "--create", "other"]);
+    work.git(&["mv", "a.txt", "theirs.txt"]);
+    work.git(&["commit", "--quiet", "--message", "Theirs"]);
+    work.git(&["switch", "--quiet", "main"]);
+    work.git(&["mv", "a.txt", "ours.txt"]);
+    work.git(&["commit", "--quiet", "--message", "Ours"]);
+    assert!(!work.git_succeeds(&["merge", "--no-edit", "other"]));
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    let conflicts = gikli
+        .conflicts(work.root(), &root)
+        .expect("read the conflicts");
+
+    assert_eq!(
+        conflicts,
+        vec![
+            ConflictedFile {
+                path: PathBuf::from("a.txt"),
+                yours: SideChange::Deleted,
+                theirs: SideChange::Deleted,
+            },
+            ConflictedFile {
+                path: PathBuf::from("ours.txt"),
+                yours: SideChange::Added,
+                theirs: SideChange::Absent,
+            },
+            ConflictedFile {
+                path: PathBuf::from("theirs.txt"),
+                yours: SideChange::Absent,
+                theirs: SideChange::Added,
+            },
+        ]
+    );
+}
+
+/// A repository whose submodule at `lib` moved to a different commit on `main` and on `other` since
+/// they parted, so merging them stops on a conflict over `lib`. Returns it with the commits each
+/// side moved the submodule to, ours first.
+fn submodule_moved_on_both_sides(sandbox: &Sandbox) -> (TestRepository, String, String) {
+    sandbox.allow_local_submodules();
+    let library = sandbox.repository("library");
+    library.write("lib.rs", "base\n");
+    library.commit_all("Base");
+    let work = sandbox.repository("work");
+    work.write("README.md", "hello\n");
+    work.commit_all("Initial commit");
+    let url = library.root().to_string_lossy().into_owned();
+    work.git(&["submodule", "--quiet", "add", &url, "lib"]);
+    work.commit_all("Add the library");
+    let move_library = |contents: &str| {
+        work.write("lib/lib.rs", contents);
+        work.git(&[
+            "-C",
+            "lib",
+            "commit",
+            "--quiet",
+            "--all",
+            "--message",
+            contents,
+        ]);
+        work.commit_all(contents);
+        work.git(&["rev-parse", "HEAD:lib"]).trim().to_owned()
+    };
+    work.git(&["switch", "--quiet", "--create", "other"]);
+    let theirs = move_library("theirs\n");
+    work.git(&["switch", "--quiet", "main"]);
+    work.git(&["-C", "lib", "checkout", "--quiet", "HEAD~1"]);
+    let ours = move_library("ours\n");
+    assert!(!work.git_succeeds(&["merge", "--no-edit", "other"]));
+    (work, ours, theirs)
+}
+
+#[test]
+fn accepting_theirs_for_a_submodule_records_the_commit_they_moved_it_to() {
+    let sandbox = Sandbox::new();
+    let (work, _, theirs) = submodule_moved_on_both_sides(&sandbox);
+    assert_eq!(conflicted_by_git(&work), vec!["lib"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    let left = gikli
+        .accept_side(
+            work.root(),
+            &root,
+            &["lib".to_owned()],
+            ConflictSide::Theirs,
+        )
+        .expect("accept theirs");
+
+    assert_eq!(left, vec![]);
+    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.git(&["rev-parse", ":lib"]).trim(), theirs);
+}
+
+#[test]
+fn accepting_yours_for_a_submodule_records_the_commit_you_moved_it_to() {
+    let sandbox = Sandbox::new();
+    let (work, ours, _) = submodule_moved_on_both_sides(&sandbox);
+    // The submodule shows another commit than either side's.
+    work.git(&["-C", "lib", "checkout", "--quiet", "HEAD~1"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    gikli
+        .accept_side(work.root(), &root, &["lib".to_owned()], ConflictSide::Yours)
+        .expect("accept yours");
+
+    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.git(&["rev-parse", ":lib"]).trim(), ours);
 }

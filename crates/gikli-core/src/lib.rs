@@ -608,7 +608,7 @@ pub enum Failure {
     ConflictsNotResolved,
     /// The file at `path` is not in conflict, so there is nothing to resolve.
     FileNotInConflict {
-        path: String,
+        path: PathBuf,
     },
     /// git could not resolve the conflicts of the files in the Repository at `folder`. The
     /// operation log holds git's output.
@@ -936,10 +936,12 @@ impl Gikli {
                 return self.delete_remote_branch(&notification, action, upstream);
             }
             NotificationAction::ContinueRebase => {
-                return self.act_on_stopped_rebase(&notification, OperationAction::Continue);
+                let repository = notification.stopped_rebase()?;
+                return self.act_on_operation(&notification, repository, OperationAction::Continue);
             }
             NotificationAction::AbortRebase => {
-                return self.act_on_stopped_rebase(&notification, OperationAction::Abort);
+                let repository = notification.stopped_rebase()?;
+                return self.act_on_operation(&notification, repository, OperationAction::Abort);
             }
             NotificationAction::ResolveConflicts => {
                 let repository = notification.unresolved_conflicts()?;
@@ -947,7 +949,8 @@ impl Gikli {
                 return Ok(NotificationOutcome::ResolveConflicts(repository.clone()));
             }
             NotificationAction::AbortOperation => {
-                return self.abort_operation_with_conflicts(&notification);
+                let repository = notification.unresolved_conflicts()?;
+                return self.act_on_operation(&notification, repository, OperationAction::Abort);
             }
         };
         Ok(NotificationOutcome::ProjectChanged(project))
@@ -1032,28 +1035,16 @@ impl Gikli {
         Ok(NotificationOutcome::BranchesChanged(repository.clone()))
     }
 
-    /// Takes `action` on the rebase `notification` tells stopped, and removes the notification. A
-    /// rebase that goes on and stops again raises it anew.
-    fn act_on_stopped_rebase(
+    /// Takes `action` on the operation half done in `repository`, which `notification` tells of,
+    /// and removes the notification. A rebase that goes on and stops again raises its notification
+    /// anew.
+    fn act_on_operation(
         &self,
         notification: &Notification,
+        repository: &Repository,
         action: OperationAction,
     ) -> Result<NotificationOutcome, Failure> {
-        let repository = notification.stopped_rebase()?;
         self.run_operation_action(repository, action)?;
-        self.notifications.withdraw(notification.id);
-        self.operation_in_progress(&notification.project, repository)?;
-        Ok(NotificationOutcome::HeadMoved(repository.clone()))
-    }
-
-    /// Aborts the operation in progress that left the conflicts `notification` tells of, and
-    /// removes the notification.
-    fn abort_operation_with_conflicts(
-        &self,
-        notification: &Notification,
-    ) -> Result<NotificationOutcome, Failure> {
-        let repository = notification.unresolved_conflicts()?;
-        self.run_operation_action(repository, OperationAction::Abort)?;
         self.notifications.withdraw(notification.id);
         self.operation_in_progress(&notification.project, repository)?;
         Ok(NotificationOutcome::HeadMoved(repository.clone()))
@@ -2576,9 +2567,8 @@ impl Gikli {
         repository: &Repository,
     ) -> Result<Option<OperationInProgress>, Failure> {
         let runner = self.runner(&repository.root)?;
-        if !in_progress::has_conflicts(&runner, repository)? {
-            self.notifications
-                .settle(project, &conflicts_unresolved(repository));
+        if !conflicts::any(&runner, repository)? {
+            self.settle_conflicts_unresolved(project, repository);
         }
         let operation = in_progress::read(&runner, repository)?;
         let stopped = NotificationKind::RebaseStopped {
@@ -2612,10 +2602,15 @@ impl Gikli {
     ) -> Result<Vec<ConflictedFile>, Failure> {
         let files = conflicts::read(&self.runner(&repository.root)?, repository)?;
         if files.is_empty() {
-            self.notifications
-                .settle(project, &conflicts_unresolved(repository));
+            self.settle_conflicts_unresolved(project, repository);
         }
         Ok(files)
+    }
+
+    /// Removes the notification about the files of `repository` left in conflict, as none is.
+    fn settle_conflicts_unresolved(&self, project: &Path, repository: &Repository) {
+        self.notifications
+            .settle(project, &conflicts_unresolved(repository));
     }
 
     /// Closes the conflicts dialog on `repository`, a Repository of the Project at `project`. The
@@ -2624,16 +2619,16 @@ impl Gikli {
     /// when there is one. It is raised once while they stay in conflict, and goes once none is.
     pub fn close_conflicts(&self, project: &Path, repository: &Repository) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?;
-        let kind = conflicts_unresolved(repository);
-        if conflicts::read(&runner, repository)?.is_empty() {
-            self.notifications.settle(project, &kind);
+        if !conflicts::any(&runner, repository)? {
+            self.settle_conflicts_unresolved(project, repository);
             return Ok(());
         }
         let mut actions = vec![NotificationAction::ResolveConflicts];
         if in_progress::read(&runner, repository)?.is_some() {
             actions.push(NotificationAction::AbortOperation);
         }
-        self.notifications.raise(project, kind, actions);
+        self.notifications
+            .raise(project, conflicts_unresolved(repository), actions);
         Ok(())
     }
 
@@ -2736,7 +2731,7 @@ impl Gikli {
             action,
             OperationAction::Continue | OperationAction::CommitMerge
         );
-        if resolved_first && in_progress::has_conflicts(&runner, repository)? {
+        if resolved_first && conflicts::any(&runner, repository)? {
             return Err(Failure::ConflictsNotResolved);
         }
         let runner = runner.accepting_prepared_messages();
@@ -2758,7 +2753,7 @@ impl Gikli {
             && !invocation.cancelled
             && in_progress::read(&runner, repository)?.is_some()
         {
-            if in_progress::has_conflicts(&runner, repository)? {
+            if conflicts::any(&runner, repository)? {
                 self.events.send(Event::ConflictsLeft {
                     repository: repository.clone(),
                 });
@@ -3339,7 +3334,6 @@ fn checkout_failed(repository: &Repository) -> Failure {
     }
 }
 
-/// `command`, a list of arguments gikli built, as the runner takes it.
 /// What the notification about the files of `repository` left in conflict says.
 fn conflicts_unresolved(repository: &Repository) -> NotificationKind {
     NotificationKind::ConflictsUnresolved {
@@ -3347,6 +3341,7 @@ fn conflicts_unresolved(repository: &Repository) -> NotificationKind {
     }
 }
 
+/// `command`, a list of arguments gikli built, as the runner takes it.
 fn as_args(command: &[String]) -> Vec<&str> {
     command.iter().map(String::as_str).collect()
 }

@@ -255,7 +255,7 @@ const unmergedCommitsView = createUnmergedCommitsView();
 const conflictsDialog = createConflictsDialog({
   errorView,
   project: () => shownFolder,
-  filesResolved: (repository) => headMoved(repository),
+  conflictsChanged: (repository) => headMoved(repository),
 });
 
 /**

@@ -517,6 +517,7 @@ export const en = {
   conflictSideModified: "changed",
   conflictSideAdded: "added",
   conflictSideDeleted: "deleted",
+  conflictSideAbsent: "not there",
   conflictAcceptYours: "Accept Yours",
   conflictAcceptTheirs: "Accept Theirs",
   conflictAcceptYoursDeletion: "Accept Yours (Delete)",

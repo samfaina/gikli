@@ -22,8 +22,14 @@ export interface ConflictsDialogHost {
   errorView(error: unknown): HTMLElement;
   /** The folder of the Project shown, which the notification left on closing is about. */
   project(): string | null;
-  /** Files of `repository` were resolved: its changes and the operation in progress are read again. */
-  filesResolved(repository: Repository): void;
+  /** The conflicts of `repository` may have changed, as after resolving files: its changes and the operation in progress are read again. */
+  conflictsChanged(repository: Repository): void;
+}
+
+/** The Repository the dialog shows, with the Project it is in. */
+interface Shown {
+  project: string;
+  repository: Repository;
 }
 
 export interface ConflictsDialog {
@@ -37,6 +43,7 @@ const SIDE_CHANGES: Record<SideChange, StringKey> = {
   modified: "conflictSideModified",
   added: "conflictSideAdded",
   deleted: "conflictSideDeleted",
+  absent: "conflictSideAbsent",
 };
 
 export function createConflictsDialog(host: ConflictsDialogHost): ConflictsDialog {
@@ -46,7 +53,7 @@ export function createConflictsDialog(host: ConflictsDialogHost): ConflictsDialo
   const message = element<HTMLElement>("conflicts-message");
   const closeButton = element<HTMLButtonElement>("conflicts-close");
 
-  let shown: { project: string; repository: Repository } | null = null;
+  let shown: Shown | null = null;
 
   closeButton.textContent = t("conflictsClose");
   closeButton.addEventListener("click", close);
@@ -66,7 +73,7 @@ export function createConflictsDialog(host: ConflictsDialogHost): ConflictsDialo
       void read(shown);
       return;
     }
-    const current = { project, repository };
+    const current: Shown = { project, repository };
     shown = current;
     title.textContent = t("conflictsTitle", { name: folderName(repository.root) });
     title.title = repository.root;
@@ -89,18 +96,22 @@ export function createConflictsDialog(host: ConflictsDialogHost): ConflictsDialo
     });
   }
 
-  async function read(current: { project: string; repository: Repository }): Promise<void> {
+  async function read(current: Shown): Promise<void> {
     try {
       show(current, await conflicts(current.project, current.repository));
     } catch (error) {
-      if (shown === current) {
-        message.replaceChildren(host.errorView(error));
-      }
+      showError(current, error);
+    }
+  }
+
+  function showError(current: Shown, error: unknown): void {
+    if (shown === current) {
+      message.replaceChildren(host.errorView(error));
     }
   }
 
   /** Lists `files`, the files still in conflict, or says that none is. */
-  function show(current: { project: string; repository: Repository }, files: ConflictedFile[]): void {
+  function show(current: Shown, files: ConflictedFile[]): void {
     if (shown !== current) {
       return;
     }
@@ -108,7 +119,7 @@ export function createConflictsDialog(host: ConflictsDialogHost): ConflictsDialo
     message.textContent = files.length === 0 ? t("conflictsAllResolved") : "";
   }
 
-  function row(current: { project: string; repository: Repository }, file: ConflictedFile): HTMLLIElement {
+  function row(current: Shown, file: ConflictedFile): HTMLLIElement {
     const item = document.createElement("li");
     item.className = "conflict";
     item.dataset.testid = "conflict";
@@ -136,11 +147,10 @@ export function createConflictsDialog(host: ConflictsDialogHost): ConflictsDialo
           show(current, left);
         } catch (error) {
           buttons.forEach((other) => (other.disabled = false));
-          if (shown === current) {
-            message.replaceChildren(host.errorView(error));
-          }
+          showError(current, error);
         } finally {
-          host.filesResolved(current.repository);
+          // A command that failed may still have resolved some files.
+          host.conflictsChanged(current.repository);
         }
       });
       return control;
@@ -155,9 +165,9 @@ export function createConflictsDialog(host: ConflictsDialogHost): ConflictsDialo
   return { open, close };
 }
 
-/** The label of the button that accepts `side`, which deletes the file when that side deleted it. */
+/** The label of the button that accepts `side`, which deletes the file when that side does not have it. */
 function acceptLabel(side: ConflictSide, change: SideChange): string {
-  if (change === "deleted") {
+  if (change === "deleted" || change === "absent") {
     return t(side === "yours" ? "conflictAcceptYoursDeletion" : "conflictAcceptTheirsDeletion");
   }
   return t(side === "yours" ? "conflictAcceptYours" : "conflictAcceptTheirs");

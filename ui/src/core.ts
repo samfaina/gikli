@@ -1258,8 +1258,8 @@ export function takeOperationAction(
   return invoke("take_operation_action", { project, repository, action });
 }
 
-/** What one side of a conflict did to the file since the sides parted. */
-export type SideChange = "modified" | "added" | "deleted";
+/** What one side of a conflict did to the file since the sides parted. `absent`: the side never had it, only the other added it. */
+export type SideChange = "modified" | "added" | "deleted" | "absent";
 
 /** One side of a conflict from the user's point of view: theirs is what the operation brings in. */
 export type ConflictSide = "yours" | "theirs";
@@ -1277,7 +1277,7 @@ export function conflicts(project: string, repository: Repository): Promise<Conf
 }
 
 /**
- * Resolves the files at `paths` with the version of `side`, or deletes them where that side deleted them, and returns the files
+ * Resolves the files at `paths` with the version of `side`, or deletes them where that side does not have them, and returns the files
  * still in conflict. Rejects with a {@link Failure}: `fileNotInConflict` for a path that is not, and then nothing is resolved.
  */
 export function acceptSide(project: string, repository: Repository, paths: string[], side: ConflictSide): Promise<ConflictedFile[]> {

@@ -110,20 +110,6 @@ pub(crate) fn action_args(kind: OperationKind, action: OperationAction) -> [&'st
     [kind.command(), option]
 }
 
-/// Whether files of `repository` still have conflicts: the index holds more than one version of
-/// them.
-pub(crate) fn has_conflicts(runner: &GitRunner, repository: &Repository) -> Result<bool, Failure> {
-    let listed = runner
-        .run(&repository.root, &["ls-files", "--unmerged", "-z"])
-        .map_err(git_failed_to_start)?;
-    if !listed.success {
-        return Err(Failure::ChangesUnreadable {
-            folder: repository.root.clone(),
-        });
-    }
-    Ok(!listed.stdout.is_empty())
-}
-
 /// The commit HEAD of `repository` is on, if it is on one.
 pub(crate) fn head(runner: &GitRunner, repository: &Repository) -> Result<Option<String>, Failure> {
     let head = runner
