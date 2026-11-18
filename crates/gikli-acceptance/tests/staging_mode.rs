@@ -739,7 +739,7 @@ fn a_staged_binary_file_shows_no_text_diff() {
 }
 
 #[test]
-fn a_conflicted_file_is_unstaged_and_compares_with_head() {
+fn a_conflicted_file_is_in_the_conflicts_on_neither_side_and_compares_with_head() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
     repository.git(&["checkout", "--quiet", "-b", "other"]);
@@ -752,12 +752,14 @@ fn a_conflicted_file_is_unstaged_and_compares_with_head() {
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    let area = staging_area(&gikli, &root);
+    let changes = gikli.read_changes(&root).expect("read changes");
+    let area = changes.staging.expect("staging mode");
     let (text, side) = side_diff(&gikli, &root, "a.txt", StagingSide::Unstaged);
 
     assert_eq!(area.staged.changes, vec![]);
+    assert_eq!(area.unstaged.changes, vec![]);
     assert_eq!(
-        entries(&area.unstaged.changes),
+        entries(&changes.conflicts.changes),
         vec![(Path::new("a.txt"), ChangeStatus::Conflicted)]
     );
     assert_eq!(side, None, "the index holds no one version to compare with");

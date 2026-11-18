@@ -48,6 +48,10 @@ pub enum NotificationKind {
     /// A rebase in `repository` stopped, on a conflict or at a commit to edit, and waits for the
     /// user to continue or abort it.
     RebaseStopped { repository: Repository },
+    /// The user closed the conflicts dialog while files of `repository` were still in conflict.
+    /// They stay in conflict, as a group in the changes view, until the user resolves them or
+    /// aborts the operation that left them.
+    ConflictsUnresolved { repository: Repository },
 }
 
 /// An action a notification offers.
@@ -70,6 +74,11 @@ pub enum NotificationAction {
     ContinueRebase,
     /// Gives up the stopped rebase, and brings the branch back to where it was.
     AbortRebase,
+    /// Opens the conflicts dialog again, to resolve the files still in conflict.
+    ResolveConflicts,
+    /// Gives up the operation in progress that left the conflicts, and brings back what HEAD and
+    /// the files were before it started.
+    AbortOperation,
 }
 
 /// What acting on a notification changed.
@@ -85,6 +94,8 @@ pub enum NotificationOutcome {
     /// HEAD of the Repository moved, as continuing or aborting a rebase moves it, and the operation
     /// in progress there may have changed or ended.
     HeadMoved(Repository),
+    /// The conflicts dialog opens on the files of the Repository still in conflict.
+    ResolveConflicts(Repository),
 }
 
 /// The deletion of branches a notification tells of.
@@ -121,6 +132,15 @@ impl Notification {
             _ => Err(Failure::NotificationActionNotOffered { id: self.id }),
         }
     }
+
+    /// The Repository whose unresolved conflicts this notification tells of. One about anything
+    /// else offers no action on conflicts, and returns [`Failure::NotificationActionNotOffered`].
+    pub(crate) fn unresolved_conflicts(&self) -> Result<&Repository, Failure> {
+        match &self.kind {
+            NotificationKind::ConflictsUnresolved { repository } => Ok(repository),
+            _ => Err(Failure::NotificationActionNotOffered { id: self.id }),
+        }
+    }
 }
 
 impl NotificationKind {
@@ -133,10 +153,12 @@ impl NotificationKind {
             Self::InvalidRepository { repository } => {
                 project.invalid_repositories.contains(repository)
             }
-            // Whether a rebase is still stopped takes git to tell: see [`Notifications::settle`].
+            // Whether a rebase is still stopped, or files still in conflict, takes git to tell: see
+            // [`Notifications::settle`].
             Self::HookNotFinished { .. }
             | Self::BranchesDeleted { .. }
-            | Self::RebaseStopped { .. } => true,
+            | Self::RebaseStopped { .. }
+            | Self::ConflictsUnresolved { .. } => true,
         }
     }
 

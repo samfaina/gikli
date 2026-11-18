@@ -172,6 +172,8 @@ export interface ChangeSet {
   repository: Repository;
   /** Ordered by path. */
   changes: Change[];
+  /** The files in conflict, shown as a group of their own before the rest: they are in no Changelist and on neither side meanwhile. */
+  conflicts: ChangeGroup;
   /** Exactly one is active. */
   changelists: Changelist[];
   /** The new files git does not track yet. */
@@ -414,6 +416,10 @@ export type Failure =
   | { kind: "operationActionNotOffered"; action: OperationAction }
   /** Files still have conflicts, so the operation in progress cannot go on. */
   | { kind: "conflictsNotResolved" }
+  /** The file at `path` is not in conflict, so there is nothing to resolve. */
+  | { kind: "fileNotInConflict"; path: string }
+  /** git could not resolve the conflicts: the operation log shows why. */
+  | { kind: "filesNotResolved"; folder: string }
   /** git could not take `action` on the `operation` half done: the operation log shows why. */
   | { kind: "operationActionFailed"; folder: string; operation: OperationKind; action: OperationAction }
   | { kind: "notificationGone"; id: number }
@@ -447,7 +453,9 @@ export type NotificationKind =
   /** gikli deleted these branches while HEAD was on the commit `head`, null on a branch with no commit yet. */
   | { kind: "branchesDeleted"; repository: Repository; branches: DeletedBranch[]; head: string | null }
   /** A rebase stopped, on a conflict or at a commit to edit, and waits for the user to continue or abort it. */
-  | { kind: "rebaseStopped"; repository: Repository };
+  | { kind: "rebaseStopped"; repository: Repository }
+  /** The user closed the conflicts dialog while files were still in conflict: they stay so until resolved or aborted. */
+  | { kind: "conflictsUnresolved"; repository: Repository };
 
 /** A branch of a remote: `branch` is its name there. */
 export interface RemoteBranch {
@@ -480,7 +488,11 @@ export type NotificationAction =
   /** Goes on with the stopped rebase. */
   | { action: "continueRebase" }
   /** Gives up the stopped rebase. */
-  | { action: "abortRebase" };
+  | { action: "abortRebase" }
+  /** Opens the conflicts dialog again. */
+  | { action: "resolveConflicts" }
+  /** Gives up the operation in progress that left the conflicts. */
+  | { action: "abortOperation" };
 
 /** A long-lived message about a Project, with the actions the user can take on it. */
 export interface Notification {
@@ -499,7 +511,9 @@ export type NotificationOutcome =
   /** The commits a deleted branch took away, newest first. */
   | { outcome: "unmergedCommits"; payload: ListedCommit[] }
   /** HEAD of the Repository moved, as continuing or aborting a rebase moves it. */
-  | { outcome: "headMoved"; payload: Repository };
+  | { outcome: "headMoved"; payload: Repository }
+  /** The conflicts dialog opens on the files of the Repository still in conflict. */
+  | { outcome: "resolveConflicts"; payload: Repository };
 
 /** The two forms of the URL of a repository. The form it was typed in stays as it was typed. */
 export interface CloneUrlForms {
@@ -526,7 +540,9 @@ export type LongOperation =
   /** Deleting the branch `branch` of `remote`, which a deleted branch followed. */
   | { kind: "deleteRemoteBranch"; repository: Repository; remote: string; branch: string }
   /** Taking `action` on the `operation` half done. */
-  | { kind: "takeOperationAction"; repository: Repository; operation: OperationKind; action: OperationAction };
+  | { kind: "takeOperationAction"; repository: Repository; operation: OperationKind; action: OperationAction }
+  /** Resolving files in conflict. */
+  | { kind: "resolveConflicts"; repository: Repository };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -574,7 +590,9 @@ export type CoreEvent =
   | { event: "operationProgress"; payload: { id: number; progress: Progress } }
   | { event: "operationHook"; payload: { id: number; hook: string | null } }
   | { event: "operationFinished"; payload: { id: number } }
-  | { event: "filesChanged"; payload: { repository: Repository } };
+  | { event: "filesChanged"; payload: { repository: Repository } }
+  /** An operation gikli ran left files of the Repository in conflict: the conflicts dialog opens. */
+  | { event: "conflictsLeft"; payload: { repository: Repository } };
 
 export function checkGit(): Promise<GitCheck> {
   return invoke("check_git");
@@ -1238,6 +1256,45 @@ export function takeOperationAction(
   action: OperationAction,
 ): Promise<OperationInProgress | null> {
   return invoke("take_operation_action", { project, repository, action });
+}
+
+/** What one side of a conflict did to the file since the sides parted. `absent`: the side never had it, only the other added it. */
+export type SideChange = "modified" | "added" | "deleted" | "absent";
+
+/** One side of a conflict from the user's point of view: theirs is what the operation brings in. */
+export type ConflictSide = "yours" | "theirs";
+
+/** A file in conflict. "Yours" is the user's side, the branch they are on, even during a rebase, where git calls it `--theirs`. */
+export interface ConflictedFile {
+  path: string;
+  yours: SideChange;
+  theirs: SideChange;
+}
+
+/** The files in conflict in `repository`, ordered by path. Rejects with a {@link Failure}. */
+export function conflicts(project: string, repository: Repository): Promise<ConflictedFile[]> {
+  return invoke("conflicts", { project, repository });
+}
+
+/**
+ * Resolves the files at `paths` with the version of `side`, or deletes them where that side does not have them, and returns the files
+ * still in conflict. Rejects with a {@link Failure}: `fileNotInConflict` for a path that is not, and then nothing is resolved.
+ */
+export function acceptSide(project: string, repository: Repository, paths: string[], side: ConflictSide): Promise<ConflictedFile[]> {
+  return invoke("accept_side", { project, repository, paths, side });
+}
+
+/** Marks the files at `paths` resolved as the user edited them by hand, and returns the files still in conflict. Rejects with a {@link Failure}. */
+export function markResolved(project: string, repository: Repository, paths: string[]): Promise<ConflictedFile[]> {
+  return invoke("mark_resolved", { project, repository, paths });
+}
+
+/**
+ * Closes the conflicts dialog. Files still in conflict stay so, as a group in the changes view, and a notification offers to
+ * resolve them and to abort the operation that left them. Rejects with a {@link Failure}.
+ */
+export function closeConflicts(project: string, repository: Repository): Promise<void> {
+  return invoke("close_conflicts", { project, repository });
 }
 
 /** The searches of the log the user ran, newest first, each with its regex and match-case options. */

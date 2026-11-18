@@ -93,6 +93,7 @@ import { createNewBranchDialog } from "./new-branch-dialog";
 import { createRenameBranchDialog } from "./rename-branch-dialog";
 import { createDeleteBranchesDialog } from "./delete-branches-dialog";
 import { createUnmergedCommitsView } from "./unmerged-commits";
+import { createConflictsDialog } from "./conflicts-dialog";
 import { describeOperationAction, describeOperationKind, type OperationsHost } from "./operation-in-progress";
 import { createStatusArea } from "./status-area";
 import { t, type StringKey } from "./strings";
@@ -250,6 +251,12 @@ const deleteBranchesDialog = createDeleteBranchesDialog({
 });
 
 const unmergedCommitsView = createUnmergedCommitsView();
+
+const conflictsDialog = createConflictsDialog({
+  errorView,
+  project: () => shownFolder,
+  conflictsChanged: (repository) => headMoved(repository),
+});
 
 /**
  * HEAD of `repository` moved, or its branches changed: the status area, its changes and the log, when it shows it, are read
@@ -611,6 +618,11 @@ function handleCoreEvent(event: CoreEvent): void {
         void diffView.refresh();
       }
       break;
+    case "conflictsLeft":
+      if (shownRepositories.has(event.payload.repository.root)) {
+        conflictsDialog.open(event.payload.repository);
+      }
+      break;
     case "promptRaised":
       showPrompt(event.payload);
       break;
@@ -719,6 +731,7 @@ function showProject(project: Project): void {
     renameBranchDialog.close();
     deleteBranchesDialog.close();
     unmergedCommitsView.close();
+    conflictsDialog.close();
   }
   shownFolder = project.folder;
   showNotifications();
@@ -1065,10 +1078,18 @@ function focusChangeRow(container: HTMLElement, path: string): void {
   }
 }
 
-/** The Changelists of a Repository with their changes, or its Staged and Unstaged changes in Staging mode, then Unversioned Files and the ignored files when there are any. */
+/**
+ * The files in conflict when there are any, then the Changelists of a Repository with their changes, or its Staged and Unstaged
+ * changes in Staging mode, then Unversioned Files and the ignored files when there are any.
+ */
 function changeList(changeSet: ChangeSet, actions: ChangelistActions): HTMLElement {
   const view = document.createElement("div");
-  const { repository, unversionedFiles, ignoredFiles, staging } = changeSet;
+  const { repository, conflicts, unversionedFiles, ignoredFiles, staging } = changeSet;
+  if (conflicts.nodes.length > 0) {
+    const resolve = changelistButton("resolve-conflicts", t("conflictsResolve"), () => conflictsDialog.open(repository));
+    // Staged, a conflicted file is marked resolved, as git does, so its row offers that in Staging mode.
+    view.append(changeGroupView(repository, "conflicts-group", [groupName(t("conflictsGroup")), resolve], conflicts.nodes, staging !== null ? "unstaged" : null));
+  }
   if (staging !== null) {
     const stageButton = (testId: string, text: StringKey, enabled: boolean, act: () => void): HTMLButtonElement => {
       const button = changelistButton(testId, t(text), act);
@@ -1077,7 +1098,7 @@ function changeList(changeSet: ChangeSet, actions: ChangelistActions): HTMLEleme
     };
     const hasTrackedChanges = staging.unstaged.changes.length > 0;
     // Staging marks a conflict resolved, markers and all, which takes a decision about each file.
-    const canStageAtOnce = !staging.unstaged.changes.some((change) => change.status === "conflicted");
+    const canStageAtOnce = changeSet.conflicts.changes.length === 0;
     view.append(
       changeGroupView(repository, "staged-changes", [groupName(t("stagedChanges"))], staging.staged.nodes, "staged"),
       changeGroupView(
@@ -1551,6 +1572,9 @@ function notificationView(notification: Notification): HTMLElement {
               unmergedCommitsView.open(action.branch, outcome.payload);
             }
             break;
+          case "resolveConflicts":
+            conflictsDialog.open(outcome.payload);
+            break;
         }
         // A notification that stays, as after showing the commits, can be acted on again.
         buttons.forEach((other) => (other.disabled = false));
@@ -1591,6 +1615,8 @@ function describeNotification(notification: Notification): string {
     }
     case "rebaseStopped":
       return t("notificationRebaseStopped", { root: notification.kind.repository.root });
+    case "conflictsUnresolved":
+      return t("notificationConflictsUnresolved", { root: notification.kind.repository.root });
   }
 }
 
@@ -1603,6 +1629,8 @@ function describeAction(action: NotificationAction): string {
     case "restoreBranches":
     case "continueRebase":
     case "abortRebase":
+    case "resolveConflicts":
+    case "abortOperation":
       return t(action.action);
     case "showUnmergedCommits":
       return t("showUnmergedCommits", { branch: action.branch });
@@ -1792,6 +1820,8 @@ function describeOperation(operation: LongOperation): string {
         operation: describeOperationKind(operation.operation),
         root: operation.repository.root,
       });
+    case "resolveConflicts":
+      return t("operationResolveConflicts", { root: operation.repository.root });
   }
 }
 
@@ -2091,6 +2121,10 @@ function describeFailure(failure: Failure): string {
       return t("failureOperationActionNotOffered", { action: describeOperationAction(failure.action) });
     case "conflictsNotResolved":
       return t("failureConflictsNotResolved");
+    case "fileNotInConflict":
+      return t("failureFileNotInConflict", { path: failure.path });
+    case "filesNotResolved":
+      return t("failureFilesNotResolved", { folder: failure.folder });
     case "operationActionFailed":
       return t("failureOperationActionFailed", {
         action: describeOperationAction(failure.action),

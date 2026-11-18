@@ -17,6 +17,10 @@ pub struct ChangeSet {
     pub repository: Repository,
     /// One entry per changed file, ordered by path.
     pub changes: Vec<Change>,
+    /// The files in conflict, which the changes view shows as a group of their own, before the
+    /// rest, until each one is resolved. They are in no Changelist and on neither side of the
+    /// index meanwhile, and a file that stays changed once resolved goes back to its Changelist.
+    pub conflicts: ChangeGroup,
     /// The Changelists of the Repository, each with its changes. Exactly one is active.
     pub changelists: Vec<Changelist>,
     /// The new files git does not track yet.
@@ -34,7 +38,8 @@ pub struct ChangeSet {
 pub struct StagingArea {
     /// How the index differs from the last commit.
     pub staged: ChangeGroup,
-    /// How the working tree differs from the index, without the files git does not track yet.
+    /// How the working tree differs from the index, without the files git does not track yet and
+    /// the files in conflict, which are in [`ChangeSet::conflicts`].
     pub unstaged: ChangeGroup,
     /// Whether a merge is in progress, which a commit concludes even with nothing staged.
     pub merging: bool,
@@ -51,7 +56,13 @@ impl StagingArea {
     ) -> Self {
         Self {
             staged: ChangeGroup::new(staged, grouping),
-            unstaged: ChangeGroup::new(unstaged, grouping),
+            unstaged: ChangeGroup::new(
+                unstaged
+                    .into_iter()
+                    .filter(|change| change.status != ChangeStatus::Conflicted)
+                    .collect(),
+                grouping,
+            ),
             merging,
         }
     }
@@ -150,10 +161,13 @@ impl ChangeSet {
         grouping: ChangeGrouping,
     ) -> Self {
         let mut in_lists = vec![Vec::new(); lists.lists().len()];
+        let mut conflicts = Vec::new();
         let mut unversioned = Vec::new();
         let mut ignored = Vec::new();
         for change in &changes {
-            if change.status.is_in_changelists() {
+            if change.status == ChangeStatus::Conflicted {
+                conflicts.push(change.clone());
+            } else if change.status.is_in_changelists() {
                 in_lists[lists.place_of(&change.path)].push(change.clone());
             } else if change.status == ChangeStatus::Untracked {
                 unversioned.push(change.clone());
@@ -177,6 +191,7 @@ impl ChangeSet {
         Self {
             repository,
             changes,
+            conflicts: ChangeGroup::new(conflicts, grouping),
             changelists,
             unversioned_files: ChangeGroup::new(unversioned, grouping),
             ignored_files: ChangeGroup::new(ignored, grouping),
@@ -218,18 +233,24 @@ impl ChangeSet {
         path: &Path,
         grouping: ChangeGrouping,
     ) -> (Option<PathBuf>, Option<PathBuf>) {
-        let mut groups: Vec<Vec<Change>> = self
+        let mut groups = vec![self.conflicts.changes.clone()];
+        groups.extend(
+            self.changelists
+                .iter()
+                .map(|list| list.group.changes.clone()),
+        );
+        groups.push(self.unversioned_files.changes.clone());
+        let active = self
             .changelists
             .iter()
-            .map(|list| list.group.changes.clone())
-            .collect();
-        groups.push(self.unversioned_files.changes.clone());
-        let active = self.changelists.iter().position(|list| list.active);
+            .position(|list| list.active)
+            .map(|active| active + 1);
         neighbors_among(groups, active, path, grouping)
     }
 
     /// The files before and after `path` among those on `side` in the changes view of Staging mode
-    /// when arranged by `grouping`, with Unversioned Files after the Unstaged changes. A file that
+    /// when arranged by `grouping`, with the files in conflict before the Unstaged changes and
+    /// Unversioned Files after them. A file that
     /// is not on that side takes the place it would have there, as the user can still be looking
     /// at it when it leaves. None outside Staging mode.
     pub(crate) fn neighbors_on_side(
@@ -244,11 +265,16 @@ impl ChangeSet {
         let groups = match side {
             StagingSide::Staged => vec![staging.staged.changes.clone()],
             StagingSide::Unstaged => vec![
+                self.conflicts.changes.clone(),
                 staging.unstaged.changes.clone(),
                 self.unversioned_files.changes.clone(),
             ],
         };
-        neighbors_among(groups, Some(0), path, grouping)
+        let home = match side {
+            StagingSide::Staged => 0,
+            StagingSide::Unstaged => 1,
+        };
+        neighbors_among(groups, Some(home), path, grouping)
     }
 }
 

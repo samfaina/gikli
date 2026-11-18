@@ -12,12 +12,13 @@ use std::path::PathBuf;
 
 use gikli_core::{
     Branches, CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges,
-    CommitDetails, CommitWarning, CurrentBranch, Failure, FailureAction, FileDiff, FileHistory,
-    Gikli, GitCheck, HostEnvironment, LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget,
-    NewBranchBase, Notification, NotificationAction, NotificationOutcome, OperationAction,
-    OperationInProgress, OperationLogEntry, Project, ProjectWindow, Prompt, PushAfterCommit,
-    PushPlan, PushTags, PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan,
-    RunningOperation, Settings, StagingSide, TextSearch, answer_askpass_request,
+    CommitDetails, CommitWarning, ConflictSide, ConflictedFile, CurrentBranch, Failure,
+    FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment, LocalBranch, LogCursor,
+    LogFilter, LogPage, MoveTarget, NewBranchBase, Notification, NotificationAction,
+    NotificationOutcome, OperationAction, OperationInProgress, OperationLogEntry, Project,
+    ProjectWindow, Prompt, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository,
+    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch,
+    answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -715,6 +716,45 @@ fn take_operation_action(
     gikli.take_operation_action(&project, &repository, action)
 }
 
+#[tauri::command(async)]
+fn conflicts(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+) -> Result<Vec<ConflictedFile>, Failure> {
+    gikli.conflicts(&project, &repository)
+}
+
+#[tauri::command(async)]
+fn accept_side(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    paths: Vec<String>,
+    side: ConflictSide,
+) -> Result<Vec<ConflictedFile>, Failure> {
+    gikli.accept_side(&project, &repository, &paths, side)
+}
+
+#[tauri::command(async)]
+fn mark_resolved(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    paths: Vec<String>,
+) -> Result<Vec<ConflictedFile>, Failure> {
+    gikli.mark_resolved(&project, &repository, &paths)
+}
+
+#[tauri::command(async)]
+fn close_conflicts(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+) -> Result<(), Failure> {
+    gikli.close_conflicts(&project, &repository)
+}
+
 #[tauri::command]
 fn log_search_history(gikli: State<'_, Gikli>) -> Vec<TextSearch> {
     gikli.log_search_history()
@@ -1035,6 +1075,10 @@ fn main() {
             current_branch,
             operation_in_progress,
             take_operation_action,
+            conflicts,
+            accept_side,
+            mark_resolved,
+            close_conflicts,
             end_log_read,
             log_search_history,
             log_branches,

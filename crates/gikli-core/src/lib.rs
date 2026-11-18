@@ -8,6 +8,7 @@ mod capability;
 mod changelists;
 mod clone_url;
 mod commit;
+mod conflicts;
 mod delete_branches;
 mod details;
 mod diff;
@@ -54,6 +55,7 @@ pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
 pub use clone_url::CloneUrlForms;
 pub use commit::CommitWarning;
+pub use conflicts::{ConflictSide, ConflictedFile, SideChange};
 pub use delete_branches::{DeletedBranch, RemoteBranch};
 pub use details::{CommitChanges, CommitDetails, MessagePart};
 pub use diff::{
@@ -604,6 +606,16 @@ pub enum Failure {
     /// Files still have conflicts, so the operation in progress cannot go on. The user resolves
     /// them first.
     ConflictsNotResolved,
+    /// The file at `path` is not in conflict, so there is nothing to resolve.
+    FileNotInConflict {
+        path: PathBuf,
+    },
+    /// git could not resolve the conflicts of the files in the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    FilesNotResolved {
+        folder: PathBuf,
+    },
     /// git could not take `action` on the `operation` half done in the Repository at `folder`. The
     /// operation log holds git's output.
     #[serde(rename_all = "camelCase")]
@@ -924,10 +936,21 @@ impl Gikli {
                 return self.delete_remote_branch(&notification, action, upstream);
             }
             NotificationAction::ContinueRebase => {
-                return self.act_on_stopped_rebase(&notification, OperationAction::Continue);
+                let repository = notification.stopped_rebase()?;
+                return self.act_on_operation(&notification, repository, OperationAction::Continue);
             }
             NotificationAction::AbortRebase => {
-                return self.act_on_stopped_rebase(&notification, OperationAction::Abort);
+                let repository = notification.stopped_rebase()?;
+                return self.act_on_operation(&notification, repository, OperationAction::Abort);
+            }
+            NotificationAction::ResolveConflicts => {
+                let repository = notification.unresolved_conflicts()?;
+                self.notifications.withdraw(notification.id);
+                return Ok(NotificationOutcome::ResolveConflicts(repository.clone()));
+            }
+            NotificationAction::AbortOperation => {
+                let repository = notification.unresolved_conflicts()?;
+                return self.act_on_operation(&notification, repository, OperationAction::Abort);
             }
         };
         Ok(NotificationOutcome::ProjectChanged(project))
@@ -1012,14 +1035,15 @@ impl Gikli {
         Ok(NotificationOutcome::BranchesChanged(repository.clone()))
     }
 
-    /// Takes `action` on the rebase `notification` tells stopped, and removes the notification. A
-    /// rebase that goes on and stops again raises it anew.
-    fn act_on_stopped_rebase(
+    /// Takes `action` on the operation half done in `repository`, which `notification` tells of,
+    /// and removes the notification. A rebase that goes on and stops again raises its notification
+    /// anew.
+    fn act_on_operation(
         &self,
         notification: &Notification,
+        repository: &Repository,
         action: OperationAction,
     ) -> Result<NotificationOutcome, Failure> {
-        let repository = notification.stopped_rebase()?;
         self.run_operation_action(repository, action)?;
         self.notifications.withdraw(notification.id);
         self.operation_in_progress(&notification.project, repository)?;
@@ -2535,13 +2559,18 @@ impl Gikli {
     /// another worktree of the same repository.
     ///
     /// A stopped rebase also raises a notification about the Project that offers to continue or
-    /// abort it, once while it stays stopped. It goes once the rebase is over.
+    /// abort it, once while it stays stopped. It goes once the rebase is over. The notification
+    /// about files left in conflict goes once none is, however they were resolved.
     pub fn operation_in_progress(
         &self,
         project: &Path,
         repository: &Repository,
     ) -> Result<Option<OperationInProgress>, Failure> {
-        let operation = in_progress::read(&self.runner(&repository.root)?, repository)?;
+        let runner = self.runner(&repository.root)?;
+        if !conflicts::any(&runner, repository)? {
+            self.settle_conflicts_unresolved(project, repository);
+        }
+        let operation = in_progress::read(&runner, repository)?;
         let stopped = NotificationKind::RebaseStopped {
             repository: repository.clone(),
         };
@@ -2561,6 +2590,108 @@ impl Gikli {
             self.notifications.settle(project, &stopped);
         }
         Ok(operation)
+    }
+
+    /// The files in conflict in `repository`, a Repository of the Project at `project`, ordered by
+    /// path, as the conflicts dialog lists them. Each one tells what each side did to the file from
+    /// the user's side: during a rebase, "yours" is what git calls `--theirs`.
+    pub fn conflicts(
+        &self,
+        project: &Path,
+        repository: &Repository,
+    ) -> Result<Vec<ConflictedFile>, Failure> {
+        let files = conflicts::read(&self.runner(&repository.root)?, repository)?;
+        if files.is_empty() {
+            self.settle_conflicts_unresolved(project, repository);
+        }
+        Ok(files)
+    }
+
+    /// Removes the notification about the files of `repository` left in conflict, as none is.
+    fn settle_conflicts_unresolved(&self, project: &Path, repository: &Repository) {
+        self.notifications
+            .settle(project, &conflicts_unresolved(repository));
+    }
+
+    /// Closes the conflicts dialog on `repository`, a Repository of the Project at `project`. The
+    /// files still in conflict stay so, as a group in the changes view, and a notification about
+    /// the Project offers to resolve them, and to abort the operation in progress that left them
+    /// when there is one. It is raised once while they stay in conflict, and goes once none is.
+    pub fn close_conflicts(&self, project: &Path, repository: &Repository) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?;
+        if !conflicts::any(&runner, repository)? {
+            self.settle_conflicts_unresolved(project, repository);
+            return Ok(());
+        }
+        let mut actions = vec![NotificationAction::ResolveConflicts];
+        if in_progress::read(&runner, repository)?.is_some() {
+            actions.push(NotificationAction::AbortOperation);
+        }
+        self.notifications
+            .raise(project, conflicts_unresolved(repository), actions);
+        Ok(())
+    }
+
+    /// Resolves the files at `paths`, relative to the root of `repository` and in conflict there,
+    /// with the version of `side`, and returns the files still in conflict. A side that deleted
+    /// the file deletes it. "Yours" stays the user's side during a rebase too, where git calls it
+    /// `--theirs`. A path that is not in conflict returns [`Failure::FileNotInConflict`], and
+    /// nothing is resolved.
+    pub fn accept_side(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        paths: &[String],
+        side: ConflictSide,
+    ) -> Result<Vec<ConflictedFile>, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let commands = conflicts::taking_side(&runner, repository, paths, side)?;
+        self.resolve_conflicts(&runner, repository, &commands)?;
+        self.conflicts(project, repository)
+    }
+
+    /// Marks the files at `paths`, relative to the root of `repository` and in conflict there,
+    /// resolved as the user edited them by hand, and returns the files still in conflict. A file
+    /// the user deleted leaves git. A path that is not in conflict returns
+    /// [`Failure::FileNotInConflict`], and nothing is marked.
+    pub fn mark_resolved(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        paths: &[String],
+    ) -> Result<Vec<ConflictedFile>, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let command = conflicts::marking_resolved(&runner, repository, paths)?;
+        self.resolve_conflicts(&runner, repository, &[command])?;
+        self.conflicts(project, repository)
+    }
+
+    /// Runs `commands`, the arguments after `git` that resolve conflicts in `repository`, in
+    /// order, as a [`LongOperation`]: a filter can take as long as a hook.
+    fn resolve_conflicts(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        commands: &[Vec<String>],
+    ) -> Result<(), Failure> {
+        let root = &repository.root;
+        for command in commands {
+            let operation = LongOperation::ResolveConflicts {
+                repository: repository.clone(),
+            };
+            let invocation = self.run_operation(runner, operation, root, &as_args(command))?;
+            if !invocation.success {
+                return Err(failure_of(
+                    runner,
+                    root,
+                    &invocation,
+                    Failure::FilesNotResolved {
+                        folder: root.clone(),
+                    },
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Takes `action` on the operation half done in `repository`, a Repository of the Project at
@@ -2600,7 +2731,7 @@ impl Gikli {
             action,
             OperationAction::Continue | OperationAction::CommitMerge
         );
-        if resolved_first && in_progress::has_conflicts(&runner, repository)? {
+        if resolved_first && conflicts::any(&runner, repository)? {
             return Err(Failure::ConflictsNotResolved);
         }
         let runner = runner.accepting_prepared_messages();
@@ -2621,10 +2752,16 @@ impl Gikli {
         if action != OperationAction::Abort
             && !invocation.cancelled
             && in_progress::read(&runner, repository)?.is_some()
-            && (in_progress::has_conflicts(&runner, repository)?
-                || in_progress::head(&runner, repository)? != head_before)
         {
-            return Ok(());
+            if conflicts::any(&runner, repository)? {
+                self.events.send(Event::ConflictsLeft {
+                    repository: repository.clone(),
+                });
+                return Ok(());
+            }
+            if in_progress::head(&runner, repository)? != head_before {
+                return Ok(());
+            }
         }
         Err(failure_of(
             &runner,
@@ -3194,6 +3331,13 @@ fn failure_of_contacting(
 fn checkout_failed(repository: &Repository) -> Failure {
     Failure::CheckoutFailed {
         folder: repository.root.clone(),
+    }
+}
+
+/// What the notification about the files of `repository` left in conflict says.
+fn conflicts_unresolved(repository: &Repository) -> NotificationKind {
+    NotificationKind::ConflictsUnresolved {
+        repository: repository.clone(),
     }
 }
 
