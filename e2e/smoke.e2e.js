@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { Key } from "webdriverio";
 
 import { doubleClickUntilDisplayed } from "./double-click.js";
-import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
+import { commitStaged, FIXTURE_IDENTITY, runGit, sandboxGitconfig } from "./sandbox-git.js";
 
 /**
  * The Refresh button, once no read of the changes is under way. It is disabled during one, as when
@@ -957,6 +957,131 @@ describe("gikli", () => {
       await idleRefresh();
       await setting.click();
       await expectChangeIn("Moved", kept);
+    });
+
+    describe("in the lists of commits beside the log", () => {
+      /** How many characters of a hash a commit row shows: `SHORT_HASH_LENGTH` in the UI. */
+      const SHORT_HASH_LENGTH = 8;
+
+      /** The full hash and the subject of the newest commit `git log` finds for `args`. */
+      function newestCommit(...args) {
+        const [hash, subject] = runGit(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), "log", "-1", "--format=%H%n%s", ...args)
+          .trim()
+          .split("\n");
+        return { hash, subject };
+      }
+
+      /** Checks that the commit row `row` shows the short hash and the subject of `commit`. */
+      async function expectCommitRow(row, commit) {
+        // Not getText: WebKitWebDriver answers "" for an element with overflow: hidden, as a cell of a row is.
+        assert.equal(await row.$(".log-hash").getProperty("textContent"), commit.hash.slice(0, SHORT_HASH_LENGTH));
+        assert.equal(await row.$(".log-subject").getProperty("textContent"), commit.subject);
+      }
+
+      it("lists the commits a push would send in the push dialog", async () => {
+        const repository = process.env.GIKLI_E2E_REPOSITORY;
+        const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+        // Not fetched: with no remote-tracking branch the push makes a new branch, of every local commit.
+        runGit(repository, gitconfig, "remote", "add", "smoke", process.env.GIKLI_E2E_REMOTE);
+        try {
+          await $('[data-testid="open-push"]').click();
+          const dialog = $('[data-testid="push-dialog"]');
+          await dialog.waitForDisplayed({ timeout: 30000 });
+          const row = $('[data-testid="push-commit"]');
+          await row.waitForDisplayed({ timeout: 30000 });
+          await expectCommitRow(row, newestCommit());
+
+          await $('[data-testid="push-close"]').click();
+          await dialog.waitForDisplayed({ timeout: 30000, reverse: true });
+          await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+        } finally {
+          runGit(repository, gitconfig, "remote", "remove", "smoke");
+        }
+      });
+
+      it("lists the commits a deleted branch took away from its notification", async () => {
+        const repository = process.env.GIKLI_E2E_REPOSITORY;
+        const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+        const branch = "smoke/unmerged";
+        // On HEAD's tree, so the working tree stays as it is.
+        const unmerged = runGit(repository, gitconfig, ...FIXTURE_IDENTITY, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Only on the deleted branch").trim();
+        runGit(repository, gitconfig, "branch", branch, unmerged);
+        const inPane = $(`[data-testid="log-branches-list"] [data-testid="branch"][data-name="${branch}"]`);
+        try {
+          await $('[data-testid="open-log"]').click();
+          await inPane.waitForDisplayed({ timeout: 30000 });
+          await inPane.click();
+          await $('[data-testid="log-delete-branches"]').click();
+          const deleteDialog = $('[data-testid="delete-branches"]');
+          await deleteDialog.waitForDisplayed({ timeout: 30000 });
+          await $(`[data-testid="delete-branches-branch"][data-name="${branch}"]`).waitForDisplayed({ timeout: 30000 });
+          await $('[data-testid="delete-branches-delete"]').click();
+          await deleteDialog.waitForDisplayed({ timeout: 30000, reverse: true });
+          const notification = $('[data-testid="notification"][data-kind="branchesDeleted"]');
+          await notification.waitForDisplayed({ timeout: 30000 });
+
+          await notification.$('[data-testid="notification-action"][data-action="showUnmergedCommits"]').click();
+          const view = $('[data-testid="unmerged-commits"]');
+          await view.waitForDisplayed({ timeout: 30000 });
+          const row = $('[data-testid="unmerged-commit"]');
+          await row.waitForDisplayed({ timeout: 30000 });
+          await expectCommitRow(row, newestCommit(unmerged));
+
+          await $('[data-testid="unmerged-commits-close"]').click();
+          await view.waitForDisplayed({ timeout: 30000, reverse: true });
+          await notification.$('[data-testid="dismiss-notification"]').click();
+          await notification.waitForDisplayed({ timeout: 30000, reverse: true });
+          await $('[data-testid="log-close"]').click();
+          await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+        } finally {
+          if (runGit(repository, gitconfig, "branch", "--list", branch).trim() !== "") {
+            runGit(repository, gitconfig, "branch", "--delete", "--force", branch);
+          }
+        }
+      });
+
+      it("lists the revisions of a file, with its path after the subject, in the file history", async () => {
+        // Not a file of the commits from the panel: they all hold "new", and the history would follow
+        // one to another as a rename.
+        const file = FIRST_FILE;
+        const commit = newestCommit("--", file);
+        // The settings the cases before left open leave the log so little room that the commit's row
+        // is the last one it shows, and on Linux the list's horizontal scrollbar overlays the bottom
+        // of it and takes the click on the row's center: WebKitWebDriver answers "not interactable".
+        const settings = $('[data-testid="settings"]');
+        const settingsShown = await settings.isDisplayed();
+        if (settingsShown) {
+          await $('[data-testid="toggle-settings"]').click();
+          await settings.waitForDisplayed({ timeout: 30000, reverse: true });
+        }
+        try {
+          await $('[data-testid="open-log"]').click();
+          const logRow = $(`[data-testid="log-row"][data-hash="${commit.hash}"]`);
+          await logRow.waitForDisplayed({ timeout: 30000 });
+          await logRow.click();
+          const showHistory = $(`[data-testid="log-changes-content"] .change:has(> .change-path[title="${file}"]) [data-testid="show-file-history"]`);
+          await showHistory.waitForDisplayed({ timeout: 30000 });
+          await showHistory.click();
+          const view = $('[data-testid="file-history"]');
+          await view.waitForDisplayed({ timeout: 30000 });
+          const row = $('[data-testid="file-history-row"]');
+          await row.waitForDisplayed({ timeout: 30000 });
+          await expectCommitRow(row, commit);
+          const afterSubject = row.$(".log-subject + .file-history-path");
+          assert.ok(await afterSubject.isExisting(), "the path comes right after the subject");
+          assert.equal(await afterSubject.getProperty("textContent"), file);
+
+          await $('[data-testid="file-history-close"]').click();
+          await view.waitForDisplayed({ timeout: 30000, reverse: true });
+          await $('[data-testid="log-close"]').click();
+          await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+        } finally {
+          if (settingsShown) {
+            await $('[data-testid="toggle-settings"]').click();
+            await settings.waitForDisplayed({ timeout: 30000 });
+          }
+        }
+      });
     });
   });
 
