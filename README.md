@@ -64,10 +64,14 @@ downloads the Microsoft Edge WebDriver that matches the installed WebView2 Runti
 needs `webkit2gtk-driver` (WebKitWebDriver). tauri-driver does not support macOS, so there the
 smoke test does not run.
 
-CI (`.github/workflows/ci.yml`) builds the app and runs these checks on every pull request
-against `main` and every push to `main`, on Windows, macOS and Linux, and once more on Windows
-and on Linux against git 2.34, the oldest supported version. The smoke test runs on every job
-but macOS's, which reports it as skipped. On Windows it runs without tauri-driver, which cannot
+CI (`.github/workflows/ci.yml`) builds the app and runs these checks in two tiers
+([ADR-0008](docs/adr/0008-ci-in-two-tiers-linux-jobs-in-an-image.md)). A pull request against
+`main` runs one job, on Windows with the runner's preinstalled git. Every push to `main` runs them
+on Windows, macOS and Linux, and once more on Windows and on Linux against git 2.34, the oldest
+supported version. The Linux jobs run in the CI image (`.github/ci-image/Dockerfile`, published to
+GHCR by `.github/workflows/ci-image.yml` weekly, by hand, and when a push to `main` changes it),
+which holds their prerequisites and both gits. The smoke test runs on every job but macOS's, which
+reports it as skipped. On Windows it runs without tauri-driver, which cannot
 start a session on the GitHub-hosted runner (#54): a CI step opens a WebView2 DevTools port with the
 `AdditionalBrowserArguments` policy for `gikli.exe` and names it in
 `GIKLI_E2E_WEBVIEW2_DEBUG_PORT`, and with that variable set the smoke test launches the app itself
