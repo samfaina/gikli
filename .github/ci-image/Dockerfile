@@ -1,4 +1,4 @@
-# The image both Linux CI jobs run in (ADR 0008). It holds everything those jobs used to fetch from
+# The image both Linux CI jobs run in (ADR-0008). It holds everything those jobs used to fetch from
 # Ubuntu's package servers, Launchpad and kernel.org on every run, so they fetch none of it:
 #
 # - the Tauri prerequisites, WebKitWebDriver and xvfb, for the build and the smoke test;
@@ -9,7 +9,7 @@
 #
 # Built and published to GHCR by .github/workflows/ci-image.yml, which passes MINIMUM_GIT_VERSION
 # as gikli-core declares it and tags each build with .github/scripts/ci-image-tag.sh, so a change
-# to this file or to that version gets a new image on the next push to main.
+# to this file, to that workflow or to that version gets a new image on the next push to main.
 
 # Built apart, so the Rust toolchain that builds it stays out of the image.
 FROM rust:1-bookworm AS tauri-driver
@@ -24,8 +24,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # The GitHub-hosted runner's locale.
 ENV LANG=C.UTF-8
 
-# A server that stops answering fails the try instead of stalling it, and apt-get update fails
-# when any repository could not be fetched, so the build fails rather than install from a stale list.
+# apt tries a server again, gives up on one that stops answering instead of stalling, and apt-get
+# update fails when any repository could not be fetched, so the build fails rather than install
+# from a stale list.
 RUN printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' \
       'Acquire::https::Timeout "30";' 'APT::Update::Error-Mode "any";' \
       > /etc/apt/apt.conf.d/80-ci-network

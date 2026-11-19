@@ -1,0 +1,140 @@
+# Builds gikli and runs its suite on GitHub's Windows and macOS runners, one job for each entry of
+# the matrix it is given. Called by the PR gate (pr.yml), with Windows and the runner's
+# preinstalled git only, and by the CI workflow on main (ci.yml), with every Windows and macOS job,
+# so a pull request is checked exactly as main's Windows job checks it (ADR-0008).
+#
+# The Linux jobs run the same checks in the CI image; see ci.yml. Keep the two in step.
+name: Windows and macOS
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: >-
+          The jobs, as a JSON array of {"name", "os", "git"}: git is preinstalled (the runner's)
+          or minimum (MINIMUM_GIT_VERSION, which Windows only installs).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # Well above the slowest job's usual 8 minutes, so a step that hangs stops its job long before
+    # GitHub's 6-hour default.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the minimum git version
+        if: matrix.git == 'minimum'
+        id: minimum-git
+        shell: bash
+        run: |
+          version=$(.github/scripts/minimum-git-version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # PortableGit, because the suite needs git http-backend, ssh-keygen and sh. A download is
+      # cheap enough to need no cache.
+      - name: Install git ${{ steps.minimum-git.outputs.version }} and put it first on the PATH
+        if: runner.os == 'Windows' && matrix.git == 'minimum'
+        shell: bash
+        env:
+          VERSION: ${{ steps.minimum-git.outputs.version }}
+        run: |
+          folder=$(cygpath -m "$RUNNER_TEMP/git-$VERSION")
+          mkdir -p "$folder"
+          installer="PortableGit-$VERSION-64-bit.7z.exe"
+          curl -fsSL --retry 3 -o "$folder/$installer" \
+            "https://github.com/git-for-windows/git/releases/download/v$VERSION.windows.1/$installer"
+          "$folder/$installer" -y -gm2 -o"$folder"
+          # The installer can ignore -o and extract to a PortableGit folder beside itself.
+          executable=$(find "$folder" -path '*/cmd/git.exe' -print -quit)
+          test -n "$executable" || { echo "::error::cmd/git.exe not found in $folder"; exit 1; }
+          cygpath -w "$(dirname "$executable")" >> "$GITHUB_PATH"
+          # Checked by the_suite_runs_against_the_git_ci_asked_for.
+          echo "GIKLI_EXPECTED_GIT_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Show the git under test
+        run: git --version
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Keyed by the git under test and shared between workflows, so the PR gate starts from the
+      # cache of main's Windows job.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-${{ matrix.git }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the app
+        run: npx tauri build --debug --no-bundle
+
+      - name: Core tests
+        run: cargo test --workspace
+
+      - name: Typecheck the UI
+        run: npm run typecheck
+
+      - name: Test the smoke test's helpers
+        run: npm run test:e2e-helpers
+
+      # On this runner WebView2 ignores the WEBVIEW2_* variables, so tauri-driver cannot start a
+      # session (issue #54). This policy opens a fixed DevTools port in gikli's WebView2 instead,
+      # and the variable makes the smoke test attach to it. Nothing but this step writes the policy:
+      # it is machine-wide and would leave the port open on a developer's machine.
+      - name: Open a DevTools port in gikli's WebView2 for the smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PORT: 9222
+        run: |
+          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name 'gikli.exe' -Value "--remote-debugging-port=$env:PORT" -PropertyType String -Force | Out-Null
+          "GIKLI_E2E_WEBVIEW2_DEBUG_PORT=$env:PORT" >> $env:GITHUB_ENV
+
+      # Not in bash: Git for Windows' bash puts its own git first on the PATH, so the minimum git
+      # job would test the app against the runner's preinstalled git without saying so. The smoke
+      # test writes its WebDriver logs, and a screenshot of each case that failed, to a folder of
+      # its own (see e2e/failure-output.js), which the step after it keeps.
+      - name: Smoke test (Windows)
+        id: smoke-windows
+        if: runner.os == 'Windows'
+        env:
+          GIKLI_E2E_OUTPUT: ${{ runner.temp }}/smoke-output/run-1
+        run: npm run test:e2e
+
+      - name: Keep the smoke test's screenshots and WebDriver logs
+        if: failure() && steps.smoke-windows.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-output-${{ matrix.name }}
+          path: ${{ runner.temp }}/smoke-output
+          if-no-files-found: warn
+
+      - name: Smoke test (skipped)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          REASON: tauri-driver does not support macOS
+        run: |
+          message="The end-to-end smoke test did not run on this job: $REASON."
+          echo "::warning title=Smoke test skipped::$message"
+          echo "**Smoke test skipped:** $message" >> "$GITHUB_STEP_SUMMARY"

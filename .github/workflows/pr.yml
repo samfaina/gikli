@@ -1,0 +1,25 @@
+# The PR gate (ADR-0008): a pull request against main runs this one job, on Windows with the
+# runner's preinstalled git: the build, the core tests, the UI typecheck, the smoke test's helper
+# tests and the smoke test. The full matrix runs once the pull request is merged (ci.yml).
+#
+# A workflow of its own, not a job of ci.yml: a job that ci.yml skipped on a pull request would
+# still show on it, as a skipped check.
+name: PR gate
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: PR gate
+    uses: ./.github/workflows/windows-and-macos.yml
+    with:
+      matrix: '[{"name": "Windows", "os": "windows-latest", "git": "preinstalled"}]'

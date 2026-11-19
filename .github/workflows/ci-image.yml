@@ -1,10 +1,11 @@
-# Builds the image both Linux CI jobs run in (.github/ci-image/Dockerfile, ADR 0008) and publishes
+# Builds the image both Linux CI jobs run in (.github/ci-image/Dockerfile, ADR-0008) and publishes
 # it to GHCR as ghcr.io/<owner>/gikli-ci:latest, and under the tag that names its definition (see
 # .github/scripts/ci-image-tag.sh).
 #
 # It runs weekly, for the latest stable git and Ubuntu's updates, and by hand (`gh workflow run
 # ci-image.yml`). The CI workflow also calls it on a push to main when the image of that push's
-# definition does not exist yet: on the push that changes the definition or MINIMUM_GIT_VERSION,
+# definition does not exist yet: on the push that changes the Dockerfile, this workflow or
+# MINIMUM_GIT_VERSION,
 # and on the first push that runs the Linux jobs in the image.
 #
 # The image is pushed only once it is built, so a build that fails leaves the previous :latest in

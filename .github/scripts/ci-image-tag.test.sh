@@ -12,20 +12,23 @@ fail() {
   failures=$((failures + 1))
 }
 
-# A checkout at $work/$1 whose image definition is $2 and whose minimum git is 2.$3.0.
+# A checkout at $work/$1 whose Dockerfile is $2, whose minimum git is 2.$3.0 and whose image
+# workflow is $4.
 checkout() {
-  mkdir -p "$work/$1/.github/ci-image" "$work/$1/crates/gikli-core/src"
+  mkdir -p "$work/$1/.github/ci-image" "$work/$1/.github/workflows" "$work/$1/crates/gikli-core/src"
   printf '%s\n' "$2" > "$work/$1/.github/ci-image/Dockerfile"
   printf 'pub const MINIMUM_GIT_VERSION: GitVersion = GitVersion::new(2, %s, 0);\n' "$3" \
     > "$work/$1/crates/gikli-core/src/lib.rs"
+  printf '%s\n' "$4" > "$work/$1/.github/workflows/ci-image.yml"
 }
 
 tag() { "$script" "$work/$1" 2>&1; }
 
-checkout one "FROM ubuntu:24.04" 34
-checkout same "FROM ubuntu:24.04" 34
-checkout other-definition "FROM ubuntu:26.04" 34
-checkout other-minimum "FROM ubuntu:24.04" 35
+checkout one "FROM ubuntu:24.04" 34 "name: CI image"
+checkout same "FROM ubuntu:24.04" 34 "name: CI image"
+checkout other-dockerfile "FROM ubuntu:26.04" 34 "name: CI image"
+checkout other-minimum "FROM ubuntu:24.04" 35 "name: CI image"
+checkout other-workflow "FROM ubuntu:24.04" 34 "name: The CI image"
 
 test_name="the tag names the minimum git and is a valid image tag"
 output=$(tag one)
@@ -36,11 +39,14 @@ test "$status" -eq 0 || fail "exit status $status"
 test_name="the same definition and minimum git give the same tag"
 test "$(tag same)" = "$(tag one)" || fail "$(tag same) and $(tag one)"
 
-test_name="another image definition gives another tag"
-test "$(tag other-definition)" != "$(tag one)" || fail "both are $(tag one)"
+test_name="another Dockerfile gives another tag"
+test "$(tag other-dockerfile)" != "$(tag one)" || fail "both are $(tag one)"
 
 test_name="another minimum git gives another tag"
 test "$(tag other-minimum)" != "$(tag one)" || fail "both are $(tag one)"
+
+test_name="another image workflow, which gives the build its arguments, gives another tag"
+test "$(tag other-workflow)" != "$(tag one)" || fail "both are $(tag one)"
 
 test_name="without an argument it names the image of the checkout it belongs to"
 output=$(cd "$work" && "$script" 2>&1)

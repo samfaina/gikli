@@ -1,26 +1,16 @@
-# Builds gikli and runs its suite, in two tiers (ADR 0008):
+# Builds gikli and runs its suite on every push to main: the full matrix of CI's two tiers
+# (ADR-0008; a pull request runs only the PR gate, pr.yml). It runs on Windows, macOS and Linux,
+# and on Windows once more against the oldest git gikli supports. On Linux it runs twice: once
+# against the latest stable git and once against that oldest git. The Linux jobs run in the CI
+# image (.github/ci-image/Dockerfile), which holds both gits, the Tauri prerequisites and the smoke
+# test's WebDriver, so they reach none of Ubuntu's package servers, Launchpad or kernel.org.
 #
-# - A pull request against main runs one job, the PR gate, on Windows with the runner's
-#   preinstalled git: the build, the core tests, the UI typecheck, the smoke test's helper tests
-#   and the smoke test.
-# - A push to main runs the full matrix: Windows, macOS and Linux, and on Windows the suite once
-#   more against the oldest git gikli supports. On Linux it runs twice: once against the latest
-#   stable git and once against that oldest git. The Linux jobs run in the CI image
-#   (.github/ci-image/Dockerfile), which holds both gits, the Tauri prerequisites and the smoke
-#   test's WebDriver, so they reach none of Ubuntu's package servers, Launchpad or kernel.org.
-#
-# The PR gate's steps are YAML anchors (&name) that the matrix job repeats (*name), so the gate
-# checks a pull request exactly as the Windows job checks main.
-#
-# Run by hand (workflow_dispatch), on any branch, it runs the full matrix and measures how often
-# the smoke test fails on Linux (issue #152): each Linux job runs the smoke test the number of
-# times asked for, in a row, and says how many of those runs failed. The other jobs run as on a
-# push.
+# Run by hand (workflow_dispatch), on any branch, it runs the same jobs and measures how often the
+# smoke test fails on Linux (issue #152): each Linux job runs the smoke test the number of times
+# asked for, in a row, and says how many of those runs failed. The other jobs run as on a push.
 name: CI
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -42,101 +32,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  pr-gate:
-    name: Windows
-    if: github.event_name == 'pull_request'
-    runs-on: windows-latest
-    # Well above the job's usual 8 minutes, so a step that hangs stops the job long before GitHub's
-    # 6-hour default.
-    timeout-minutes: 30
-    steps:
-      - &checkout
-        uses: actions/checkout@v7
-
-      - &show-git
-        name: Show the git under test
-        run: git --version
-
-      - &rust-toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      # Keyed by the git under test and shared between jobs, so the PR gate starts from the cache
-      # of main's Windows job.
-      - &rust-cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}-${{ matrix.git || 'preinstalled' }}
-
-      - &setup-node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      - &npm-ci
-        run: npm ci
-
-      - &build
-        name: Build the app
-        run: npx tauri build --debug --no-bundle
-
-      - &core-tests
-        name: Core tests
-        run: cargo test --workspace
-
-      - &typecheck
-        name: Typecheck the UI
-        run: npm run typecheck
-
-      - &helper-tests
-        name: Test the smoke test's helpers
-        run: npm run test:e2e-helpers
-
-      # On this runner WebView2 ignores the WEBVIEW2_* variables, so tauri-driver cannot start a
-      # session (issue #54). This policy opens a fixed DevTools port in gikli's WebView2 instead,
-      # and the variable makes the smoke test attach to it. Nothing but this step writes the policy:
-      # it is machine-wide and would leave the port open on a developer's machine.
-      - &webview2-devtools-port
-        name: Open a DevTools port in gikli's WebView2 for the smoke test
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          PORT: 9222
-        run: |
-          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
-          New-Item -Path $key -Force | Out-Null
-          New-ItemProperty -Path $key -Name 'gikli.exe' -Value "--remote-debugging-port=$env:PORT" -PropertyType String -Force | Out-Null
-          "GIKLI_E2E_WEBVIEW2_DEBUG_PORT=$env:PORT" >> $env:GITHUB_ENV
-
-      # Not in bash: Git for Windows' bash puts its own git first on the PATH, so the minimum git
-      # job would test the app against the runner's preinstalled git without saying so. The smoke
-      # test writes its WebDriver logs, and a screenshot of each case that failed, to a folder of
-      # its own (see e2e/failure-output.js), which the step after it keeps.
-      - &smoke-windows
-        name: Smoke test (Windows)
-        id: smoke-windows
-        if: runner.os == 'Windows'
-        env:
-          GIKLI_E2E_OUTPUT: ${{ github.workspace }}/smoke-output/run-1
-        run: npm run test:e2e
-
-      - &keep-smoke-output
-        name: Keep the smoke test's screenshots and WebDriver logs
-        if: failure() && (steps.smoke-linux.outcome == 'failure' || steps.smoke-windows.outcome == 'failure')
-        uses: actions/upload-artifact@v7
-        with:
-          name: smoke-test-output-${{ matrix.name || 'Windows' }}
-          # Relative to the workspace: in the Linux jobs' container, the runner context names the
-          # runner's own folders, not the container's.
-          path: smoke-output
-          if-no-files-found: warn
+  windows-and-macos:
+    name: Windows and macOS
+    uses: ./.github/workflows/windows-and-macos.yml
+    with:
+      matrix: >-
+        [
+          {"name": "Windows", "os": "windows-latest", "git": "preinstalled"},
+          {"name": "Windows (minimum git)", "os": "windows-latest", "git": "minimum"},
+          {"name": "macOS", "os": "macos-latest", "git": "preinstalled"}
+        ]
 
   # On main, makes sure the CI image of this push's definition exists before the Linux jobs run in
-  # it: it does not on the push that changes .github/ci-image/Dockerfile or MINIMUM_GIT_VERSION, nor
-  # on the first push that runs the Linux jobs in the image.
-  ci-image:
-    name: Check the CI image
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+  # it: it does not on the push that changes the image's definition or MINIMUM_GIT_VERSION, nor on
+  # the first push that runs the Linux jobs in the image.
+  look-for-ci-image:
+    name: Look for the CI image
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -165,105 +77,27 @@ jobs:
 
   build-ci-image:
     name: Build the CI image
-    needs: ci-image
-    if: needs.ci-image.outputs.missing == 'true'
+    needs: look-for-ci-image
+    if: needs.look-for-ci-image.outputs.missing == 'true'
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/ci-image.yml
 
-  test:
-    name: ${{ matrix.name }}
-    # The CI image jobs never hold this job back: only the Linux jobs need the image.
-    if: github.event_name != 'pull_request'
-    runs-on: ${{ matrix.os }}
-    # Well above the slowest job's usual 8 minutes, so a step that hangs stops its job long before
-    # GitHub's 6-hour default.
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows
-            os: windows-latest
-            git: preinstalled
-          - name: Windows (minimum git)
-            os: windows-latest
-            git: minimum
-          - name: macOS
-            os: macos-latest
-            git: preinstalled
-    steps:
-      - *checkout
-
-      - &read-minimum-git
-        name: Read the minimum git version
-        if: matrix.git == 'minimum'
-        id: minimum-git
-        shell: bash
-        run: |
-          version=$(.github/scripts/minimum-git-version.sh)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      # PortableGit, because the suite needs git http-backend, ssh-keygen and sh. A download is
-      # cheap enough to need no cache.
-      - name: Install git ${{ steps.minimum-git.outputs.version }} and put it first on the PATH
-        if: runner.os == 'Windows' && matrix.git == 'minimum'
-        shell: bash
-        env:
-          VERSION: ${{ steps.minimum-git.outputs.version }}
-        run: |
-          folder=$(cygpath -m "$RUNNER_TEMP/git-$VERSION")
-          mkdir -p "$folder"
-          installer="PortableGit-$VERSION-64-bit.7z.exe"
-          curl -fsSL --retry 3 -o "$folder/$installer" \
-            "https://github.com/git-for-windows/git/releases/download/v$VERSION.windows.1/$installer"
-          "$folder/$installer" -y -gm2 -o"$folder"
-          # The installer can ignore -o and extract to a PortableGit folder beside itself.
-          executable=$(find "$folder" -path '*/cmd/git.exe' -print -quit)
-          test -n "$executable" || { echo "::error::cmd/git.exe not found in $folder"; exit 1; }
-          cygpath -w "$(dirname "$executable")" >> "$GITHUB_PATH"
-          # Checked by the_suite_runs_against_the_git_ci_asked_for.
-          echo "GIKLI_EXPECTED_GIT_VERSION=$VERSION" >> "$GITHUB_ENV"
-
-      - *show-git
-      - *rust-toolchain
-      - *rust-cache
-      - *setup-node
-      - *npm-ci
-      - *build
-      - *core-tests
-      - *typecheck
-      - *helper-tests
-      - *webview2-devtools-port
-      - *smoke-windows
-      - *keep-smoke-output
-
-      - name: Smoke test (skipped)
-        if: runner.os == 'macOS'
-        shell: bash
-        env:
-          REASON: tauri-driver does not support macOS
-        run: |
-          message="The end-to-end smoke test did not run on this job: $REASON."
-          echo "::warning title=Smoke test skipped::$message"
-          echo "**Smoke test skipped:** $message" >> "$GITHUB_STEP_SUMMARY"
-
-  # Runs in the CI image, which holds everything these jobs used to install on every run, so they
-  # reach none of Ubuntu's package servers, Launchpad or kernel.org.
+  # The checks of windows-and-macos.yml, in the CI image. Keep the two in step.
   linux:
     name: ${{ matrix.name }}
     # The image jobs above never stop these jobs: when the build fails, or is skipped on a branch
     # other than main, they run in the previous :latest.
-    needs: [ci-image, build-ci-image]
-    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    needs: [look-for-ci-image, build-ci-image]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # Pulls the CI image, which GHCR may hold as a private package.
     permissions:
       contents: read
       packages: read
     container:
-      # GHCR names are lowercase, as gikli's owner is.
+      # The name the image jobs give it, lowercased there as GHCR needs; gikli's owner already is.
       image: ghcr.io/${{ github.repository_owner }}/gikli-ci:latest
       credentials:
         username: ${{ github.actor }}
@@ -282,9 +116,10 @@ jobs:
           - name: Linux (minimum git)
             git: minimum
     steps:
-      - *checkout
+      - uses: actions/checkout@v7
 
-      # The image holds Ubuntu's git too, under the PPA's: never test it in the PPA's place.
+      # The image's build checks this too, but :latest may predate that check or come from a
+      # build by hand: never test Ubuntu's git in the PPA's place.
       - name: Check that the git under test is the latest stable git
         if: matrix.git == 'latest'
         run: |
@@ -292,35 +127,52 @@ jobs:
           # Checked by the_suite_runs_against_the_git_ci_asked_for.
           echo "GIKLI_EXPECTED_GIT_VERSION=$version" >> "$GITHUB_ENV"
 
-      - *read-minimum-git
-
       # The CI image builds it from source into /opt, off the PATH.
-      - name: Put git ${{ steps.minimum-git.outputs.version }} first on the PATH
+      - name: Put the minimum git first on the PATH
         if: matrix.git == 'minimum'
-        env:
-          VERSION: ${{ steps.minimum-git.outputs.version }}
         run: |
-          folder="/opt/git-$VERSION/bin"
+          version=$(.github/scripts/minimum-git-version.sh)
+          folder="/opt/git-$version/bin"
           test -x "$folder/git" || {
-            echo "::error::The CI image holds no git $VERSION in $folder. Run the CI image workflow (gh workflow run ci-image.yml), then this job again."
+            echo "::error::The CI image holds no git $version in $folder. Run the CI image workflow (gh workflow run ci-image.yml), then this job again."
             exit 1
           }
           echo "$folder" >> "$GITHUB_PATH"
           # Checked by the_suite_runs_against_the_git_ci_asked_for.
-          echo "GIKLI_EXPECTED_GIT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "GIKLI_EXPECTED_GIT_VERSION=$version" >> "$GITHUB_ENV"
 
-      - *show-git
-      - *rust-toolchain
-      - *rust-cache
-      - *setup-node
-      - *npm-ci
-      - *build
-      - *core-tests
-      - *typecheck
-      - *helper-tests
+      - name: Show the git under test
+        run: git --version
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-${{ matrix.git }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the app
+        run: npx tauri build --debug --no-bundle
+
+      - name: Core tests
+        run: cargo test --workspace
+
+      - name: Typecheck the UI
+        run: npm run typecheck
+
+      - name: Test the smoke test's helpers
+        run: npm run test:e2e-helpers
 
       # Each run writes its WebDriver logs, and a screenshot of each case that failed, to a folder
-      # of its own (see e2e/failure-output.js), which the step after the smoke test keeps.
+      # of its own (see e2e/failure-output.js), which the step after the smoke test keeps. The
+      # folder is in the workspace: in a container, the runner context names the runner's own
+      # folders, not the container's.
       - name: Smoke test (Linux)
         id: smoke-linux
         env:
@@ -344,5 +196,10 @@ jobs:
           fi
           [ "${#failed[@]}" -eq 0 ]
 
-      - *keep-smoke-output
-
+      - name: Keep the smoke test's screenshots and WebDriver logs
+        if: failure() && steps.smoke-linux.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-output-${{ matrix.name }}
+          path: smoke-output
+          if-no-files-found: warn
