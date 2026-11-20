@@ -9,11 +9,20 @@
 # smoke test fails on Linux and on Windows (issues #152 and #155): each Linux and Windows job runs
 # the smoke test the number of times asked for, in a row, and says how many of those runs failed.
 # macOS, which skips the smoke test, runs as on a push.
+#
+# On the push of a v* tag it releases (ADR-0009): a first job checks that the tag is on main and
+# names the version the repository carries, the same jobs as on a push to main run, and only when
+# every one of them succeeded does the last job publish the tag as a GitHub pre-release. A tag
+# whose run is red publishes nothing, and stays until the maintainer deletes it.
+#
+# Those two jobs show as skipped on every other run: a job of this workflow that a run skips still
+# shows on it, and the release must run the matrix of this very workflow.
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       smoke-runs:
@@ -22,7 +31,8 @@ on:
         default: 20
 
 concurrency:
-  # A run by hand is a measurement: neither a push nor another run by hand cancels it.
+  # A run by hand is a measurement: neither a push nor another run by hand cancels it. A tag is a
+  # ref of its own, so its run neither cancels nor is cancelled by a run of main or of another tag.
   group: ci-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
@@ -33,8 +43,42 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # On a tag, fails before any other job starts when the tag cannot be a release: the commit it
+  # names is not in main's history, or its version is not the one Cargo.toml, package.json and
+  # package-lock.json carry.
+  release-tag:
+    name: Check the release tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # All of main's history, to look for the tagged commit in it.
+          fetch-depth: 0
+
+      - name: Check that the tagged commit is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          main=$(git rev-parse origin/main)
+          if ! git merge-base --is-ancestor "$commit" "$main"; then
+            echo "::error::The tag $TAG names commit $commit, which is not in the history of main (at $main)"
+            exit 1
+          fi
+          echo "The tag $TAG names commit $commit, in the history of main (at $main)."
+
+      - name: Check that the tag names the version the repository carries
+        env:
+          TAG: ${{ github.ref_name }}
+        run: .github/scripts/release-version.sh "$TAG"
+
   windows-and-macos:
     name: Windows and macOS
+    # Skipped on a release tag that fails its check; runs on every other push and run by hand.
+    needs: release-tag
+    if: ${{ !cancelled() && (needs.release-tag.result == 'success' || needs.release-tag.result == 'skipped') }}
     uses: ./.github/workflows/windows-and-macos.yml
     with:
       matrix: >-
@@ -91,9 +135,10 @@ jobs:
   linux:
     name: ${{ matrix.name }}
     # The image jobs above never stop these jobs: when the build fails, or is skipped on a branch
-    # other than main, they run in the previous :latest.
-    needs: [look-for-ci-image, build-ci-image]
-    if: ${{ !cancelled() }}
+    # other than main or on a tag, they run in the previous :latest. A tag is on main, whose push
+    # already made sure of its image. A release tag that fails its check stops them.
+    needs: [release-tag, look-for-ci-image, build-ci-image]
+    if: ${{ !cancelled() && (needs.release-tag.result == 'success' || needs.release-tag.result == 'skipped') }}
     runs-on: ubuntu-24.04
     # Pulls the CI image, which GHCR may hold as a private package.
     permissions:
@@ -206,3 +251,25 @@ jobs:
           name: smoke-test-output-${{ matrix.name }}
           path: smoke-output
           if-no-files-found: warn
+
+  # On a tag, once its check and every job of the matrix succeeded, publishes it as a GitHub
+  # pre-release, with GitHub's generated notes and no assets. The only job that writes to the
+  # repository. Its condition names each job it needs: the image jobs, which a tag skips, would
+  # otherwise skip it too.
+  release:
+    name: Publish the pre-release
+    needs: [release-tag, windows-and-macos, linux]
+    if: >-
+      ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') &&
+      needs.release-tag.result == 'success' && needs.windows-and-macos.result == 'success' &&
+      needs.linux.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the tag as a pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --generate-notes
