@@ -838,3 +838,53 @@ fn a_remembered_source_whose_remote_is_gone_gives_way_to_the_default() {
     assert_eq!(plan.remote.as_deref(), Some("origin"));
     assert_eq!(plan.source_branch.as_deref(), Some("main"));
 }
+
+#[test]
+fn a_pull_that_fails_does_not_remember_its_source() {
+    let sandbox = Sandbox::new();
+    let Shared { mine, .. } = shared(&sandbox);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+    let pulled = gikli.pull(
+        mine.root(),
+        &root,
+        &source("origin", "mistyped"),
+        PullOptions::default(),
+    );
+    assert!(pulled.is_err(), "the remote has no such branch");
+
+    let plan = gikli.pull_plan(&root).expect("plan the pull");
+
+    assert_eq!(plan.source_branch.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_pull_that_stops_on_a_conflict_remembers_its_source() {
+    let sandbox = Sandbox::new();
+    let Shared { mine, theirs, .. } = shared(&sandbox);
+    theirs.git(&["switch", "--quiet", "--create", "feature"]);
+    publish_branch_commit(&theirs, "feature", "file.txt", "theirs\n");
+    mine.write("file.txt", "mine\n");
+    mine.commit_all("Mine");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+    gikli
+        .pull(
+            mine.root(),
+            &root,
+            &source("origin", "feature"),
+            PullOptions::default(),
+        )
+        .expect("a conflict is no failure");
+
+    let plan = gikli.pull_plan(&root).expect("plan the pull");
+
+    assert_eq!(plan.source_branch.as_deref(), Some("feature"));
+}
+
+/// Publishes a commit of `theirs` on `branch` that changes `path` to `contents`.
+fn publish_branch_commit(theirs: &TestRepository, branch: &str, path: &str, contents: &str) {
+    theirs.write(path, contents);
+    theirs.commit_all(&format!("On {branch}"));
+    theirs.git(&["push", "--quiet", "origin", branch]);
+}

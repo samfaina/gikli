@@ -1032,13 +1032,11 @@ impl Gikli {
         let args = delete_branches::delete_remote_branch_args(upstream);
         let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
         if !invocation.success {
-            let remotes = [upstream.remote.clone()];
-            let contacted = explainer::Contacted::Remotes(&remotes);
-            return Err(failure_of_contacting(
+            return Err(failure_of_contacting_remotes(
                 &runner,
                 root,
                 &invocation,
-                &contacted,
+                std::slice::from_ref(&upstream.remote),
                 Failure::RemoteBranchNotDeleted {
                     folder: root.clone(),
                     remote: upstream.remote.clone(),
@@ -2106,13 +2104,11 @@ impl Gikli {
         if invocation.success {
             return Ok(());
         }
-        let remotes = [remote];
-        let contacted = explainer::Contacted::Remotes(&remotes);
-        Err(failure_of_contacting(
+        Err(failure_of_contacting_remotes(
             &runner,
             root,
             &invocation,
-            &contacted,
+            &[remote],
             fallback,
         ))
     }
@@ -2181,12 +2177,11 @@ impl Gikli {
         let fallback = Failure::FetchFailed {
             folder: root.clone(),
         };
-        let contacted = explainer::Contacted::Remotes(remotes);
-        Err(failure_of_contacting(
+        Err(failure_of_contacting_remotes(
             runner,
             root,
             &invocation,
-            &contacted,
+            remotes,
             fallback,
         ))
     }
@@ -2230,13 +2225,11 @@ impl Gikli {
         if invocation.success {
             return Ok(());
         }
-        let remotes = [target.remote.clone()];
-        let contacted = explainer::Contacted::Remotes(&remotes);
-        Err(failure_of_contacting(
+        Err(failure_of_contacting_remotes(
             &runner,
             root,
             &invocation,
-            &contacted,
+            std::slice::from_ref(&target.remote),
             Failure::PushFailed {
                 folder: root.clone(),
             },
@@ -2300,28 +2293,30 @@ impl Gikli {
             remote: source.remote.clone(),
             branch: source.branch.clone(),
         };
-        pull::remember(&runner, repository, &branch, source)?;
         let args = pull::pull_args(source, options);
         let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
         // A merge or a rebase that stops on a conflict waits for the user to resolve it, and so
         // does a squash, with no operation to go on with. Files were in no conflict before, as
         // git pulls nothing into a working tree that has some.
-        if !invocation.success && !invocation.cancelled && conflicts::any(&runner, repository)? {
-            self.events.send(Event::ConflictsLeft {
-                repository: repository.clone(),
-            });
-        } else if !invocation.success {
-            let remotes = [source.remote.clone()];
-            let contacted = explainer::Contacted::Remotes(&remotes);
-            return Err(failure_of_contacting(
+        let stopped_on_conflict =
+            !invocation.success && !invocation.cancelled && conflicts::any(&runner, repository)?;
+        if !invocation.success && !stopped_on_conflict {
+            return Err(failure_of_contacting_remotes(
                 &runner,
                 root,
                 &invocation,
-                &contacted,
+                std::slice::from_ref(&source.remote),
                 Failure::PullFailed {
                     folder: root.clone(),
                 },
             ));
+        }
+        // Only a source the pull got to integrate is remembered, so a mistyped branch is not.
+        pull::remember(&runner, repository, &branch, source)?;
+        if stopped_on_conflict {
+            self.events.send(Event::ConflictsLeft {
+                repository: repository.clone(),
+            });
         }
         self.operation_in_progress(project, repository)
     }
@@ -3405,6 +3400,19 @@ fn failure_of_contacting(
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,
     }
+}
+
+/// The failure of `invocation`, which failed in `folder` and reached out to `remotes`, as
+/// [`failure_of`] tells it.
+fn failure_of_contacting_remotes(
+    runner: &GitRunner,
+    folder: &Path,
+    invocation: &Invocation,
+    remotes: &[String],
+    otherwise: Failure,
+) -> Failure {
+    let contacted = explainer::Contacted::Remotes(remotes);
+    failure_of_contacting(runner, folder, invocation, &contacted, otherwise)
 }
 
 /// The failure of git that could not check out a branch, a tag or a commit in `repository`.

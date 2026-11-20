@@ -288,6 +288,32 @@ fn fetch_refspecs(
         .collect())
 }
 
+/// The remote a branch goes to or comes from when nothing else says which: `origin`, or the first
+/// of `remotes` when there is no `origin`. None when there is no remote.
+pub(crate) fn default_remote(remotes: &[String]) -> Option<&String> {
+    remotes
+        .iter()
+        .find(|remote| *remote == "origin")
+        .or(remotes.first())
+}
+
+/// The name of the local branch HEAD of `repository` is on, which may have no commit yet. None
+/// when HEAD is detached.
+pub(crate) fn head_branch(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<Option<String>, Failure> {
+    let head = runner
+        .run(&repository.root, &["symbolic-ref", "--quiet", "HEAD"])
+        .map_err(git_failed_to_start)?;
+    Ok(head
+        .stdout_text()
+        .trim_end()
+        .strip_prefix("refs/heads/")
+        .filter(|_| head.success)
+        .map(str::to_owned))
+}
+
 /// The names of the remotes of `repository`, as git lists them.
 pub(crate) fn remotes(runner: &GitRunner, repository: &Repository) -> Result<Vec<String>, Failure> {
     let listed = read_branches(runner, repository, &["remote"])?;

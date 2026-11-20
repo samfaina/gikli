@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::GitRunner;
 use crate::project::write_at_once;
 use crate::push;
-use crate::sync::{remote_branches, remotes};
+use crate::sync::{default_remote, head_branch, remote_branches, remotes};
 use crate::{Failure, Repository, git_failed_to_start};
 
 /// A remote of the Repository, with the branches it had when it was last fetched.
@@ -203,10 +203,12 @@ fn default_source(
     if let Some(upstream) = push::upstream(runner, repository, branch)? {
         return Ok((Some(upstream.remote), Some(upstream.branch)));
     }
-    let remote = pull_remotes
+    let names: Vec<String> = pull_remotes
         .iter()
-        .find(|remote| remote.name == "origin")
-        .or(pull_remotes.first());
+        .map(|remote| remote.name.clone())
+        .collect();
+    let remote = default_remote(&names)
+        .and_then(|name| pull_remotes.iter().find(|remote| &remote.name == name));
     Ok(match remote {
         Some(remote) => (
             Some(remote.name.clone()),
@@ -258,13 +260,5 @@ pub(crate) fn current_branch(
     runner: &GitRunner,
     repository: &Repository,
 ) -> Result<String, Failure> {
-    let head = runner
-        .run(&repository.root, &["symbolic-ref", "--quiet", "HEAD"])
-        .map_err(git_failed_to_start)?;
-    head.stdout_text()
-        .trim_end()
-        .strip_prefix("refs/heads/")
-        .filter(|_| head.success)
-        .map(str::to_owned)
-        .ok_or(Failure::DetachedHeadNotPulled)
+    head_branch(runner, repository)?.ok_or(Failure::DetachedHeadNotPulled)
 }
