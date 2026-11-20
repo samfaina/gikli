@@ -83,7 +83,7 @@ export function createStashesView(host: StashesViewHost): StashesView {
 
   element<HTMLElement>("stashes-against-label").textContent = t("stashesAgainst");
   againstSelect.replaceChildren(new Option(t("stashesAgainstLocal"), "local"), new Option(t("stashesAgainstParent"), "parent"));
-  newButton.textContent = t("stashesNew");
+  newButton.textContent = t("stashOpen");
   dropButton.textContent = t("stashesDrop");
   clearButton.textContent = t("stashesClear");
   refreshButton.textContent = t("stashesRefresh");
@@ -169,19 +169,20 @@ export function createStashesView(host: StashesViewHost): StashesView {
       return;
     }
     const same = listed !== null && listed.unavailable === read.unavailable && sameStashes(listed.entries, read.entries);
-    if (same && selected !== null) {
-      // The stashes are as they were: the rows stay, and only the diff, which may compare with a
-      // local file that changed, is read again.
-      showFile(selectedPath);
-      return;
-    }
-    listed = read;
     message.textContent =
       read.unavailable !== null
         ? t(STASH_UNAVAILABLE_LABELS[read.unavailable])
         : read.entries.length === 0
           ? t("stashesEmpty")
           : "";
+    if (same && selected !== null) {
+      // The stashes are as they were: the rows stay, and only the diff, which may compare with a
+      // local file that changed, is read again.
+      enableActions();
+      showFile(selectedPath);
+      return;
+    }
+    listed = read;
     drawRows(read);
     select(read.entries.find((stash) => stash.hash === selected?.hash) ?? read.entries[0] ?? null);
   }

@@ -33,6 +33,8 @@ fn stashes_by_git(repository: &TestRepository) -> Vec<String> {
         .collect()
 }
 
+/// The options of a stash with `message` that neither keeps the index nor includes the files git
+/// does not track.
 fn options(message: &str) -> StashOptions {
     StashOptions {
         message: message.to_owned(),
@@ -141,11 +143,7 @@ fn a_stash_of_a_clean_tree_says_there_is_nothing_to_stash() {
 fn files_git_does_not_track_alone_are_nothing_to_stash_unless_included() {
     let sandbox = Sandbox::new();
     let work = with_notes(&sandbox);
-    work.write(
-        "draft.txt",
-        "new
-",
-    );
+    work.write("draft.txt", "new\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -163,11 +161,7 @@ fn files_git_does_not_track_alone_are_nothing_to_stash_unless_included() {
 fn a_repository_with_no_commits_cannot_stash_and_says_why() {
     let sandbox = Sandbox::new();
     let work = sandbox.repository("work");
-    work.write(
-        "notes.txt",
-        "one
-",
-    );
+    work.write("notes.txt", "one\n");
     work.git(&["add", "notes.txt"]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
@@ -202,28 +196,13 @@ fn files_of(gikli: &Gikli, repository: &Repository, hash: &str) -> Vec<(String, 
 fn each_stash_lists_the_files_it_holds() {
     let sandbox = Sandbox::new();
     let work = with_notes(&sandbox);
-    work.write(
-        "old.txt", "old
-",
-    );
+    work.write("old.txt", "old\n");
     work.commit_all("Add old");
-    work.write(
-        "notes.txt",
-        "changed
-",
-    );
+    work.write("notes.txt", "changed\n");
     work.delete("old.txt");
-    work.write(
-        "staged.txt",
-        "staged
-",
-    );
+    work.write("staged.txt", "staged\n");
     work.git(&["add", "staged.txt"]);
-    work.write(
-        "draft folder/draft é.txt",
-        "draft
-",
-    );
+    work.write("draft folder/draft é.txt", "draft\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
     let stashes = gikli
@@ -250,6 +229,21 @@ fn each_stash_lists_the_files_it_holds() {
             ("staged.txt".to_owned(), ChangeStatus::Added),
         ]
     );
+    let mut by_git: Vec<String> = work
+        .git(&[
+            "stash",
+            "show",
+            "--include-untracked",
+            "--name-only",
+            "-z",
+            "stash@{0}",
+        ])
+        .split_terminator('\0')
+        .map(str::to_owned)
+        .collect();
+    by_git.sort();
+    let listed: Vec<String> = files.into_iter().map(|(path, _)| path).collect();
+    assert_eq!(listed, by_git);
 }
 
 /// The two sides of the diff of the file at `path` in the stash `hash`, older first, and what the
@@ -272,23 +266,12 @@ fn diff_of(
 /// A repository with a stash of a change to `notes.txt`, whose file on disk then changed again.
 fn with_stashed_notes(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repository, String) {
     let work = with_notes(sandbox);
-    work.write(
-        "notes.txt",
-        "one
-two
-three
-",
-    );
+    work.write("notes.txt", "one\ntwo\nthree\n");
     let root = opened(gikli, &work);
     let stashes = gikli
         .stash(&root, &options("Three"))
         .expect("stash the change");
-    work.write(
-        "notes.txt",
-        "one
-TWO
-",
-    );
+    work.write("notes.txt", "one\nTWO\n");
     (work, root, stashes.entries[0].hash.clone())
 }
 
@@ -296,28 +279,22 @@ TWO
 fn a_stashed_file_compares_with_the_local_version_by_default() {
     let sandbox = Sandbox::new();
     let gikli = sandbox.gikli();
-    let (_work, root, hash) = with_stashed_notes(&sandbox, &gikli);
+    let (work, root, hash) = with_stashed_notes(&sandbox, &gikli);
 
     let diff = diff_of(&gikli, &root, &hash, "notes.txt");
 
     assert_eq!(
         diff,
         (
-            Some(
-                "one
-two
-three
-"
-                .to_owned()
-            ),
-            Some(
-                "one
-TWO
-"
-                .to_owned()
-            ),
+            Some("one\ntwo\nthree\n".to_owned()),
+            Some("one\nTWO\n".to_owned()),
             StashDiffBase::Local
         )
+    );
+    assert_eq!(
+        work.git(&["show", "stash@{0}:notes.txt"]),
+        "one\ntwo\nthree\n",
+        "the older side is the stashed file, as git has it"
     );
 }
 
@@ -325,7 +302,7 @@ TWO
 fn a_stashed_file_compares_with_the_parent_commit_when_the_user_chooses_it() {
     let sandbox = Sandbox::new();
     let gikli = sandbox.gikli();
-    let (_work, root, hash) = with_stashed_notes(&sandbox, &gikli);
+    let (work, root, hash) = with_stashed_notes(&sandbox, &gikli);
 
     let settings = gikli
         .set_stash_diff_against(StashDiffBase::Parent)
@@ -336,33 +313,95 @@ fn a_stashed_file_compares_with_the_parent_commit_when_the_user_chooses_it() {
     assert_eq!(
         diff,
         (
-            Some(
-                "one
-two
-"
-                .to_owned()
-            ),
-            Some(
-                "one
-two
-three
-"
-                .to_owned()
-            ),
+            Some("one\ntwo\n".to_owned()),
+            Some("one\ntwo\nthree\n".to_owned()),
             StashDiffBase::Parent
         )
     );
+    assert_eq!(
+        work.git(&["show", "stash@{0}^1:notes.txt"]),
+        "one\ntwo\n",
+        "the older side is the file in the commit the stash was made on, as git has it"
+    );
+}
+
+#[test]
+fn a_file_the_stash_moved_compares_with_its_old_path_in_the_parent_commit() {
+    let sandbox = Sandbox::new();
+    let work = with_notes(&sandbox);
+    work.git(&["mv", "notes.txt", "kept notes.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    let stashes = gikli
+        .stash(&root, &options("Moved"))
+        .expect("stash the move");
+    let hash = &stashes.entries[0].hash;
+    gikli
+        .set_stash_diff_against(StashDiffBase::Parent)
+        .expect("compare stashes with their parent");
+
+    let files = gikli
+        .stash_files(&root, hash)
+        .expect("list the files of the stash")
+        .changes;
+    let diff = gikli
+        .stash_file_diff(&root, hash, "kept notes.txt")
+        .expect("read the diff of the moved file");
+
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].status, ChangeStatus::Renamed);
+    assert_eq!(
+        files[0].original_path.as_deref(),
+        Some("notes.txt".as_ref())
+    );
+    assert_eq!(diff.original_path.as_deref(), Some("notes.txt".as_ref()));
+    let DiffContent::Text(text) = diff.content else {
+        panic!("a text diff: {:?}", diff.content);
+    };
+    assert_eq!(text.head.as_deref(), Some("one\ntwo\n"));
+    assert_eq!(text.local.as_deref(), Some("one\ntwo\n"));
+    assert_eq!(text.differences, Vec::new());
+    assert_eq!(
+        work.git(&["show", "stash@{0}:kept notes.txt"]),
+        "one\ntwo\n"
+    );
+}
+
+#[test]
+fn a_file_the_stash_deleted_is_missing_on_the_stash_side() {
+    let sandbox = Sandbox::new();
+    let work = with_notes(&sandbox);
+    work.delete("notes.txt");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    let stashes = gikli
+        .stash(&root, &options("Deleted"))
+        .expect("stash the deletion");
+    let hash = &stashes.entries[0].hash;
+
+    let against_local = diff_of(&gikli, &root, hash, "notes.txt");
+    gikli
+        .set_stash_diff_against(StashDiffBase::Parent)
+        .expect("compare stashes with their parent");
+    let against_parent = diff_of(&gikli, &root, hash, "notes.txt");
+
+    assert_eq!(
+        against_local,
+        (None, Some("one\ntwo\n".to_owned()), StashDiffBase::Local),
+        "the stash put the file back on disk"
+    );
+    assert_eq!(
+        against_parent,
+        (Some("one\ntwo\n".to_owned()), None, StashDiffBase::Parent)
+    );
+    assert!(!work.git_succeeds(&["cat-file", "-e", "stash@{0}:notes.txt"]));
 }
 
 #[test]
 fn a_stashed_file_git_did_not_track_compares_with_nothing_in_the_parent_commit() {
     let sandbox = Sandbox::new();
     let work = with_notes(&sandbox);
-    work.write(
-        "draft.txt",
-        "new
-",
-    );
+    work.write("draft.txt", "new\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
     let stashes = gikli
@@ -384,28 +423,12 @@ fn a_stashed_file_git_did_not_track_compares_with_nothing_in_the_parent_commit()
 
     assert_eq!(
         against_local,
-        (
-            Some(
-                "new
-"
-                .to_owned()
-            ),
-            None,
-            StashDiffBase::Local
-        ),
+        (Some("new\n".to_owned()), None, StashDiffBase::Local),
         "the file left the working tree with the stash"
     );
     assert_eq!(
         against_parent,
-        (
-            None,
-            Some(
-                "new
-"
-                .to_owned()
-            ),
-            StashDiffBase::Parent
-        )
+        (None, Some("new\n".to_owned()), StashDiffBase::Parent)
     );
 }
 
@@ -414,13 +437,7 @@ fn a_stashed_file_the_same_as_on_disk_shows_no_difference() {
     let sandbox = Sandbox::new();
     let gikli = sandbox.gikli();
     let (work, root, hash) = with_stashed_notes(&sandbox, &gikli);
-    work.write(
-        "notes.txt",
-        "one
-two
-three
-",
-    );
+    work.write("notes.txt", "one\ntwo\nthree\n");
 
     let diff = gikli
         .stash_file_diff(&root, &hash, "notes.txt")
@@ -451,19 +468,11 @@ fn a_stash_that_is_gone_has_no_files_to_show() {
 fn with_two_stashes(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repository, Vec<String>) {
     let work = with_notes(sandbox);
     let root = opened(gikli, &work);
-    work.write(
-        "notes.txt",
-        "older
-",
-    );
+    work.write("notes.txt", "older\n");
     gikli
         .stash(&root, &options("Older"))
         .expect("stash the older change");
-    work.write(
-        "notes.txt",
-        "newer
-",
-    );
+    work.write("notes.txt", "newer\n");
     let stashes = gikli
         .stash(&root, &options("Newer"))
         .expect("stash the newer change");
@@ -531,11 +540,7 @@ fn stashes_the_user_did_not_see_are_not_cleared() {
     let sandbox = Sandbox::new();
     let gikli = sandbox.gikli();
     let (work, root, hashes) = with_two_stashes(&sandbox, &gikli);
-    work.write(
-        "notes.txt",
-        "elsewhere
-",
-    );
+    work.write("notes.txt", "elsewhere\n");
     work.git(&["stash", "push", "--quiet", "--message", "Elsewhere"]);
 
     let cleared = gikli.clear_stashes(&root, &hashes);

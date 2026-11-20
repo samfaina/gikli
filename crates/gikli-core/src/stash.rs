@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, path_from_bytes};
+use crate::rename_branch::run;
 use crate::{
     Change, ChangeStatus, DiffContent, Failure, Repository, commit, details, diff, failure_of,
     git_failed_to_start, log,
@@ -98,7 +99,7 @@ pub(crate) fn push(
     repository: &Repository,
     options: &StashOptions,
 ) -> Result<(), Failure> {
-    let before = available(runner, repository)?.entries.len();
+    let before = newest(available(runner, repository)?);
     let mut args = vec!["stash", "push"];
     if options.keep_index {
         args.push("--keep-index");
@@ -117,12 +118,23 @@ pub(crate) fn push(
             folder: repository.root.clone(),
         },
     )?;
-    if list(runner, repository)?.entries.len() == before {
+    if newest(list(runner, repository)?) == before {
         return Err(Failure::NothingToStash {
             folder: repository.root.clone(),
         });
     }
     Ok(())
+}
+
+/// How many stashes there are, with the hash of the newest one: a stash made since changes the
+/// count, even one with the hash of the stash before it, as two of the same changes made in the
+/// same second have.
+fn newest(stashes: Stashes) -> (usize, Option<String>) {
+    let count = stashes.entries.len();
+    (
+        count,
+        stashes.entries.into_iter().next().map(|stash| stash.hash),
+    )
 }
 
 /// The stashes of `repository`, newest first.
@@ -169,7 +181,7 @@ pub(crate) fn list(runner: &GitRunner, repository: &Repository) -> Result<Stashe
 
 /// The stashes of `repository`, as [`list`] reads them, when it can stash, and
 /// [`Failure::StashUnavailable`] otherwise.
-pub(crate) fn available(runner: &GitRunner, repository: &Repository) -> Result<Stashes, Failure> {
+fn available(runner: &GitRunner, repository: &Repository) -> Result<Stashes, Failure> {
     let stashes = list(runner, repository)?;
     match stashes.unavailable {
         Some(reason) => Err(Failure::StashUnavailable {
@@ -188,14 +200,10 @@ fn unavailable(
     Ok((!commit::has_commits(runner, &repository.root)?).then_some(StashUnavailable::NoCommits))
 }
 
-/// The stash of `repository` whose commit is `hash`, as [`list`] reads it, or
-/// [`Failure::StashNotFound`] when it has none such: it was dropped, or `hash` is no stash.
-pub(crate) fn find(
-    runner: &GitRunner,
-    repository: &Repository,
-    hash: &str,
-) -> Result<Stash, Failure> {
-    list(runner, repository)?
+/// The stash of `stashes` whose commit is `hash`, or [`Failure::StashNotFound`] when there is none
+/// such: it was dropped, or `hash` is no stash.
+fn find(stashes: Stashes, hash: &str) -> Result<Stash, Failure> {
+    stashes
         .entries
         .into_iter()
         .find(|stash| stash.hash == hash)
@@ -208,8 +216,8 @@ pub(crate) fn find(
 pub(crate) struct StashCommits {
     /// The commit HEAD was on when the stash was made.
     pub base: String,
-    /// The working tree, with every change to a tracked file.
-    pub working_tree: String,
+    /// The stash's own commit, which holds the working tree with every change to a tracked file.
+    pub commit: String,
     /// The files git did not track, when the stash includes them: a commit with no parent.
     pub untracked: Option<String>,
 }
@@ -221,14 +229,14 @@ impl StashCommits {
         repository: &Repository,
         hash: &str,
     ) -> Result<Self, Failure> {
-        let stash = find(runner, repository, hash)?;
+        let stash = find(list(runner, repository)?, hash)?;
         let mut parents = details::parents_of(runner, repository, &stash.hash)?.into_iter();
         let base = parents.next().ok_or_else(|| Failure::StashNotFound {
             hash: hash.to_owned(),
         })?;
         Ok(Self {
             base,
-            working_tree: stash.hash,
+            commit: stash.hash,
             untracked: parents.nth(1),
         })
     }
@@ -240,8 +248,7 @@ impl StashCommits {
         runner: &GitRunner,
         repository: &Repository,
     ) -> Result<Vec<Change>, Failure> {
-        let mut files =
-            details::changed_files(runner, repository, Some(&self.base), &self.working_tree)?;
+        let mut files = details::changed_files(runner, repository, Some(&self.base), &self.commit)?;
         if let Some(untracked) = &self.untracked {
             let listed = log::run_git(
                 runner,
@@ -274,14 +281,15 @@ impl StashCommits {
     }
 }
 
-/// Drops the stash `hash` of `repository`, wherever it is in the list now.
+/// Drops the stash `hash` of `repository`, wherever it is in the list now. git drops a stash by its
+/// place in the list, so the place is checked to still hold that stash right before.
 pub(crate) fn drop(runner: &GitRunner, repository: &Repository, hash: &str) -> Result<(), Failure> {
-    let stashes = available(runner, repository)?;
-    let Some(stash) = stashes.entries.iter().find(|stash| stash.hash == hash) else {
+    let stash = find(available(runner, repository)?, hash)?;
+    if details::commit_if_any(runner, repository, &stash.name)?.as_deref() != Some(hash) {
         return Err(Failure::StashNotFound {
             hash: hash.to_owned(),
         });
-    };
+    }
     run(
         runner,
         repository,
@@ -335,18 +343,18 @@ pub(crate) fn file_diff(
         .is_some_and(|change| change.status == ChangeStatus::Untracked);
     let original_path = change.and_then(|change| change.original_path);
     // A file git did not track is in a commit of its own, which has no parent.
-    let (holder, parent) = match (&commits.untracked, untracked) {
+    let (holding_commit, parent) = match (&commits.untracked, untracked) {
         (Some(untracked), true) => (untracked.as_str(), None),
-        _ => (commits.working_tree.as_str(), Some(commits.base.as_str())),
+        _ => (commits.commit.as_str(), Some(commits.base.as_str())),
     };
     let content = match against {
         StashDiffBase::Local => {
-            diff::stored_against_working_tree(runner, repository, holder, path)?
+            diff::stored_against_working_tree(runner, repository, holding_commit, path)?
         }
         StashDiffBase::Parent => diff::stored_against_parent(
             runner,
             repository,
-            holder,
+            holding_commit,
             parent,
             path,
             original_path.as_deref(),
@@ -354,26 +362,10 @@ pub(crate) fn file_diff(
     };
     Ok(StashFileDiff {
         repository: repository.clone(),
-        stash: commits.working_tree,
+        stash: commits.commit,
         against,
         path: PathBuf::from(path),
         original_path,
         content,
     })
-}
-
-/// Runs git with `args` in `repository`, failing with what git's output explains, or with
-/// `fallback` when nothing does.
-fn run(
-    runner: &GitRunner,
-    repository: &Repository,
-    args: &[&str],
-    fallback: Failure,
-) -> Result<(), Failure> {
-    let root = &repository.root;
-    let invocation = runner.run(root, args).map_err(git_failed_to_start)?;
-    if !invocation.success {
-        return Err(failure_of(runner, root, &invocation, fallback));
-    }
-    Ok(())
 }

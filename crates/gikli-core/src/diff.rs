@@ -220,14 +220,14 @@ pub(crate) fn read_revision(
         .into_iter()
         .find(|change| change.path == Path::new(path))
         .and_then(|change| change.original_path);
-    let older_path = head_path_of(path, original_path.as_deref());
-    let file = ComparedFile {
+    let content = stored_against_parent(
         runner,
-        root: &repository.root,
+        repository,
+        &hash,
+        parent.as_deref(),
         path,
-        head_path: &older_path,
-    };
-    let content = file.revision_against_parent(&hash, parent.as_deref())?;
+        original_path.as_deref(),
+    )?;
     Ok(RevisionFileDiff {
         repository: repository.clone(),
         revision: hash,

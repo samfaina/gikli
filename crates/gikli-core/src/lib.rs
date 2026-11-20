@@ -959,13 +959,13 @@ impl Gikli {
         self.change_settings(|settings| settings.auto_update_if_push_rejected = auto_update)
     }
 
-    /// Switches between Changelist mode and Staging mode. The Changelists stay as they are.
     /// Makes the diff of a file in a stash compare it with the file on disk or with the file in
     /// the commit the stash was made on.
     pub fn set_stash_diff_against(&self, against: StashDiffBase) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.stash_diff_against = against)
     }
 
+    /// Switches between Changelist mode and Staging mode. The Changelists stay as they are.
     pub fn set_staging_mode(&self, enabled: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.staging_mode = enabled)
     }
