@@ -88,6 +88,8 @@ import { element, hasShortcutKey } from "./dom";
 import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
+import { createStashDialog, STASH_UNAVAILABLE_LABELS } from "./stash-dialog";
+import { createStashesView } from "./stashes-view";
 import { createPushDialog } from "./push-dialog";
 import { createPullDialog } from "./pull-dialog";
 import { createRejectedPushDialog } from "./rejected-push-dialog";
@@ -311,6 +313,42 @@ const fileHistoryView = createFileHistoryView({
     underFileHistory = [];
   },
 });
+
+/** The views the stashes tab took the place of, which come back when it closes. */
+let underStashes: HTMLElement[] = [];
+
+const stashesView = createStashesView({
+  errorView,
+  opened: () => {
+    underStashes.push(...[projectView, logSection].filter((view) => !view.hidden));
+    for (const view of underStashes) {
+      view.hidden = true;
+    }
+  },
+  closed: () => {
+    for (const view of underStashes) {
+      view.hidden = false;
+    }
+    underStashes = [];
+  },
+  newStash: (repository) => openStashDialog(repository),
+});
+
+const stashDialog = createStashDialog({
+  errorView,
+  stashed: (repository) => {
+    shownRepositories.get(repository.root)?.refresh();
+    stashesView.refreshIfShown(repository);
+  },
+});
+
+/** Opens the stash dialog on `repository`, offering every Repository the window shows. */
+function openStashDialog(repository: Repository): void {
+  stashDialog.open(
+    repository,
+    [...shownRepositories.values()].map((shown) => shown.repository),
+  );
+}
 
 /** The views the push dialog took the place of, which come back when it closes. */
 let underPushDialog: HTMLElement[] = [];
@@ -647,6 +685,7 @@ function handleCoreEvent(event: CoreEvent): void {
     case "filesChanged":
       shownRepositories.get(event.payload.repository.root)?.refresh();
       statusArea.refresh(event.payload.repository.root);
+      stashesView.refreshIfShown(event.payload.repository);
       if (diffView.shownRoot() === event.payload.repository.root) {
         void diffView.refresh();
       }
@@ -767,6 +806,8 @@ function showProject(project: Project): void {
     deleteBranchesDialog.close();
     unmergedCommitsView.close();
     conflictsDialog.close();
+    stashDialog.close();
+    stashesView.close();
   }
   shownFolder = project.folder;
   showNotifications();
@@ -917,6 +958,16 @@ function repositoryView(repository: Repository): HTMLElement {
   openLog.dataset.testid = "open-log";
   openLog.textContent = t("logOpen");
   openLog.addEventListener("click", () => logView.open(repository));
+  const stashButton = document.createElement("button");
+  stashButton.type = "button";
+  stashButton.dataset.testid = "open-stash";
+  stashButton.textContent = t("stashOpen");
+  stashButton.addEventListener("click", () => openStashDialog(repository));
+  const openStashes = document.createElement("button");
+  openStashes.type = "button";
+  openStashes.dataset.testid = "open-stashes";
+  openStashes.textContent = t("stashesOpen");
+  openStashes.addEventListener("click", () => stashesView.open(repository));
   const fetchButton = document.createElement("button");
   fetchButton.type = "button";
   fetchButton.dataset.testid = "fetch-all";
@@ -989,7 +1040,7 @@ function repositoryView(repository: Repository): HTMLElement {
       save: ({ name, description }) => createChangelist(repository, name, description),
     }),
   );
-  header.append(title, refresh, fetchButton, pullButton, pushButton, openLog, newChangelist);
+  header.append(title, refresh, fetchButton, pullButton, pushButton, openLog, stashButton, openStashes, newChangelist);
   const watching = document.createElement("div");
   const features = document.createElement("div");
   const changesColumn = document.createElement("div");
@@ -2178,6 +2229,22 @@ function describeFailure(failure: Failure): string {
       return t("failureRevisionNotFound", { revision: failure.revision });
     case "fileVersionNotRestored":
       return t("failureFileVersionNotRestored", { path: failure.path });
+    case "stashUnavailable":
+      return t(STASH_UNAVAILABLE_LABELS[failure.reason]);
+    case "nothingToStash":
+      return t("failureNothingToStash", { folder: failure.folder });
+    case "notStashed":
+      return t("failureNotStashed", { folder: failure.folder });
+    case "stashesUnreadable":
+      return t("failureStashesUnreadable", { folder: failure.folder });
+    case "stashNotFound":
+      return t("failureStashNotFound", { hash: failure.hash.slice(0, SHORT_HASH_LENGTH) });
+    case "stashNotDropped":
+      return t("failureStashNotDropped", { folder: failure.folder });
+    case "stashesChanged":
+      return t("failureStashesChanged", { folder: failure.folder });
+    case "stashesNotCleared":
+      return t("failureStashesNotCleared", { folder: failure.folder });
     case "searchPatternInvalid":
       return t("failureSearchPatternInvalid", { message: failure.message });
     case "commitMessagesUnreadable":

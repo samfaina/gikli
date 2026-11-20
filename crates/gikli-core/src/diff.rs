@@ -87,6 +87,8 @@ pub enum LocalReadOnly {
     Index,
     /// This side is the file in a commit, which stays as it is.
     Revision,
+    /// The diff compares with a stash, and shows the file on disk without saving it.
+    Stash,
 }
 
 /// What a commit changed in one file, against its first parent: the older side is the file in the
@@ -218,14 +220,14 @@ pub(crate) fn read_revision(
         .into_iter()
         .find(|change| change.path == Path::new(path))
         .and_then(|change| change.original_path);
-    let older_path = head_path_of(path, original_path.as_deref());
-    let file = ComparedFile {
+    let content = stored_against_parent(
         runner,
-        root: &repository.root,
+        repository,
+        &hash,
+        parent.as_deref(),
         path,
-        head_path: &older_path,
-    };
-    let content = file.revision_against_parent(&hash, parent.as_deref())?;
+        original_path.as_deref(),
+    )?;
     Ok(RevisionFileDiff {
         repository: repository.clone(),
         revision: hash,
@@ -234,6 +236,44 @@ pub(crate) fn read_revision(
         original_path,
         content,
     })
+}
+
+/// What the commit `hash` of `repository`, such as a commit of a stash, holds at `path`, against
+/// the file at `path` on disk. Neither side can be edited.
+pub(crate) fn stored_against_working_tree(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+    path: &str,
+) -> Result<DiffContent, Failure> {
+    let file = ComparedFile {
+        runner,
+        root: &repository.root,
+        path,
+        head_path: path,
+    };
+    file.revision_against_working_tree(hash)
+}
+
+/// What the commit `hash` of `repository`, such as a commit of a stash, holds at `path`, against
+/// what `parent` holds at `original_path`, or at `path` when the file did not move. Without a
+/// parent, the file is new. The commit's side is read-only.
+pub(crate) fn stored_against_parent(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+    parent: Option<&str>,
+    path: &str,
+    original_path: Option<&Path>,
+) -> Result<DiffContent, Failure> {
+    let older_path = head_path_of(path, original_path);
+    let file = ComparedFile {
+        runner,
+        root: &repository.root,
+        path,
+        head_path: &older_path,
+    };
+    file.revision_against_parent(hash, parent)
 }
 
 /// Where HEAD has the file at `path`, which was moved from `original_path` if it was.
@@ -582,6 +622,37 @@ impl<'a> ComparedFile<'a> {
             newer_bytes.as_deref(),
             String::new(),
             Some(LocalReadOnly::Revision),
+        )
+    }
+
+    /// What the view shows of the file in the commit `hash`, the older side, against the file on
+    /// disk. Neither side is edited here.
+    fn revision_against_working_tree(&self, hash: &str) -> Result<DiffContent, Failure> {
+        let stored = self.entry_in(hash, self.path)?;
+        let local = LocalFile::read(self.root, self.path)?;
+        if local.is_folder() || stored.as_ref().is_some_and(StoredEntry::is_folder) {
+            return Ok(DiffContent::Folder);
+        }
+        let stored_blob = format!("{hash}:{}", self.path);
+        let targets: &[&str] = match (stored.is_some(), local.bytes().is_some()) {
+            // A blob against a file, which git converts as it does for any comparison with a
+            // commit.
+            (true, true) => &[&stored_blob, "--", self.path],
+            (true, false) => &[hash, "--", self.path],
+            (false, true) => &["--no-index", "--", "/dev/null", self.path],
+            (false, false) => &[],
+        };
+        let comparison = if targets.is_empty() {
+            Comparison::of_nothing()
+        } else {
+            self.compare_targets(targets)?
+        };
+        self.content(
+            &comparison,
+            stored.as_ref(),
+            local.bytes(),
+            local.version(),
+            Some(LocalReadOnly::Stash),
         )
     }
 

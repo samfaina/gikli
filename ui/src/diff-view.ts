@@ -64,6 +64,7 @@ const READ_ONLY_LABELS: Record<LocalReadOnly, StringKey> = {
   symbolicLink: "diffLocalSideLink",
   index: "diffLocalSideIndex",
   revision: "diffLocalSideRevision",
+  stash: "diffLocalSideStash",
 };
 
 /** The diff of the file at `path` on `side` of the index, or against HEAD when `side` is null. */

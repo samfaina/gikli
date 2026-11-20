@@ -152,6 +152,31 @@
           </aside>
         </div>
       </section>
+      <section id="stashes" class="file-history stashes" data-testid="stashes" hidden>
+        <div class="log-toolbar">
+          <h2 id="stashes-title" class="log-title" data-testid="stashes-title"></h2>
+          <label><span id="stashes-against-label"></span><select id="stashes-against" data-testid="stashes-against"></select></label>
+          <button id="stashes-new" type="button" data-testid="stashes-new"></button>
+          <button id="stashes-drop" type="button" data-testid="stashes-drop" disabled></button>
+          <button id="stashes-clear" type="button" data-testid="stashes-clear" disabled></button>
+          <button id="stashes-refresh" type="button" data-testid="stashes-refresh"></button>
+          <button id="stashes-close" type="button" data-testid="stashes-close"></button>
+        </div>
+        <div id="stashes-message" class="log-message" data-testid="stashes-message" role="status"></div>
+        <div class="file-history-body">
+          <div id="stashes-list" class="file-history-list" data-testid="stashes-list" role="listbox" tabindex="0"></div>
+          <aside class="file-history-side">
+            <div class="log-pane-header">
+              <h3 id="stashes-files-title"></h3>
+            </div>
+            <div id="stashes-files" class="log-changes-content" data-testid="stashes-files"></div>
+            <div class="log-pane-header">
+              <h3 id="stashes-preview-title" data-testid="stashes-preview-title"></h3>
+            </div>
+            <div id="stashes-preview" class="file-history-preview diff-content" data-testid="stashes-preview"></div>
+          </aside>
+        </div>
+      </section>
       <section id="push-dialog" class="push-dialog" data-testid="push-dialog" hidden>
         <div class="log-toolbar">
           <h2 id="push-title" class="log-title"></h2>
@@ -265,6 +290,21 @@
           <button id="rename-branch-rename" type="button" data-testid="rename-branch-rename"></button>
         </div>
         <div id="rename-branch-message" class="new-branch-message" data-testid="rename-branch-message" role="status"></div>
+      </section>
+      <section id="stash-dialog" class="branch-selector new-branch" data-testid="stash-dialog" role="dialog" aria-labelledby="stash-dialog-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="stash-dialog-title"></h2>
+          <button id="stash-dialog-cancel" type="button" data-testid="stash-dialog-cancel"></button>
+        </div>
+        <label class="new-branch-name"><span id="stash-dialog-repository-label"></span><select id="stash-dialog-repository" data-testid="stash-dialog-repository"></select></label>
+        <p id="stash-dialog-branch" class="hint" data-testid="stash-dialog-branch"></p>
+        <label class="new-branch-name"><span id="stash-dialog-message-label"></span><input id="stash-dialog-message" type="text" autocomplete="off" spellcheck="false" data-testid="stash-dialog-message" /></label>
+        <div class="new-branch-actions">
+          <label><input id="stash-dialog-keep-index" type="checkbox" data-testid="stash-dialog-keep-index" /><span id="stash-dialog-keep-index-label"></span></label>
+          <label><input id="stash-dialog-include-untracked" type="checkbox" data-testid="stash-dialog-include-untracked" /><span id="stash-dialog-include-untracked-label"></span></label>
+          <button id="stash-dialog-stash" type="button" data-testid="stash-dialog-stash"></button>
+        </div>
+        <div id="stash-dialog-status" class="new-branch-message" data-testid="stash-dialog-status" role="status"></div>
       </section>
       <section id="delete-branches" class="branch-selector new-branch" data-testid="delete-branches" role="dialog" aria-labelledby="delete-branches-title" hidden>
         <div class="branch-selector-header">

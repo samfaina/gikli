@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::ChangeGrouping;
+use crate::StashDiffBase;
 use crate::push::{self, PushTarget, UpdateMethod};
 
 /// gikli's application settings.
@@ -64,6 +65,8 @@ pub struct Settings {
     pub show_recent_branches: bool,
     /// Whether the branch selector shows the tags.
     pub show_tags_in_branch_selector: bool,
+    /// What the diff of a file in a stash compares the stashed file with.
+    pub stash_diff_against: StashDiffBase,
 }
 
 /// How many revisions a file history lists until the user sets another limit.
@@ -93,6 +96,7 @@ impl Default for Settings {
             group_branches_by_directory: true,
             show_recent_branches: true,
             show_tags_in_branch_selector: true,
+            stash_diff_against: StashDiffBase::Local,
         }
     }
 }

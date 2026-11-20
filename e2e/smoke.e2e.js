@@ -1155,6 +1155,41 @@ describe("gikli", () => {
         }
       });
     });
+
+    it("offers the stash dialog, and lists a stash with its files and their diff in the stashes tab", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      // A stash of one new file alone, so the changes the cases after this one rely on stay where they are.
+      const file = "stash smoke.txt";
+      fs.writeFileSync(inRepository(file), "stashed\n");
+      runGit(repository, gitconfig, "stash", "push", "--quiet", "--include-untracked", "--message", "Smoke stash", "--", file);
+      try {
+        await idleRefresh();
+        await $('[data-testid="open-stash"]').click();
+        const dialog = $('[data-testid="stash-dialog"]');
+        await dialog.waitForDisplayed({ timeout: 30000 });
+        await $('[data-testid="stash-dialog-stash"]').waitForEnabled({ timeout: 30000 });
+        assert.equal(await $('[data-testid="stash-dialog-repository"]').getValue(), "0", "the dialog is on the Repository it was opened from");
+        await $('[data-testid="stash-dialog-cancel"]').click();
+        await dialog.waitForDisplayed({ timeout: 30000, reverse: true });
+
+        await $('[data-testid="open-stashes"]').click();
+        const view = $('[data-testid="stashes"]');
+        await view.waitForDisplayed({ timeout: 30000 });
+        const row = $('[data-testid="stashes-row"]');
+        await row.waitForDisplayed({ timeout: 30000 });
+        // Not getText: WebKitWebDriver answers "" for an element with overflow: hidden, as a cell of a row is.
+        assert.match(await row.$(".log-subject").getProperty("textContent"), /: Smoke stash$/);
+        await $(`[data-testid="stashes-file"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000 });
+        await $('[data-testid="stashes-preview"] .cm-mergeView').waitForExist({ timeout: 30000 });
+
+        await $('[data-testid="stashes-close"]').click();
+        await view.waitForDisplayed({ timeout: 30000, reverse: true });
+        await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+      } finally {
+        runGit(repository, gitconfig, "stash", "drop", "--quiet");
+      }
+    });
   });
 
   // In a window of a clone: closing the main window would end the WebDriver session.

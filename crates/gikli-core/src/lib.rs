@@ -36,6 +36,7 @@ mod rollback;
 mod search_history;
 mod settings;
 mod shallow;
+mod stash;
 mod status;
 mod sync;
 mod trace;
@@ -85,6 +86,7 @@ pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
 pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget, UpdateMethod};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
+pub use stash::{Stash, StashDiffBase, StashFileDiff, StashOptions, StashUnavailable, Stashes};
 pub use status::{
     Change, ChangeGroup, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, Changelist,
     ConflictKind, StagingArea, StagingSide, SubmoduleState,
@@ -691,6 +693,53 @@ pub enum Failure {
         operation: OperationKind,
         action: OperationAction,
     },
+    /// The Repository at `folder` cannot stash, for `reason`, so its stash actions are
+    /// unavailable.
+    #[serde(rename_all = "camelCase")]
+    StashUnavailable {
+        folder: PathBuf,
+        reason: StashUnavailable,
+    },
+    /// The Repository has no stash whose commit is `hash`: it was dropped, or `hash` is no stash.
+    StashNotFound {
+        hash: String,
+    },
+    /// The Repository at `folder` has no uncommitted change a stash would take, so git made no
+    /// stash. Files git does not track count only when the stash includes them.
+    #[serde(rename_all = "camelCase")]
+    NothingToStash {
+        folder: PathBuf,
+    },
+    /// git could not stash the changes of the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    NotStashed {
+        folder: PathBuf,
+    },
+    /// git could not drop the stash of the Repository at `folder`. The operation log holds git's
+    /// output.
+    #[serde(rename_all = "camelCase")]
+    StashNotDropped {
+        folder: PathBuf,
+    },
+    /// The stashes of the Repository at `folder` are no longer the ones the user saw, so none was
+    /// cleared. The user looks at them again first.
+    #[serde(rename_all = "camelCase")]
+    StashesChanged {
+        folder: PathBuf,
+    },
+    /// git could not clear the stashes of the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    StashesNotCleared {
+        folder: PathBuf,
+    },
+    /// git could not list the stashes of the Repository at `folder`. The operation log holds git's
+    /// output.
+    #[serde(rename_all = "camelCase")]
+    StashesUnreadable {
+        folder: PathBuf,
+    },
     /// gikli could not watch the Repository at `folder` for changes made outside it. Its changes
     /// still refresh on request.
     #[serde(rename_all = "camelCase")]
@@ -908,6 +957,12 @@ impl Gikli {
     /// remember, or merge, or ask the user how first.
     pub fn set_auto_update_if_push_rejected(&self, auto_update: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.auto_update_if_push_rejected = auto_update)
+    }
+
+    /// Makes the diff of a file in a stash compare it with the file on disk or with the file in
+    /// the commit the stash was made on.
+    pub fn set_stash_diff_against(&self, against: StashDiffBase) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.stash_diff_against = against)
     }
 
     /// Switches between Changelist mode and Staging mode. The Changelists stay as they are.
@@ -3294,6 +3349,78 @@ impl Gikli {
         path: &str,
     ) -> Result<RevisionFileDiff, Failure> {
         diff::read_revision(&self.runner(&repository.root)?, repository, revision, path)
+    }
+
+    /// Puts the uncommitted changes of `repository` aside in a stash, with the message, keeping
+    /// the index and including the files git does not track as `options` say. Returns the stashes
+    /// after that, the new one first.
+    pub fn stash(
+        &self,
+        repository: &Repository,
+        options: &StashOptions,
+    ) -> Result<Stashes, Failure> {
+        let runner = self.runner(&repository.root)?;
+        stash::push(&runner, repository, options)?;
+        stash::list(&runner, repository)
+    }
+
+    /// The stashes of `repository`, newest first, with why it cannot stash, when it cannot.
+    pub fn stashes(&self, repository: &Repository) -> Result<Stashes, Failure> {
+        stash::list(&self.runner(&repository.root)?, repository)
+    }
+
+    /// Drops the stash whose commit is `hash` from `repository`, wherever it is in the list now,
+    /// once the user confirmed it. Returns the stashes after that.
+    pub fn drop_stash(&self, repository: &Repository, hash: &str) -> Result<Stashes, Failure> {
+        let runner = self.runner(&repository.root)?;
+        stash::drop(&runner, repository, hash)?;
+        stash::list(&runner, repository)
+    }
+
+    /// Drops every stash of `repository`, once the user confirmed it, when they are still `seen`,
+    /// the hashes of the stashes the user was shown, newest first. When they are not,
+    /// [`Failure::StashesChanged`] says so and none goes. Returns the stashes after that.
+    pub fn clear_stashes(
+        &self,
+        repository: &Repository,
+        seen: &[String],
+    ) -> Result<Stashes, Failure> {
+        let runner = self.runner(&repository.root)?;
+        stash::clear(&runner, repository, seen)?;
+        stash::list(&runner, repository)
+    }
+
+    /// The files the stash whose commit is `hash` holds in `repository`, by path: each change to a
+    /// tracked file against the commit it was made on, and the files git did not track when the
+    /// stash includes them, as [`ChangeStatus::Untracked`]. They are arranged as the log arranges
+    /// the files of a commit, set with [`Self::set_commit_changes_grouping`].
+    pub fn stash_files(&self, repository: &Repository, hash: &str) -> Result<ChangeGroup, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let files =
+            stash::StashCommits::of(&runner, repository, hash)?.files(&runner, repository)?;
+        Ok(ChangeGroup::new(
+            files,
+            self.settings().commit_changes_grouping,
+        ))
+    }
+
+    /// The diff of the file at `path` in the stash whose commit is `hash` in `repository`: against
+    /// the file on disk, or against the file in the commit the stash was made on, as the user chose
+    /// with [`Self::set_stash_diff_against`]. Neither side can be edited.
+    pub fn stash_file_diff(
+        &self,
+        repository: &Repository,
+        hash: &str,
+        path: &str,
+    ) -> Result<StashFileDiff, Failure> {
+        let against = self.settings().stash_diff_against;
+        stash::file_diff(
+            &self.runner(&repository.root)?,
+            repository,
+            hash,
+            path,
+            against,
+        )
     }
 
     /// Starts watching `repository` for changes made outside gikli: after each burst of changes

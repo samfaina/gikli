@@ -62,6 +62,8 @@ export interface Settings {
   showRecentBranches: boolean;
   /** Whether the branch selector shows the tags. */
   showTagsInBranchSelector: boolean;
+  /** What the diff of a file in a stash compares the stashed file with. */
+  stashDiffAgainst: StashDiffBase;
 }
 
 /** How the changes view arranges the changes: a tree of folders, or one list. */
@@ -220,7 +222,7 @@ export interface UnchangedRegion {
 }
 
 /** Why the local side of a diff cannot be edited. */
-export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink" | "index" | "revision";
+export type LocalReadOnly = "turnedOff" | "noLocalFile" | "notUtf8" | "symbolicLink" | "index" | "revision" | "stash";
 
 /** The two versions of a text file and where they differ, with `\n` between lines. {@link FileDiff.side} says what each side holds on a side of Staging mode. */
 export interface TextDiff {
@@ -408,6 +410,22 @@ export type Failure =
   /** No commit goes by `revision`: no hash, branch, tag or other name git knows. */
   | { kind: "revisionNotFound"; revision: string }
   | { kind: "fileVersionNotRestored"; path: string }
+  /** The Repository cannot stash, for `reason`, so its stash actions are unavailable. */
+  | { kind: "stashUnavailable"; folder: string; reason: StashUnavailable }
+  /** The Repository has no uncommitted change a stash would take. */
+  | { kind: "nothingToStash"; folder: string }
+  /** git could not stash: the operation log shows why. */
+  | { kind: "notStashed"; folder: string }
+  /** git could not list the stashes: the operation log shows why. */
+  | { kind: "stashesUnreadable"; folder: string }
+  /** No stash has the commit `hash`: it was dropped. */
+  | { kind: "stashNotFound"; hash: string }
+  /** git could not drop the stash: the operation log shows why. */
+  | { kind: "stashNotDropped"; folder: string }
+  /** The stashes are no longer the ones the user saw, so none was cleared. */
+  | { kind: "stashesChanged"; folder: string }
+  /** git could not clear the stashes: the operation log shows why. */
+  | { kind: "stashesNotCleared"; folder: string }
   /** The text of a search is no regular expression, as `message` explains. */
   | { kind: "searchPatternInvalid"; message: string }
   /** The user has to say who they are: see {@link setCommitIdentity}. */
@@ -1633,6 +1651,90 @@ export function revisionFileDiff(repository: Repository, revision: string, path:
  */
 export function getFileVersion(repository: Repository, revision: string, revisionPath: string, path: string): Promise<void> {
   return invoke("get_file_version", { repository, revision, revisionPath, path });
+}
+
+/** What the user chose in the stash dialog. */
+export interface StashOptions {
+  /** Without text, git names the stash after the commit HEAD is on. */
+  message: string;
+  /** Whether what is staged also stays in the index and the working tree. */
+  keepIndex: boolean;
+  /** Whether the stash also takes the files git does not track. */
+  includeUntracked: boolean;
+}
+
+/** Why a Repository cannot stash. */
+export type StashUnavailable = "noCommits";
+
+/** One stash. */
+export interface Stash {
+  /** How git names it now, such as `stash@{0}`. */
+  name: string;
+  /** The full hash of its commit, which stays the same whatever its place in the list. */
+  hash: string;
+  /** What git says of it, such as `On main: Half done`. */
+  message: string;
+  /** In seconds since the epoch. */
+  createdAt: number;
+}
+
+/** The stashes of a Repository, newest first, with why it cannot stash, when it cannot. */
+export interface Stashes {
+  repository: Repository;
+  unavailable: StashUnavailable | null;
+  entries: Stash[];
+}
+
+/** What the diff of a file in a stash compares the stashed file with: the file on disk, or the file in the commit the stash was made on. */
+export type StashDiffBase = "local" | "parent";
+
+/**
+ * The diff of a file in a stash. Against the local version the head side is the stashed file and
+ * the local side the file on disk; against the parent the head side is the file in that commit and
+ * the local side the stashed file. Neither side can be edited.
+ */
+export interface StashFileDiff {
+  repository: Repository;
+  stash: string;
+  against: StashDiffBase;
+  path: string;
+  originalPath: string | null;
+  content: DiffContent;
+}
+
+/** Puts the uncommitted changes aside in a stash, and returns the stashes after that. Rejects with a {@link Failure}. */
+export function stash(repository: Repository, options: StashOptions): Promise<Stashes> {
+  return invoke("stash", { repository, options });
+}
+
+/** The stashes of `repository`, newest first. Rejects with a {@link Failure}. */
+export function stashes(repository: Repository): Promise<Stashes> {
+  return invoke("stashes", { repository });
+}
+
+/** The files the stash `hash` holds, arranged as the log arranges the files of a commit. Rejects with a {@link Failure}. */
+export function stashFiles(repository: Repository, hash: string): Promise<ChangeGroup> {
+  return invoke("stash_files", { repository, hash });
+}
+
+/** The diff of the file at `path` in the stash `hash`, against what the settings say. Rejects with a {@link Failure}. */
+export function stashFileDiff(repository: Repository, hash: string, path: string): Promise<StashFileDiff> {
+  return invoke("stash_file_diff", { repository, hash, path });
+}
+
+/** Makes the diff of a file in a stash compare it with `against`. Rejects with a {@link Failure}. */
+export function setStashDiffAgainst(against: StashDiffBase): Promise<Settings> {
+  return invoke("set_stash_diff_against", { against });
+}
+
+/** Drops the stash `hash`, once the user confirmed it, and returns the stashes after that. Rejects with a {@link Failure}. */
+export function dropStash(repository: Repository, hash: string): Promise<Stashes> {
+  return invoke("drop_stash", { repository, hash });
+}
+
+/** Drops every stash, once the user confirmed it, when they are still `seen`, newest first. Rejects with a {@link Failure}. */
+export function clearStashes(repository: Repository, seen: string[]): Promise<Stashes> {
+  return invoke("clear_stashes", { repository, seen });
 }
 
 /** Lets go of what the core holds to read the page at `cursor` quickly, once the log no longer needs it. */

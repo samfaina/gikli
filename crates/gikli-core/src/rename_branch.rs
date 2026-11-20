@@ -59,7 +59,7 @@ fn has_upstream(runner: &GitRunner, repository: &Repository, name: &str) -> Resu
 
 /// Runs git with `args` in `repository`, failing with what git's output explains, or with
 /// `fallback` when nothing does.
-fn run(
+pub(crate) fn run(
     runner: &GitRunner,
     repository: &Repository,
     args: &[&str],
