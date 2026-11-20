@@ -18,10 +18,11 @@ export function attachPort(env = process.env) {
 }
 
 /**
- * Whether `url` answers with a success before `deadline` (a time in ms), polling until it does.
+ * Whether `url` answers with a success before `deadline` (a time in ms), polling until it does or
+ * until `stopped()` says to give up.
  */
-export async function respondsBefore(url, deadline) {
-  while (Date.now() < deadline) {
+export async function respondsBefore(url, deadline, stopped = () => false) {
+  while (Date.now() < deadline && !stopped()) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) });
       if (response.ok) {
@@ -35,16 +36,37 @@ export async function respondsBefore(url, deadline) {
   return false;
 }
 
+/** Whether `app`, a child process, has exited. */
+function hasExited(app) {
+  return app.exitCode !== null || app.signalCode !== null;
+}
+
 /**
- * Resolves once WebView2's DevTools answer on `port`, and fails after `timeout` ms with an error
- * that points at the policy that opens the port.
+ * Resolves once WebView2's DevTools answer on `port`. Fails after `timeout` ms, or as soon as
+ * `app`, the gikli process expected to open them, exits, with an error that says how long the wait
+ * lasted and what became of `app`.
  */
-export async function waitForDevTools(port, { timeout = 30000 } = {}) {
-  if (!(await respondsBefore(`http://127.0.0.1:${port}/json/version`, Date.now() + timeout))) {
+export async function waitForDevTools(port, { timeout = 30000, app } = {}) {
+  const started = Date.now();
+  const exited = () => app !== undefined && hasExited(app);
+  if (await respondsBefore(`http://127.0.0.1:${port}/json/version`, started + timeout, exited)) {
+    return;
+  }
+  const waited = `${Number(((Date.now() - started) / 1000).toFixed(1))} s`;
+  const policy =
+    String.raw`One possible cause: the HKLM\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments ` +
+    `policy does not set --remote-debugging-port=${port} for gikli.exe.`;
+  if (app === undefined) {
+    throw new Error(`WebView2's DevTools did not answer on port ${port} within ${waited} of launching gikli. ${policy}`);
+  }
+  if (exited()) {
+    const how = app.signalCode === null ? `with code ${app.exitCode}` : `by signal ${app.signalCode}`;
     throw new Error(
-      `WebView2's DevTools did not answer on port ${port} within ${timeout / 1000} s of launching gikli. ` +
-        String.raw`Is the HKLM\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments policy ` +
-        `set for gikli.exe to --remote-debugging-port=${port}?`,
+      `WebView2's DevTools did not answer on port ${port}: gikli had exited ${how} ${waited} after its launch.`,
     );
   }
+  throw new Error(
+    `WebView2's DevTools did not answer on port ${port} within ${waited} of launching gikli, and gikli was ` +
+      `still running (process ${app.pid}). ${policy}`,
+  );
 }
