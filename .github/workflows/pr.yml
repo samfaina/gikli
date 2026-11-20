@@ -14,7 +14,7 @@ name: PR gate
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, samfaina/159-spend-no-ci-on-pull-requests-that-only-touch-docs]
 
 concurrency:
   group: pr-gate-${{ github.ref }}
