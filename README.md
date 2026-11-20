@@ -81,9 +81,9 @@ and attaches the Edge WebDriver to that port. Without the variable it goes throu
 With `GIKLI_E2E_OUTPUT` set to a folder, the smoke test writes its WebDriver logs there instead of
 to the terminal, and a screenshot of each case that fails. CI sets it, and keeps the folder as an
 artifact of a job whose smoke test failed. CI can also be run by hand (`gh workflow run ci.yml
---ref <branch>`), to measure how often the smoke test fails on Linux: each Linux job then runs it
-the number of times its `smoke-runs` input asks for (20 by default), in a row, and says how many of
-those runs failed.
+--ref <branch>`), to measure how often the smoke test fails on Linux and Windows: each Linux and
+Windows job then runs it the number of times its `smoke-runs` input asks for (20 by default), in a
+row, and says how many of those runs failed.
 
 To open a folder at startup, pass it as the first argument (`gikli <folder>`) or set
 `GIKLI_PROJECT_FOLDER`.
