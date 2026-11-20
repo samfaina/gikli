@@ -1526,6 +1526,15 @@ button:disabled {
   font-size: 0.85em;
 }
 
+/* The stashes tab: a stash's name, what git says of it, and when it was made. */
+.stashes-row {
+  grid-template-columns: 90px minmax(0, 1fr) 130px;
+}
+
+.stashes [data-testid="stashes-file"] {
+  cursor: pointer;
+}
+
 /* The push dialog: the tree of Repository, current branch and target, then the commits it sends. */
 .push-dialog {
   display: flex;

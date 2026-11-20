@@ -186,6 +186,15 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - Mark Resolved takes the file as the user left it, as `git add --all`, so a file deleted by hand leaves git. gikli does not look for conflict markers first, as git does not.
 - Closing the dialog with files still in conflict raises a notification with Resolve, and Abort when an operation is in progress: conflicts left by applying a stash have no operation to abort. Resolve opens the dialog again and removes the notification, which closing raises anew. It goes once no file is in conflict, however they were resolved.
 
+### Stash
+
+- The stash dialog offers the Repository, with the branch HEAD is on, a message, Keep index and Include untracked files, as `git stash push [--message] [--keep-index] [--include-untracked]`. The message is kept as written, and one without text leaves git to name the stash after the commit HEAD is on.
+- git makes no stash, and still succeeds, when there is nothing to stash: a clean tree, or only files git does not track without Include untracked files. gikli tells that by the stash list, which did not grow, and says there is nothing to stash.
+- A Repository with no commits cannot stash, as git stashes changes against a commit. The dialog and the stashes tab say so, and Stash, Drop and Clear are unavailable there, with the reason.
+- The stashes tab lists the stashes newest first, by git's name for each, `stash@{n}`, and what git says of it. The files of a stash are its changes to tracked files against the commit it was made on, and the files git did not track when it includes them.
+- The diff of a file in a stash compares it with the local version by default, the setting the reference names, or with the parent commit. Against the local version the older side is the stashed file and the newer side the file on disk; against the parent commit the older side is the file in that commit and the newer side the stashed file. A file git did not track has no parent version. Neither side can be edited.
+- Drop and Clear ask first. Drop goes by the stash's commit, not its place in the list, which a newer stash moves. Clear drops nothing when the stashes are no longer the ones the user confirmed, so no stash they did not see goes.
+
 ### File history
 
 - File history lists the commits that changed the file, newest first, as `git log --follow --name-status` finds them, the command the reference names, so it follows renames and copies. It reads the history of HEAD, the current branch, and the branch filter replaces it with one branch. A branch that no longer exists, or an unborn HEAD, shows no revisions.

@@ -11,14 +11,15 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use gikli_core::{
-    Branches, CapabilityState, ChangeGrouping, ChangeSet, CloneUrlForms, CommitChanges,
-    CommitDetails, CommitWarning, ConflictSide, ConflictedFile, CurrentBranch, Failure,
-    FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment, LocalBranch, LogCursor,
-    LogFilter, LogPage, MoveTarget, NewBranchBase, Notification, NotificationAction,
+    Branches, CapabilityState, ChangeGroup, ChangeGrouping, ChangeSet, CloneUrlForms,
+    CommitChanges, CommitDetails, CommitWarning, ConflictSide, ConflictedFile, CurrentBranch,
+    Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment, LocalBranch,
+    LogCursor, LogFilter, LogPage, MoveTarget, NewBranchBase, Notification, NotificationAction,
     NotificationOutcome, OperationAction, OperationInProgress, OperationLogEntry, Project,
     ProjectWindow, Prompt, PullOptions, PullPlan, PullSource, PushAfterCommit, PushPlan, PushTags,
     PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings,
-    StagingSide, TextSearch, UpdateMethod, answer_askpass_request,
+    StagingSide, StashDiffBase, StashFileDiff, StashOptions, Stashes, TextSearch, UpdateMethod,
+    answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -971,6 +972,65 @@ fn revision_file_diff(
 }
 
 #[tauri::command(async)]
+fn stash(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    options: StashOptions,
+) -> Result<Stashes, Failure> {
+    gikli.stash(&repository, &options)
+}
+
+#[tauri::command(async)]
+fn stashes(gikli: State<'_, Gikli>, repository: Repository) -> Result<Stashes, Failure> {
+    gikli.stashes(&repository)
+}
+
+#[tauri::command(async)]
+fn stash_files(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    hash: String,
+) -> Result<ChangeGroup, Failure> {
+    gikli.stash_files(&repository, &hash)
+}
+
+#[tauri::command(async)]
+fn stash_file_diff(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    hash: String,
+    path: String,
+) -> Result<StashFileDiff, Failure> {
+    gikli.stash_file_diff(&repository, &hash, &path)
+}
+
+#[tauri::command]
+fn set_stash_diff_against(
+    gikli: State<'_, Gikli>,
+    against: StashDiffBase,
+) -> Result<Settings, Failure> {
+    gikli.set_stash_diff_against(against)
+}
+
+#[tauri::command(async)]
+fn drop_stash(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    hash: String,
+) -> Result<Stashes, Failure> {
+    gikli.drop_stash(&repository, &hash)
+}
+
+#[tauri::command(async)]
+fn clear_stashes(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    seen: Vec<String>,
+) -> Result<Stashes, Failure> {
+    gikli.clear_stashes(&repository, &seen)
+}
+
+#[tauri::command(async)]
 fn get_file_version(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -1152,6 +1212,13 @@ fn main() {
             file_history,
             revision_file_diff,
             get_file_version,
+            stash,
+            stashes,
+            stash_files,
+            stash_file_diff,
+            set_stash_diff_against,
+            drop_stash,
+            clear_stashes,
             set_file_history_row_limit,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
