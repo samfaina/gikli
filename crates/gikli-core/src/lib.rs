@@ -447,7 +447,7 @@ pub enum Failure {
         folder: PathBuf,
     },
     /// The upstream of the current branch, the branch `branch` of `remote`, rejected the push from
-    /// the Repository at `folder`, as it has commits the branch lacks, and the settings say to ask
+    /// the Repository at `folder`, as it has incoming commits, and the settings say to ask
     /// the user how to integrate them before pushing again.
     #[serde(rename_all = "camelCase")]
     PushRejected {
@@ -2221,8 +2221,8 @@ impl Gikli {
 
     /// Pushes the current branch of `repository` to `target`, with the tags `tags` asks for. The
     /// push runs as a [`LongOperation`] that reports its progress and that the user can cancel.
-    /// When `target` is the upstream of the branch and rejects the push, as it has commits the
-    /// branch lacks, the push returns [`Failure::PushRejected`], so the user chooses how to
+    /// When `target` is the upstream of the branch and rejects the push, as it has incoming
+    /// commits, the push returns [`Failure::PushRejected`], so the user chooses how to
     /// integrate them, unless [`Settings::auto_update_if_push_rejected`] is on: then it integrates
     /// them with [`Settings::push_rejected_update_method`] and pushes again, as
     /// [`Gikli::update_and_push`] does.
@@ -2233,9 +2233,13 @@ impl Gikli {
         tags: PushTags,
     ) -> Result<(), Failure> {
         match self.push_once(repository, target, tags) {
-            Err(Failure::PushRejected { .. }) if self.settings().auto_update_if_push_rejected => {
-                let method = self.settings().push_rejected_update_method;
-                self.update_then_push(repository, target, tags, method)
+            Err(rejected @ Failure::PushRejected { .. }) => {
+                let settings = self.settings();
+                if !settings.auto_update_if_push_rejected {
+                    return Err(rejected);
+                }
+                let method = settings.push_rejected_update_method;
+                self.integrate_upstream_then_push(repository, target, tags, method)
             }
             pushed => pushed,
         }
@@ -2263,12 +2267,12 @@ impl Gikli {
                 settings.push_rejected_update_method = method;
             })?;
         }
-        self.update_then_push(repository, target, tags, method)
+        self.integrate_upstream_then_push(repository, target, tags, method)
     }
 
     /// Integrates `target` into the current branch of `repository` with `method` and pushes the
     /// branch there again, once.
-    fn update_then_push(
+    fn integrate_upstream_then_push(
         &self,
         repository: &Repository,
         target: &PushTarget,
@@ -2324,8 +2328,10 @@ impl Gikli {
         let set_upstream = push::sets_upstream(&runner, repository, &branch, target)?;
         let args = push::push_args(&branch, target, tags, set_upstream);
         let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
-        // What git says of the branch, not only how it ended, tells whether it went.
-        let rejected = push::rejected_for_commits_it_lacks(&invocation.stdout, &branch, target);
+        // What git says of the branch, not only how it ended, tells whether it went. A cancelled
+        // push is cancelled, whatever git wrote before it ended.
+        let rejected = !invocation.cancelled
+            && push::rejected_for_commits_it_lacks(&invocation.stdout, &branch, target);
         if invocation.success && !rejected {
             return Ok(());
         }

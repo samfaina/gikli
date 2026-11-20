@@ -36,8 +36,8 @@ export interface PushDialogHost {
   /** The push or the new remote changed the branches of `repository`. */
   branchesMoved(repository: Repository): void;
   /**
-   * `target`, the upstream of the current branch of `repository`, rejected its push with `tags`, as it has commits the
-   * branch lacks, so the user chooses how to integrate them. `pushed` runs once the push went through after all.
+   * `target`, the upstream of the current branch of `repository`, rejected its push with `tags`, as it has incoming
+   * commits, so the user chooses how to integrate them. `pushed` runs once the push went through after all.
    */
   pushRejected(repository: Repository, target: PushTarget, tags: PushTags, pushed: () => void): void;
 }

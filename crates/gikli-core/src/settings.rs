@@ -41,8 +41,8 @@ pub struct Settings {
     /// Whether Commit and push opens the push dialog only when the push goes to a protected
     /// branch, and pushes at once otherwise. It applies while the dialog shows for Commit and push.
     pub show_push_dialog_only_for_protected_branches: bool,
-    /// Whether a push of the current branch that its upstream rejects, as it has commits the branch
-    /// lacks, integrates them and pushes again without asking. When off, the user chooses how.
+    /// Whether a push of the current branch that its upstream rejects, as it has incoming commits,
+    /// integrates them and pushes again without asking. When off, the user chooses how.
     pub auto_update_if_push_rejected: bool,
     /// How such a push integrates the commits without asking: the method the user last chose to
     /// remember, and merge until they choose one.

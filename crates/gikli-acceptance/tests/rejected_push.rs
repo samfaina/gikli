@@ -226,6 +226,9 @@ fn choosing_rebase_and_remembering_it_rebases_silently_from_then_on() {
 fn auto_update_turned_on_without_a_method_chosen_merges_silently() {
     let sandbox = Sandbox::new();
     let Shared { remote, mine, .. } = diverged(&sandbox);
+    // The Repository has the incoming commits already, so git rejects the push as a
+    // non-fast-forward rather than asking to fetch first.
+    mine.git(&["fetch", "--quiet"]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
     let settings = gikli
@@ -268,16 +271,10 @@ fn an_update_that_stops_on_a_conflict_pushes_nothing_and_leads_to_the_conflict_l
         mine,
         theirs,
     } = shared(&sandbox);
-    theirs.write(
-        "file.txt", "theirs
-",
-    );
+    theirs.write("file.txt", "theirs\n");
     theirs.commit_all("Theirs");
     theirs.git(&["push", "--quiet", "origin", "main"]);
-    mine.write(
-        "file.txt", "mine
-",
-    );
+    mine.write("file.txt", "mine\n");
     mine.commit_all("Mine");
     let remote_before = remote.git(&["rev-parse", "main"]);
     let gikli = sandbox.gikli();
@@ -306,6 +303,15 @@ fn an_update_that_stops_on_a_conflict_pushes_nothing_and_leads_to_the_conflict_l
             .map(|operation| operation.kind),
         Some(OperationKind::Merge),
         "the merge waits for the user to resolve it"
+    );
+    assert!(
+        mine.git_succeeds(&["rev-parse", "--quiet", "--verify", "MERGE_HEAD"]),
+        "git agrees a merge is in progress"
+    );
+    assert_eq!(
+        mine.status_by_git(),
+        ["UU file.txt"],
+        "git agrees file.txt is in conflict"
     );
     assert_eq!(
         remote.git(&["rev-parse", "main"]),

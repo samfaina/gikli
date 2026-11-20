@@ -73,8 +73,7 @@ impl PushTags {
     }
 }
 
-/// How a push that its upstream rejected integrates the commits the branch lacks before pushing
-/// again.
+/// How a push that its upstream rejected integrates the incoming commits before pushing again.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdateMethod {
@@ -122,7 +121,7 @@ pub(crate) fn push_args(
 }
 
 /// Whether `stdout`, what `git push --porcelain` of `branch` to `target` wrote, says the remote
-/// rejected the branch as it holds commits the branch lacks: `fetch first` when the Repository does
+/// rejected the branch as it holds incoming commits, those the branch lacks: `fetch first` when the Repository does
 /// not have them, and `non-fast-forward` when it does.
 pub(crate) fn rejected_for_commits_it_lacks(
     stdout: &[u8],

@@ -35,7 +35,7 @@ export function createRejectedPushDialog(host: RejectedPushDialogHost): Rejected
   const message = element<HTMLElement>("rejected-push-message");
 
   /** The push the dialog offers to run again, while it is open. */
-  let rejected: { repository: Repository; target: PushTarget; tags: PushTags; pushed?: () => void } | null = null;
+  let pending: { repository: Repository; target: PushTarget; tags: PushTags; pushed?: () => void } | null = null;
 
   element<HTMLElement>("rejected-push-remember-label").textContent = t("rejectedPushRemember");
   mergeButton.textContent = t("rejectedPushMerge");
@@ -53,8 +53,8 @@ export function createRejectedPushDialog(host: RejectedPushDialogHost): Rejected
   });
 
   function open(repository: Repository, target: PushTarget, tags: PushTags, pushed?: () => void): void {
-    rejected = { repository, target, tags, pushed };
-    title.textContent = t("rejectedPushTitle", { target: `${target.remote}/${target.branch}` });
+    pending = { repository, target, tags, pushed };
+    title.textContent = t("rejectedPushTitle", { target: label(target) });
     title.title = repository.root;
     explanation.textContent = t("rejectedPushExplanation", {
       remote: target.remote,
@@ -69,7 +69,7 @@ export function createRejectedPushDialog(host: RejectedPushDialogHost): Rejected
   }
 
   function close(): void {
-    rejected = null;
+    pending = null;
     view.hidden = true;
   }
 
@@ -80,23 +80,23 @@ export function createRejectedPushDialog(host: RejectedPushDialogHost): Rejected
   }
 
   async function update(method: UpdateMethod): Promise<void> {
-    const shown = rejected;
+    const shown = pending;
     if (shown === null) {
       return;
     }
     allowChoice(false);
-    message.textContent = t("rejectedPushUpdating", { target: `${shown.target.remote}/${shown.target.branch}` });
+    message.textContent = t("rejectedPushUpdating", { target: label(shown.target) });
     try {
       // An update that stops on a conflict opens the conflicts dialog, and pushes nothing.
       await updateAndPush(shown.repository, shown.target, shown.tags, method, rememberCheck.checked);
       host.branchesMoved(shown.repository);
-      if (rejected === shown) {
+      if (pending === shown) {
         close();
       }
       shown.pushed?.();
     } catch (error) {
       host.branchesMoved(shown.repository);
-      if (rejected === shown) {
+      if (pending === shown) {
         message.replaceChildren(host.errorView(error));
         allowChoice(true);
       }
@@ -104,4 +104,9 @@ export function createRejectedPushDialog(host: RejectedPushDialogHost): Rejected
   }
 
   return { open, close };
+}
+
+/** How the dialog names `target`, as `remote/branch`. */
+function label(target: PushTarget): string {
+  return `${target.remote}/${target.branch}`;
 }

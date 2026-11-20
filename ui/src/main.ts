@@ -960,7 +960,7 @@ function repositoryView(repository: Repository): HTMLElement {
     describeChange,
     committed: () => void refreshChanges(),
     openPushDialog: () => pushDialog.open(repository),
-    pushRejected: (target) => rejectedPushDialog.open(repository, target, "none"),
+    pushRejected: (target, pushed) => rejectedPushDialog.open(repository, target, "none", pushed),
     branchesMoved: () => statusArea.refresh(repository.root),
     errorView,
   });
