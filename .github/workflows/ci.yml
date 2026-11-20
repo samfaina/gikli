@@ -6,8 +6,9 @@
 # test's WebDriver, so they reach none of Ubuntu's package servers, Launchpad or kernel.org.
 #
 # Run by hand (workflow_dispatch), on any branch, it runs the same jobs and measures how often the
-# smoke test fails on Linux (issue #152): each Linux job runs the smoke test the number of times
-# asked for, in a row, and says how many of those runs failed. The other jobs run as on a push.
+# smoke test fails on Linux and on Windows (issues #152 and #155): each Linux and Windows job runs
+# the smoke test the number of times asked for, in a row, and says how many of those runs failed.
+# macOS, which skips the smoke test, runs as on a push.
 name: CI
 
 on:
@@ -16,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       smoke-runs:
-        description: How many times in a row each Linux job runs the smoke test (about 3 minutes a run)
+        description: How many times in a row each Linux and Windows job runs the smoke test (about 3 minutes a run)
         type: number
         default: 20
 
@@ -42,6 +43,8 @@ jobs:
           {"name": "Windows (minimum git)", "os": "windows-latest", "git": "minimum"},
           {"name": "macOS", "os": "macos-latest", "git": "preinstalled"}
         ]
+      # A run by hand hands its number over as text, which the input, a number, does not take.
+      smoke-runs: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.smoke-runs || '1') }}
 
   # On main, makes sure the CI image of this push's definition exists before the Linux jobs run in
   # it: it does not on the push that changes the image's definition or MINIMUM_GIT_VERSION, nor on
