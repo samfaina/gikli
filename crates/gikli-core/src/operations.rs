@@ -75,6 +75,9 @@ pub enum LongOperation {
     },
     /// Resolving files in conflict in `repository`, where a filter can take as long as a hook.
     ResolveConflicts { repository: Repository },
+    /// Applying a stash to `repository`, or creating a branch from one, where a filter, or the
+    /// hook of the checkout, can take as long as it likes.
+    ApplyStash { repository: Repository },
     /// Fetching the rest of the history of `repository`, whose history is cut, from `remote`.
     FetchRestOfHistory {
         repository: Repository,

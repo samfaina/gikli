@@ -1,6 +1,7 @@
 // The stashes tab: the stashes of a Repository, newest first, the files the selected one holds, and
 // the diff of the selected file against the local version or the parent commit. From there the user
-// drops one stash or clears them all, after confirming. The core reads and changes all of it; this
+// brings a stash back through the unstash dialog, and drops one stash or clears them all, after
+// confirming. The core reads and changes all of it; this
 // draws it.
 
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -38,6 +39,8 @@ export interface StashesViewHost {
   closed(): void;
   /** Opens the stash dialog on `repository`. */
   newStash(repository: Repository): void;
+  /** Opens the unstash dialog on `stash` of `repository`. */
+  unstash(repository: Repository, stash: Stash): void;
 }
 
 export interface StashesView {
@@ -61,6 +64,7 @@ export function createStashesView(host: StashesViewHost): StashesView {
   const title = element<HTMLElement>("stashes-title");
   const againstSelect = element<HTMLSelectElement>("stashes-against");
   const newButton = element<HTMLButtonElement>("stashes-new");
+  const unstashButton = element<HTMLButtonElement>("stashes-unstash");
   const dropButton = element<HTMLButtonElement>("stashes-drop");
   const clearButton = element<HTMLButtonElement>("stashes-clear");
   const refreshButton = element<HTMLButtonElement>("stashes-refresh");
@@ -84,6 +88,7 @@ export function createStashesView(host: StashesViewHost): StashesView {
   element<HTMLElement>("stashes-against-label").textContent = t("stashesAgainst");
   againstSelect.replaceChildren(new Option(t("stashesAgainstLocal"), "local"), new Option(t("stashesAgainstParent"), "parent"));
   newButton.textContent = t("stashOpen");
+  unstashButton.textContent = t("stashesUnstash");
   dropButton.textContent = t("stashesDrop");
   clearButton.textContent = t("stashesClear");
   refreshButton.textContent = t("stashesRefresh");
@@ -95,6 +100,7 @@ export function createStashesView(host: StashesViewHost): StashesView {
       host.newStash(repository);
     }
   });
+  unstashButton.addEventListener("click", unstash);
   dropButton.addEventListener("click", () => void drop());
   clearButton.addEventListener("click", () => void clear());
   refreshButton.addEventListener("click", () => void read());
@@ -191,11 +197,12 @@ export function createStashesView(host: StashesViewHost): StashesView {
   function enableActions(): void {
     const available = listed !== null && listed.unavailable === null;
     newButton.disabled = !available;
+    unstashButton.disabled = !available || selected === null;
     dropButton.disabled = !available || selected === null;
     clearButton.disabled = !available || (listed?.entries.length ?? 0) === 0;
     const reason = listed?.unavailable ?? null;
     const why = reason === null ? "" : t(STASH_UNAVAILABLE_LABELS[reason]);
-    for (const button of [newButton, dropButton, clearButton]) {
+    for (const button of [newButton, unstashButton, dropButton, clearButton]) {
       button.title = why;
     }
   }
@@ -224,6 +231,11 @@ export function createStashesView(host: StashesViewHost): StashesView {
   function onKey(event: KeyboardEvent): void {
     const entries = listed?.entries ?? [];
     if (entries.length === 0) {
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      unstash();
       return;
     }
     if (event.key === "Delete") {
@@ -352,6 +364,13 @@ export function createStashesView(host: StashesViewHost): StashesView {
       showFile(selectedPath);
     } catch (error) {
       message.replaceChildren(host.errorView(error));
+    }
+  }
+
+  /** Opens the unstash dialog on the selected stash. */
+  function unstash(): void {
+    if (selected !== null && repository !== null && !unstashButton.disabled) {
+      host.unstash(repository, selected);
     }
   }
 

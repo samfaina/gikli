@@ -90,6 +90,7 @@ import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
 import { createStashDialog, STASH_UNAVAILABLE_LABELS } from "./stash-dialog";
 import { createStashesView } from "./stashes-view";
+import { createUnstashDialog } from "./unstash-dialog";
 import { createPushDialog } from "./push-dialog";
 import { createPullDialog } from "./pull-dialog";
 import { createRejectedPushDialog } from "./rejected-push-dialog";
@@ -332,6 +333,17 @@ const stashesView = createStashesView({
     underStashes = [];
   },
   newStash: (repository) => openStashDialog(repository),
+  unstash: (repository, stash) => unstashDialog.open(repository, stash),
+});
+
+const unstashDialog = createUnstashDialog({
+  errorView,
+  project: () => shownFolder,
+  unstashed: (repository) => {
+    // A branch from a stash moves HEAD, and any unstash changes the files and the stashes.
+    headMoved(repository);
+    stashesView.refreshIfShown(repository);
+  },
 });
 
 const stashDialog = createStashDialog({
@@ -807,6 +819,7 @@ function showProject(project: Project): void {
     unmergedCommitsView.close();
     conflictsDialog.close();
     stashDialog.close();
+    unstashDialog.close();
     stashesView.close();
   }
   shownFolder = project.folder;
@@ -1668,6 +1681,9 @@ function notificationView(notification: Notification): HTMLElement {
           case "resolveConflicts":
             conflictsDialog.open(outcome.payload);
             break;
+          case "stashesChanged":
+            stashesView.refreshIfShown(outcome.payload);
+            break;
         }
         // A notification that stays, as after showing the commits, can be acted on again.
         buttons.forEach((other) => (other.disabled = false));
@@ -1720,6 +1736,10 @@ function describeNotification(notification: Notification): string {
         backup: backup.reference,
       });
     }
+    case "stashKept": {
+      const { repository, stash } = notification.kind;
+      return t("notificationStashKept", { name: stash.name, message: stash.message, root: repository.root });
+    }
   }
 }
 
@@ -1735,6 +1755,7 @@ function describeAction(action: NotificationAction): string {
     case "resolveConflicts":
     case "abortOperation":
     case "restoreBackup":
+    case "dropStash":
       return t(action.action);
     case "showUnmergedCommits":
       return t("showUnmergedCommits", { branch: action.branch });
@@ -1928,6 +1949,8 @@ function describeOperation(operation: LongOperation): string {
       });
     case "resolveConflicts":
       return t("operationResolveConflicts", { root: operation.repository.root });
+    case "applyStash":
+      return t("operationApplyStash", { root: operation.repository.root });
   }
 }
 
@@ -2245,6 +2268,8 @@ function describeFailure(failure: Failure): string {
       return t("failureStashesChanged", { folder: failure.folder });
     case "stashesNotCleared":
       return t("failureStashesNotCleared", { folder: failure.folder });
+    case "stashNotApplied":
+      return t("failureStashNotApplied", { folder: failure.folder });
     case "searchPatternInvalid":
       return t("failureSearchPatternInvalid", { message: failure.message });
     case "commitMessagesUnreadable":

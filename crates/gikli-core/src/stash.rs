@@ -88,6 +88,39 @@ pub struct StashFileDiff {
     pub content: DiffContent,
 }
 
+/// How the user brings a stash back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnstashOptions {
+    /// Whether the stash is dropped once it applied: a pop. One that left files in conflict is
+    /// kept until the user confirms dropping it.
+    pub pop: bool,
+    /// Whether what was staged when the stash was made is staged again.
+    pub restore_index: bool,
+}
+
+/// What bringing a stash back came to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unstashed {
+    /// The stashes after that.
+    pub stashes: Stashes,
+    /// Whether applying the stash left files in conflict, which conflict resolution then lists.
+    pub conflicts: bool,
+}
+
+/// What the unstash dialog shows before the user brings a stash back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnstashPlan {
+    pub repository: Repository,
+    /// The stash to bring back.
+    pub stash: Stash,
+    /// Whether tracked files have uncommitted changes, staged or not. The dialog warns of them,
+    /// and does not block: git applies a stash over changes to other files.
+    pub local_changes: bool,
+}
+
 /// What git prints of each stash, a field per NUL. Its name comes from its place in the list, the
 /// order of the reflog of `refs/stash`, as `%gd` names it by date under some date options.
 const LIST_FORMAT: &str = "--format=%H%x00%ct%x00%gs";
@@ -279,6 +312,39 @@ impl StashCommits {
         files.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(files)
     }
+}
+
+/// What bringing the stash `hash` of `repository` back starts from.
+pub(crate) fn unstash_plan(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<UnstashPlan, Failure> {
+    let stash = to_unstash(runner, repository, hash)?;
+    Ok(UnstashPlan {
+        repository: repository.clone(),
+        stash,
+        local_changes: has_local_changes(runner, repository)?,
+    })
+}
+
+/// The stash `hash` of `repository`, to bring back, when the Repository can stash and has it.
+pub(crate) fn to_unstash(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<Stash, Failure> {
+    find(available(runner, repository)?, hash)
+}
+
+/// Whether tracked files of `repository` have uncommitted changes, staged or not.
+fn has_local_changes(runner: &GitRunner, repository: &Repository) -> Result<bool, Failure> {
+    let status = log::run_git(
+        runner,
+        repository,
+        &["status", "--porcelain", "-z", "--untracked-files=no"],
+    )?;
+    Ok(!status.stdout.is_empty())
 }
 
 /// Drops the stash `hash` of `repository`, wherever it is in the list now. git drops a stash by its

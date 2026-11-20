@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::{
-    Backup, DeletedBranch, Failure, ListedCommit, Project, RemoteBranch, Repository, Rewrite, lock,
+    Backup, DeletedBranch, Failure, ListedCommit, Project, RemoteBranch, Repository, Rewrite,
+    Stash, lock,
 };
 
 /// A long-lived message about a Project, with the actions the user can take on it.
@@ -62,6 +63,12 @@ pub enum NotificationKind {
         backup: Backup,
         head: Option<String>,
     },
+    /// Popping `stash` in `repository`, or creating a branch from it, left files in conflict, so
+    /// gikli kept the stash. It stays until the user confirms dropping it.
+    StashKept {
+        repository: Repository,
+        stash: Stash,
+    },
 }
 
 /// An action a notification offers.
@@ -91,6 +98,8 @@ pub enum NotificationAction {
     AbortOperation,
     /// Undoes the history rewrite: brings the branch back to the Backup saved before it.
     RestoreBackup,
+    /// Drops the stash kept after it conflicted, once the user confirmed it.
+    DropStash,
 }
 
 /// What acting on a notification changed.
@@ -108,6 +117,8 @@ pub enum NotificationOutcome {
     HeadMoved(Repository),
     /// The conflicts dialog opens on the files of the Repository still in conflict.
     ResolveConflicts(Repository),
+    /// The stashes of the Repository changed.
+    StashesChanged(Repository),
 }
 
 /// The deletion of branches a notification tells of.
@@ -171,6 +182,15 @@ impl Notification {
         }
     }
 
+    /// The stash this notification tells was kept, with its Repository. One about anything else
+    /// offers no Drop, and returns [`Failure::NotificationActionNotOffered`].
+    pub(crate) fn kept_stash(&self) -> Result<(&Repository, &Stash), Failure> {
+        match &self.kind {
+            NotificationKind::StashKept { repository, stash } => Ok((repository, stash)),
+            _ => Err(Failure::NotificationActionNotOffered { id: self.id }),
+        }
+    }
+
     /// The Repository whose unresolved conflicts this notification tells of. One about anything
     /// else offers no action on conflicts, and returns [`Failure::NotificationActionNotOffered`].
     pub(crate) fn unresolved_conflicts(&self) -> Result<&Repository, Failure> {
@@ -197,7 +217,8 @@ impl NotificationKind {
             | Self::BranchesDeleted { .. }
             | Self::RebaseStopped { .. }
             | Self::ConflictsUnresolved { .. }
-            | Self::HistoryRewritten { .. } => true,
+            | Self::HistoryRewritten { .. }
+            | Self::StashKept { .. } => true,
         }
     }
 
@@ -209,6 +230,7 @@ impl NotificationKind {
             Self::HookNotFinished { .. }
                 | Self::BranchesDeleted { .. }
                 | Self::HistoryRewritten { .. }
+                | Self::StashKept { .. }
         )
     }
 }

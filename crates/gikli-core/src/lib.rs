@@ -86,7 +86,10 @@ pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
 pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget, UpdateMethod};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
-pub use stash::{Stash, StashDiffBase, StashFileDiff, StashOptions, StashUnavailable, Stashes};
+pub use stash::{
+    Stash, StashDiffBase, StashFileDiff, StashOptions, StashUnavailable, Stashes, UnstashOptions,
+    UnstashPlan, Unstashed,
+};
 pub use status::{
     Change, ChangeGroup, ChangeGrouping, ChangeNode, ChangeSet, ChangeStatus, Changelist,
     ConflictKind, StagingArea, StagingSide, SubmoduleState,
@@ -728,6 +731,13 @@ pub enum Failure {
     StashesChanged {
         folder: PathBuf,
     },
+    /// git could not apply the stash to the Repository at `folder`, as when local changes to the
+    /// files it changes would be overwritten, and left no file in conflict. The stash is kept. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    StashNotApplied {
+        folder: PathBuf,
+    },
     /// git could not clear the stashes of the Repository at `folder`. The operation log holds
     /// git's output.
     #[serde(rename_all = "camelCase")]
@@ -1089,8 +1099,21 @@ impl Gikli {
                 return self.act_on_operation(&notification, repository, OperationAction::Abort);
             }
             NotificationAction::RestoreBackup => return self.restore_backup(&notification),
+            NotificationAction::DropStash => return self.drop_kept_stash(&notification),
         };
         Ok(NotificationOutcome::ProjectChanged(project))
+    }
+
+    /// Drops the stash `notification` tells was kept after it conflicted, and removes the
+    /// notification. One dropped since, as from the stashes tab, is gone already.
+    fn drop_kept_stash(&self, notification: &Notification) -> Result<NotificationOutcome, Failure> {
+        let (repository, stash) = notification.kept_stash()?;
+        match stash::drop(&self.runner(&repository.root)?, repository, &stash.hash) {
+            Ok(()) | Err(Failure::StashNotFound { .. }) => {}
+            Err(failure) => return Err(failure),
+        }
+        self.notifications.withdraw(notification.id);
+        Ok(NotificationOutcome::StashesChanged(repository.clone()))
     }
 
     /// Creates the branches `notification` tells were deleted again, each on the commit it was on,
@@ -3388,6 +3411,136 @@ impl Gikli {
         let runner = self.runner(&repository.root)?;
         stash::clear(&runner, repository, seen)?;
         stash::list(&runner, repository)
+    }
+
+    /// What the unstash dialog shows for the stash whose commit is `hash` in `repository`: the
+    /// stash, and whether tracked files have uncommitted changes, which it warns of without
+    /// blocking.
+    pub fn unstash_plan(
+        &self,
+        repository: &Repository,
+        hash: &str,
+    ) -> Result<UnstashPlan, Failure> {
+        stash::unstash_plan(&self.runner(&repository.root)?, repository, hash)
+    }
+
+    /// Applies the stash whose commit is `hash` to `repository`, a Repository of the Project at
+    /// `project`, restoring what was staged when `options` say so, and drops it after when they
+    /// say to pop it. Returns the stashes after that, and whether applying left files in conflict.
+    /// A stash that left files in conflict says so with [`Event::ConflictsLeft`], so conflict
+    /// resolution opens, and is kept even when popped. Uncommitted changes do not stop it: git
+    /// refuses, with [`Failure::StashNotApplied`], only when it would overwrite them. A stash that
+    /// is gone returns [`Failure::StashNotFound`].
+    pub fn apply_stash(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        hash: &str,
+        options: UnstashOptions,
+    ) -> Result<Unstashed, Failure> {
+        let runner = self.runner(&repository.root)?;
+        stash::to_unstash(&runner, repository, hash)?;
+        let mut args = vec!["stash", "apply", "--quiet"];
+        if options.restore_index {
+            args.push("--index");
+        }
+        args.push(hash);
+        let conflicts = self.unstash(&runner, repository, &args)?;
+        if options.pop {
+            self.drop_unless_conflicted(&runner, project, repository, hash, conflicts)?;
+        }
+        Ok(Unstashed {
+            stashes: stash::list(&runner, repository)?,
+            conflicts,
+        })
+    }
+
+    /// Creates the branch `name` of `repository`, a Repository of the Project at `project`, at the
+    /// commit the stash whose commit is `hash` was made on, checks it out, applies the stash there
+    /// with what it staged staged again, and drops it, as `git stash branch`. The name is taken as
+    /// a new branch's name is. A stash that left files in conflict says so with
+    /// [`Event::ConflictsLeft`], and is kept, as a pop that conflicts is.
+    pub fn stash_branch(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        hash: &str,
+        name: &str,
+    ) -> Result<Unstashed, Failure> {
+        let runner = self.runner(&repository.root)?;
+        stash::to_unstash(&runner, repository, hash)?;
+        new_branch::check_name(&runner, repository, name)?;
+        // Given the stash's commit and not its place in the list, git drops nothing itself.
+        let conflicts = self.unstash(&runner, repository, &["stash", "branch", name, hash])?;
+        self.drop_unless_conflicted(&runner, project, repository, hash, conflicts)?;
+        Ok(Unstashed {
+            stashes: stash::list(&runner, repository)?,
+            conflicts,
+        })
+    }
+
+    /// Drops the stash `hash` of `repository`, which was just applied, unless applying it left
+    /// files in conflict, as `conflicts` says. Then it is kept, and a notification about the
+    /// Project at `project` offers to drop it, once the user confirms it.
+    fn drop_unless_conflicted(
+        &self,
+        runner: &GitRunner,
+        project: &Path,
+        repository: &Repository,
+        hash: &str,
+        conflicts: bool,
+    ) -> Result<(), Failure> {
+        if !conflicts {
+            return stash::drop(runner, repository, hash);
+        }
+        let stash = stash::to_unstash(runner, repository, hash)?;
+        self.notifications.raise(
+            project,
+            NotificationKind::StashKept {
+                repository: repository.clone(),
+                stash,
+            },
+            vec![NotificationAction::DropStash],
+        );
+        Ok(())
+    }
+
+    /// Runs `args`, the arguments after `git` that apply a stash to `repository`, as a
+    /// [`LongOperation`], and returns whether applying it left files in conflict, which it says
+    /// with [`Event::ConflictsLeft`]. Files already in conflict return
+    /// [`Failure::ConflictsNotResolved`] before git runs, as git applies no stash over them.
+    fn unstash(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        args: &[&str],
+    ) -> Result<bool, Failure> {
+        let root = &repository.root;
+        if conflicts::any(runner, repository)? {
+            return Err(Failure::ConflictsNotResolved);
+        }
+        let operation = LongOperation::ApplyStash {
+            repository: repository.clone(),
+        };
+        let invocation = self.run_operation(runner, operation, root, args)?;
+        let stopped_on_conflict =
+            !invocation.success && !invocation.cancelled && conflicts::any(runner, repository)?;
+        if !invocation.success && !stopped_on_conflict {
+            return Err(failure_of(
+                runner,
+                root,
+                &invocation,
+                Failure::StashNotApplied {
+                    folder: root.clone(),
+                },
+            ));
+        }
+        if stopped_on_conflict {
+            self.events.send(Event::ConflictsLeft {
+                repository: repository.clone(),
+            });
+        }
+        Ok(stopped_on_conflict)
     }
 
     /// The files the stash whose commit is `hash` holds in `repository`, by path: each change to a

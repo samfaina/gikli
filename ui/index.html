@@ -157,6 +157,7 @@
           <h2 id="stashes-title" class="log-title" data-testid="stashes-title"></h2>
           <label><span id="stashes-against-label"></span><select id="stashes-against" data-testid="stashes-against"></select></label>
           <button id="stashes-new" type="button" data-testid="stashes-new"></button>
+          <button id="stashes-unstash" type="button" data-testid="stashes-unstash" disabled></button>
           <button id="stashes-drop" type="button" data-testid="stashes-drop" disabled></button>
           <button id="stashes-clear" type="button" data-testid="stashes-clear" disabled></button>
           <button id="stashes-refresh" type="button" data-testid="stashes-refresh"></button>
@@ -305,6 +306,24 @@
           <button id="stash-dialog-stash" type="button" data-testid="stash-dialog-stash"></button>
         </div>
         <div id="stash-dialog-status" class="new-branch-message" data-testid="stash-dialog-status" role="status"></div>
+      </section>
+      <section id="unstash-dialog" class="branch-selector new-branch" data-testid="unstash-dialog" role="dialog" aria-labelledby="unstash-dialog-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="unstash-dialog-title"></h2>
+          <button id="unstash-dialog-cancel" type="button" data-testid="unstash-dialog-cancel"></button>
+        </div>
+        <p id="unstash-dialog-stash" class="hint" data-testid="unstash-dialog-stash"></p>
+        <p id="unstash-dialog-warning" class="new-branch-message" data-testid="unstash-dialog-warning" role="status" hidden></p>
+        <div class="new-branch-actions">
+          <label><input id="unstash-dialog-restore-index" type="checkbox" data-testid="unstash-dialog-restore-index" /><span id="unstash-dialog-restore-index-label"></span></label>
+          <button id="unstash-dialog-apply" type="button" data-testid="unstash-dialog-apply"></button>
+          <button id="unstash-dialog-pop" type="button" data-testid="unstash-dialog-pop"></button>
+        </div>
+        <label class="new-branch-name"><span id="unstash-dialog-branch-label"></span><input id="unstash-dialog-branch" type="text" autocomplete="off" spellcheck="false" data-testid="unstash-dialog-branch" /></label>
+        <div class="new-branch-actions">
+          <button id="unstash-dialog-create-branch" type="button" data-testid="unstash-dialog-create-branch" disabled></button>
+        </div>
+        <div id="unstash-dialog-status" class="new-branch-message" data-testid="unstash-dialog-status" role="status"></div>
       </section>
       <section id="delete-branches" class="branch-selector new-branch" data-testid="delete-branches" role="dialog" aria-labelledby="delete-branches-title" hidden>
         <div class="branch-selector-header">
