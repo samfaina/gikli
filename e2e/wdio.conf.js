@@ -10,14 +10,16 @@
 // mode is chosen below.
 
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { SevereServiceError } from "webdriverio";
 
 import { appEnvironment } from "./app-environment.js";
-import { attachPort, respondsBefore, waitForDevTools } from "./attach.js";
+import { attachPort, hasExited, launchWithDevTools, respondsBefore } from "./attach.js";
 import { failureOutputFolder, screenshotPath } from "./failure-output.js";
 import { bringIntoViewBeforePointerActions } from "./into-view.js";
 import { commitStaged, runGit, sandboxGitconfig } from "./sandbox-git.js";
@@ -191,13 +193,34 @@ async function start(command, args, options) {
   return child;
 }
 
-/** Stops `child`, if it runs, and resolves once it has exited. */
+/** How long stopping a process waits for it to exit before it goes on without it. */
+const STOP_TIMEOUT = 10000;
+
+/** Stops `child`, if it runs, and resolves once it has exited, or once it has had time to. */
 async function stop(child) {
-  if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-    const exited = new Promise((resolve) => child.once("exit", resolve));
+  if (child?.pid !== undefined && !hasExited(child)) {
+    const exited = once(child, "exit");
     child.kill();
-    await exited;
+    if ((await Promise.race([exited.then(() => true, () => false), delay(STOP_TIMEOUT, false)])) === false) {
+      console.warn(`${path.basename(child.spawnfile)} (process ${child.pid}) did not exit within ${STOP_TIMEOUT / 1000} s.`);
+    }
   }
+}
+
+/**
+ * Stops gikli, if it was launched, and the WebView2 processes it started, which can outlive
+ * gikli.exe, also when gikli has already exited. Theirs is the only command line that names gikli,
+ * as their user data folder or as the app they run in.
+ */
+async function stopWithWebView2(app) {
+  if (app === undefined) {
+    return;
+  }
+  await stop(app);
+  const script =
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -match 'gikli' } | " +
+    `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Wait-Process -Id $_.ProcessId -Timeout ${STOP_TIMEOUT / 1000} -ErrorAction SilentlyContinue }`;
+  spawnSync("powershell", ["-NoProfile", "-Command", script], { stdio: "ignore" });
 }
 
 const application = path.join(targetDirectory(), "debug", `gikli${exe}`);
@@ -223,8 +246,20 @@ let attached = { app: undefined, driver: undefined };
 // its answer, to that folder instead of the terminal, and a screenshot of each case that fails.
 const outputFolder = failureOutputFolder(process.env);
 
+// How many times attach mode launches gikli, and how long each launch waits for WebView2's DevTools,
+// before the run fails (#155). On the GitHub-hosted runner the first launch of a job is the slow
+// one. Of 80 first launches timed, half answered within 2 s and the slowest after 18 s, in a burst
+// of jobs that started together; in the slowest, WebView2's first process itself came up to 12 s
+// late, so the runner is slow, not gikli. The 58 later launches timed in the same jobs all answered
+// within 1 s, and the launches that gave up after 30 s were all the first of their job. So a launch
+// waits 60 s, over three times the slowest answer seen, and one that still gets none is stopped and
+// launched again, on a runner that has warmed up.
+const LAUNCH_ATTEMPTS = 3;
+const DEVTOOLS_TIMEOUT = 60000;
+
 /**
- * Launches gikli, waits for WebView2's DevTools on {@link debugPort}, and starts msedgedriver on
+ * Launches gikli, waits for WebView2's DevTools on {@link debugPort}, launching gikli again up to
+ * {@link LAUNCH_ATTEMPTS} times when they do not answer, and starts msedgedriver on
  * {@link driverPort}. Throws, having stopped what it started, if either does not come up.
  */
 async function launchAttached() {
@@ -233,8 +268,16 @@ async function launchAttached() {
   }
   try {
     const driver = await edgeDriver();
-    attached.app = await start(application, [], { env: appEnvironment(process.env) });
-    await waitForDevTools(debugPort);
+    await launchWithDevTools(debugPort, {
+      launch: async () => {
+        // Kept in `attached` as soon as it starts, so that stopAttached stops it whatever happens.
+        attached.app = await start(application, [], { env: appEnvironment(process.env) });
+        return attached.app;
+      },
+      stop: stopWithWebView2,
+      attempts: LAUNCH_ATTEMPTS,
+      timeout: DEVTOOLS_TIMEOUT,
+    });
     attached.driver = await start(driver, [`--port=${driverPort}`]);
     if (!(await respondsBefore(`http://127.0.0.1:${driverPort}/status`, Date.now() + 30000))) {
       throw new Error(`msedgedriver did not start on port ${driverPort} within 30 s.`);
@@ -247,7 +290,7 @@ async function launchAttached() {
 
 /** Stops what {@link launchAttached} started, if anything. */
 async function stopAttached() {
-  await Promise.all([stop(attached.driver), stop(attached.app)]);
+  await Promise.all([stop(attached.driver), stopWithWebView2(attached.app)]);
   attached = { app: undefined, driver: undefined };
 }
 

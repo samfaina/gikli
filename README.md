@@ -76,7 +76,9 @@ reports it as skipped. On Windows it runs without tauri-driver, which cannot sta
 the GitHub-hosted runner (#54): a CI step opens a WebView2 DevTools port with the
 `AdditionalBrowserArguments` policy for `gikli.exe` and names it in
 `GIKLI_E2E_WEBVIEW2_DEBUG_PORT`, and with that variable set the smoke test launches the app itself
-and attaches the Edge WebDriver to that port. Without the variable it goes through tauri-driver.
+and attaches the Edge WebDriver to that port. The runner can be slow to start WebView2 on a job's
+first launch (#155), so when the port does not answer within 60 s the smoke test stops the app and
+launches it again, three times at most. Without the variable it goes through tauri-driver.
 
 With `GIKLI_E2E_OUTPUT` set to a folder, the smoke test writes its WebDriver logs there instead of
 to the terminal, and a screenshot of each case that fails. CI sets it, and keeps the folder as an

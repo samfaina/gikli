@@ -36,9 +36,9 @@ export async function respondsBefore(url, deadline, stopped = () => false) {
   return false;
 }
 
-/** Whether `app`, a child process, has exited. */
-function hasExited(app) {
-  return app.exitCode !== null || app.signalCode !== null;
+/** Whether `child`, a child process, has exited. */
+export function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 /**
@@ -69,4 +69,28 @@ export async function waitForDevTools(port, { timeout = 30000, app } = {}) {
     `WebView2's DevTools did not answer on port ${port} within ${waited} of launching gikli, and gikli was ` +
       `still running (process ${app.pid}). ${policy}`,
   );
+}
+
+/**
+ * Launches gikli with `launch()` until its WebView2's DevTools answer on `port`, at most
+ * `attempts` times, each waiting up to `timeout` ms (see {@link waitForDevTools}), and resolves with
+ * the gikli whose DevTools answered. Each launch that fails is stopped with `stop(app)` before the
+ * next. Fails, with what each launch saw, once the last one has failed too.
+ */
+export async function launchWithDevTools(port, { launch, stop, attempts, timeout }) {
+  const failures = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const app = await launch();
+    try {
+      await waitForDevTools(port, { timeout, app });
+      return app;
+    } catch (error) {
+      await stop(app);
+      failures.push(`Launch ${attempt} of ${attempts}: ${error.message}`);
+      if (attempt < attempts) {
+        console.warn(`${failures.at(-1)} Launching gikli again.`);
+      }
+    }
+  }
+  throw new Error(failures.join("\n"));
 }

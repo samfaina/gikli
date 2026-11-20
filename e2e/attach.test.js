@@ -6,7 +6,7 @@ import { once } from "node:events";
 import http from "node:http";
 import { describe, it } from "node:test";
 
-import { attachPort, waitForDevTools } from "./attach.js";
+import { attachPort, launchWithDevTools, waitForDevTools } from "./attach.js";
 
 /** A process that stands in for gikli: Node running `code`, stopped when the test ends. */
 async function standIn(t, code) {
@@ -102,5 +102,60 @@ describe("waitForDevTools", () => {
     setTimeout(() => devTools.listen(port, "127.0.0.1"), 500);
 
     await waitForDevTools(port, { timeout: 10000 });
+  });
+});
+
+describe("launchWithDevTools", () => {
+  /** A stand-in for a gikli whose WebView2 opens DevTools on `port`. */
+  const answering = (port) =>
+    "require('node:http').createServer((request, response) => response.end('{}'))" +
+    `.listen(${port}, '127.0.0.1')`;
+  const silent = "setInterval(() => {}, 1000)";
+
+  it("launches gikli again when its DevTools do not answer, having stopped the launch that failed", async (t) => {
+    const port = await freePort();
+    const launched = [];
+    const stopped = [];
+    const launch = async () => {
+      const app = await standIn(t, launched.length === 0 ? silent : answering(port));
+      launched.push(app);
+      return app;
+    };
+    const stop = async (app) => {
+      stopped.push(app);
+      app.kill();
+      await once(app, "exit");
+    };
+
+    const app = await launchWithDevTools(port, { launch, stop, attempts: 3, timeout: 1000 });
+
+    assert.equal(launched.length, 2);
+    assert.equal(app, launched[1]);
+    assert.deepEqual(stopped, [launched[0]]);
+  });
+
+  it("gives up after the last launch, having stopped every one, with what each saw", async (t) => {
+    const port = await freePort();
+    const launched = [];
+    const stopped = [];
+    const launch = async () => {
+      const app = await standIn(t, silent);
+      launched.push(app);
+      return app;
+    };
+    const stop = async (app) => {
+      stopped.push(app);
+      app.kill();
+      await once(app, "exit");
+    };
+
+    await assert.rejects(launchWithDevTools(port, { launch, stop, attempts: 2, timeout: 500 }), (error) => {
+      assert.match(error.message, /launch 1 of 2/i);
+      assert.match(error.message, /launch 2 of 2/i);
+      assert.match(error.message, new RegExp(`still running \\(process ${launched[0].pid}\\)`));
+      assert.match(error.message, new RegExp(`still running \\(process ${launched[1].pid}\\)`));
+      return true;
+    });
+    assert.deepEqual(stopped, launched);
   });
 });
