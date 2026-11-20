@@ -241,3 +241,5 @@ Settled when the feature's scope tier comes up.
 | Whether gikli adds and removes submodules | 3 | Kickoff brief; reference section 11 |
 | Whether any JetBrains internal action from section 14 becomes a gikli feature | 4 | Kickoff brief; reference section 14 |
 | `[unconfirmed]` items of Scope 2 and above: worktrees version, history for a method or class | 2+ | Reference |
+
+<!-- throwaway #159 -->
