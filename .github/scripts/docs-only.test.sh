@@ -10,55 +10,51 @@ fail() {
   failures=$((failures + 1))
 }
 
-# Hands docs-only.sh the paths given, one per line, and checks that it prints $expected and exits 0.
-classify() {
+# Hands docs-only.sh its stdin, and checks that it prints $1 and exits 0.
+check() {
   local output status
-  output=$(printf '%s\n' "$@" | "$script" 2>&1)
+  output=$("$script" 2>&1)
   status=$?
   test "$status" -eq 0 || fail "exit status $status, printed $output"
-  test "$output" = "$expected" || fail "printed $output, not $expected"
+  test "$output" = "$1" || fail "printed $output, not $1"
 }
 
+# The paths given, one per line.
+paths() { printf '%s\n' "$@"; }
+
 test_name="Markdown files at the repository's root are docs"
-expected=true classify CLAUDE.md GLOSSARY.md README.md
+paths CLAUDE.md GLOSSARY.md README.md | check true
 
 test_name="files under docs/, at any depth, are docs"
-expected=true classify docs/agents/issue-tracker.md docs/adr/0008-ci-in-two-tiers-linux-jobs-in-an-image.md docs/diagram.png
+paths docs/agents/issue-tracker.md docs/adr/0008-ci-in-two-tiers-linux-jobs-in-an-image.md docs/diagram.png | check true
 
 test_name="files under .out-of-scope/ are docs"
-expected=true classify .out-of-scope/ui-only-ci.md
+paths .out-of-scope/ui-only-ci.md | check true
 
 test_name="docs and code together are not docs-only"
-expected=false classify README.md docs/adr/0008-ci-in-two-tiers-linux-jobs-in-an-image.md crates/gikli-core/src/lib.rs
+paths README.md docs/adr/0008-ci-in-two-tiers-linux-jobs-in-an-image.md crates/gikli-core/src/lib.rs | check false
 
 test_name="a Markdown file under crates/ is code: it may be a fixture"
-expected=false classify crates/gikli-core/tests/fixtures/README.md
+paths crates/gikli-core/tests/fixtures/README.md | check false
 
 test_name="a Markdown file under e2e/ is code"
-expected=false classify e2e/README.md
+paths e2e/README.md | check false
 
 test_name="a file under .github/ is code, Markdown or not"
-expected=false classify .github/workflows/pr.yml
-expected=false classify .github/pull_request_template.md
+paths .github/workflows/pr.yml | check false
+paths .github/pull_request_template.md | check false
 
 test_name="a file under .claude/ is code"
-expected=false classify .claude/settings.json
+paths .claude/settings.json | check false
 
 test_name="a rename from a code path to a docs path is not docs-only: its old path is code"
-expected=false classify crates/gikli-core/NOTES.md docs/notes.md
+paths crates/gikli-core/NOTES.md docs/notes.md | check false
 
 test_name="a last path without a newline after it still counts"
-output=$(printf 'README.md
-crates/gikli-core/src/lib.rs' | "$script" 2>&1)
-status=$?
-test "$status" -eq 0 || fail "exit status $status, printed $output"
-test "$output" = "false" || fail "printed $output, not false"
+printf 'README.md\ncrates/gikli-core/src/lib.rs' | check false
 
 test_name="a list of no files is not docs-only"
-output=$("$script" < /dev/null 2>&1)
-status=$?
-test "$status" -eq 0 || fail "exit status $status, printed $output"
-test "$output" = "false" || fail "printed $output, not false"
+check false < /dev/null
 
 if [ "$failures" -eq 0 ]; then
   echo "All docs-only.sh tests passed."

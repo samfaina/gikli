@@ -26,9 +26,8 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-    # A push to main whose files all count as docs runs nothing (ADR-0008). The same three globs as
-    # .github/scripts/docs-only.sh, which the PR gate runs, since paths-ignore cannot call it: keep
-    # the two in step. GitHub evaluates no path filter on the push of a tag, so a tag always runs.
+    # The three docs globs of .github/scripts/docs-only.sh, which the PR gate runs: paths-ignore
+    # cannot call it, so keep the two in step. GitHub evaluates no path filter on the push of a tag.
     paths-ignore:
       - "*.md"
       - "docs/**"
