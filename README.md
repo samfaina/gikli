@@ -95,3 +95,32 @@ folder (on Windows, `%APPDATA%\dev.gikli.app`). To keep them somewhere else, set
 `GIKLI_CONFIG_FOLDER`; a relative path resolves against the current directory, and the folder is
 created on the first save. The smoke test sets it to a folder inside its sandbox, so a run starts
 from default settings and no Projects and leaves the developer's own untouched.
+
+## Releasing
+
+A release is an annotated tag `vX.Y.Z` on a commit of `main`, which CI publishes as a GitHub
+pre-release once the full matrix passes on it
+([ADR-0009](docs/adr/0009-releases-are-tags-on-main-gated-by-the-full-matrix.md)). While gikli is
+in 0.x, raise the minor when the release brings new features and the patch when it brings only
+fixes; every 0.x release is a pre-release. The first is `v0.1.0`.
+
+1. Open a pull request titled "Release vX.Y.Z" that sets the version to `X.Y.Z` in the
+   `[workspace.package]` section of `Cargo.toml`, in `package.json` and in both entries for the
+   root package in `package-lock.json` (`npm install` updates the lockfile after `package.json`).
+   `.github/scripts/release-version.sh vX.Y.Z` checks the three files before you tag.
+2. Merge it, wait for its run of the CI workflow on `main` to pass (it also makes sure of the
+   Linux jobs' CI image), and tag the commit it left on `main`:
+
+   ```sh
+   git tag -a vX.Y.Z -m "gikli X.Y.Z" <sha>
+   git push origin vX.Y.Z
+   ```
+
+3. The tag's run of the CI workflow checks that the commit is in `main`'s history and that the
+   tag's version is the one the three files carry, runs the same jobs as a push to `main`, and
+   then creates the Release, marked as a pre-release, with GitHub's generated notes.
+
+When that run is red, nothing is published, and the tag stays. If a job failed for a reason
+outside the change, such as the network, re-run it from the run's page. Otherwise delete the tag
+(`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`), fix the cause on `main`, and
+tag the fixed commit again: nothing was published under that version, so it can stay the same.
