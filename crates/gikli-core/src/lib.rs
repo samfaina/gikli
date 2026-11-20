@@ -947,7 +947,8 @@ impl Gikli {
 
     /// Opens `folder` as a Project. The first time, gikli registers the Repository the folder is
     /// in. Every time, it offers the Repositories it finds at or inside the folder that are
-    /// neither registered nor ignored.
+    /// neither registered nor ignored, and deletes the Backups of its Repositories saved more than
+    /// 30 days ago.
     pub fn open_project(&self, folder: &Path) -> Result<Project, Failure> {
         let place = self.project_folder(folder)?;
         place.ensure_can_open()?;
@@ -974,6 +975,12 @@ impl Gikli {
         }
         self.notifications.withdraw_settled(&project);
         self.raise_project_notifications(&project);
+        for repository in &project.repositories {
+            // Best-effort: a Repository whose git cannot run keeps its Backups until next time.
+            if let Ok(runner) = self.runner(&repository.root) {
+                backups::delete_expired(&runner, repository);
+            }
+        }
         Ok(project)
     }
 
@@ -1964,7 +1971,7 @@ impl Gikli {
         rewrite: Rewrite,
         backup: Backup,
     ) -> Result<(), Failure> {
-        let head = delete_branches::head_commit(runner, repository)?;
+        let head = details::commit_if_any(runner, repository, "HEAD")?;
         self.notifications.raise(
             project,
             NotificationKind::HistoryRewritten {
@@ -1990,7 +1997,7 @@ impl Gikli {
         let runner = self.runner(&repository.root)?;
         let commit = details::resolve(&runner, repository, commit)?;
         let branch = sync::head_branch(&runner, repository)?;
-        let head = delete_branches::head_commit(&runner, repository)?;
+        let head = details::commit_if_any(&runner, repository, "HEAD")?;
         let Some(branch) = branch.filter(|_| head.as_ref() == Some(&commit)) else {
             return Err(Failure::NotLastCommit { commit });
         };

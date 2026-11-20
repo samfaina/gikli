@@ -69,11 +69,7 @@ pub(crate) fn head_commit(
     runner: &GitRunner,
     repository: &Repository,
 ) -> Result<Option<String>, Failure> {
-    match details::resolve(runner, repository, "HEAD") {
-        Ok(commit) => Ok(Some(commit)),
-        Err(Failure::RevisionNotFound { .. }) => Ok(None),
-        Err(failure) => Err(failure),
-    }
+    details::commit_if_any(runner, repository, "HEAD")
 }
 
 /// Deletes the local branch `name` of `repository`, merged or not, as `git branch -D`, and returns

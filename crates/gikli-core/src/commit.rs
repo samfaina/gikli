@@ -80,7 +80,9 @@ pub(crate) enum CommitKind {
 /// A commit to make: what it records, with which message, and whether it is a new one.
 #[derive(Clone, Copy)]
 pub(crate) struct Commit<'a> {
+    /// The selected files it records, in Changelist mode.
     pub selection: &'a Selection,
+    /// Its message, as the user wrote it.
     pub message: &'a str,
     pub scope: CommitScope,
     pub kind: CommitKind,

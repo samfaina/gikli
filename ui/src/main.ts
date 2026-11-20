@@ -1661,11 +1661,13 @@ function describeNotification(notification: Notification): string {
       return t("notificationConflictsUnresolved", { root: notification.kind.repository.root });
     case "historyRewritten": {
       const { repository, rewrite, backup } = notification.kind;
-      const branch = backup.branch ?? "HEAD";
-      const hash = backup.commit.slice(0, SHORT_HASH_LENGTH);
-      return rewrite === "undoCommit"
-        ? t("notificationCommitUndone", { hash, branch, root: repository.root, backup: backup.reference })
-        : t("notificationCommitAmended", { hash, branch, root: repository.root, backup: backup.reference });
+      const key = rewrite === "undoCommit" ? "notificationCommitUndone" : "notificationCommitAmended";
+      return t(key, {
+        hash: backup.commit.slice(0, SHORT_HASH_LENGTH),
+        branch: backup.branch ?? "HEAD",
+        root: repository.root,
+        backup: backup.reference,
+      });
     }
   }
 }

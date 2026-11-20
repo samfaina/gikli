@@ -40,6 +40,7 @@ fn backups_by_git(repository: &TestRepository) -> Vec<String> {
         .collect()
 }
 
+/// The full hash of the commit `revision` names in `repository`, as git resolves it.
 fn commit_of(repository: &TestRepository, revision: &str) -> String {
     repository
         .git(&["rev-parse", "--verify", revision])

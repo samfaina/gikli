@@ -338,10 +338,13 @@ export type Failure =
   | { kind: "notLastCommit"; commit: string }
   /** `commit` is on `branch`, the remote branch of a protected branch, such as `origin/main`: shared history stays. */
   | { kind: "commitPushedToProtectedBranch"; commit: string; branch: string }
+  /** git could not save a Backup, so the history was not rewritten. */
   | { kind: "backupNotSaved"; folder: string }
+  /** git could not bring the branch back to its Backup. */
   | { kind: "backupNotRestored"; folder: string }
   /** Undo of a history rewrite found `branch`, or the detached HEAD when it is null, moved since the rewrite. */
   | { kind: "branchMovedSinceRewrite"; branch: string | null }
+  /** git could not undo the last commit. */
   | { kind: "commitNotUndone"; folder: string }
   | { kind: "commitInputNotWritten"; folder: string; message: string }
   | { kind: "commitMessagesUnreadable"; folder: string }

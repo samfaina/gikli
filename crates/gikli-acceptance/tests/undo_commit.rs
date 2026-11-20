@@ -17,6 +17,7 @@ fn opened(gikli: &Gikli, repository: &TestRepository) -> (Project, Repository) {
     (project, root)
 }
 
+/// The full hash of the commit `revision` names in `repository`, as git resolves it.
 fn commit_of(repository: &TestRepository, revision: &str) -> String {
     repository
         .git(&["rev-parse", "--verify", revision])
@@ -484,4 +485,22 @@ fn an_undo_git_refuses_leaves_no_backup() {
     assert_eq!(commit_of(&repository, "HEAD"), last);
     assert_eq!(backups_by_git(&repository), Vec::<String>::new());
     assert_eq!(gikli.notifications(), vec![]);
+}
+
+#[test]
+fn backups_older_than_30_days_are_deleted_when_the_project_opens_too() {
+    let sandbox = Sandbox::new();
+    let repository = repository_with_a_last_commit(&sandbox);
+    let initial = commit_of(&repository, "HEAD~");
+    let expired = backup_saved_days_ago(31, "main");
+    let kept = backup_saved_days_ago(29, "main");
+    repository.git(&["update-ref", &expired, &initial]);
+    repository.git(&["update-ref", &kept, &initial]);
+
+    opened(&sandbox.gikli(), &repository);
+
+    assert_eq!(
+        backups_by_git(&repository),
+        vec![format!("{kept} {initial}")]
+    );
 }

@@ -153,8 +153,8 @@ impl Notification {
         }
     }
 
-    /// The history rewrite this notification tells of. One about anything else offers no Undo, and returns
-    /// [`Failure::NotificationActionNotOffered`].
+    /// The history rewrite this notification tells of. One about anything else offers no Undo, and
+    /// returns [`Failure::NotificationActionNotOffered`].
     pub(crate) fn history_rewrite(&self) -> Result<Rewritten<'_>, Failure> {
         match &self.kind {
             NotificationKind::HistoryRewritten {

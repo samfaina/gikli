@@ -47,12 +47,7 @@ pub(crate) fn save(
     commit: &str,
 ) -> Result<Backup, Failure> {
     let root = &repository.root;
-    let backups = sync::read_branches(
-        runner,
-        repository,
-        &["for-each-ref", "--format=%(refname)", NAMESPACE],
-    )?;
-    let backups: Vec<&str> = backups.lines().collect();
+    let backups = list(runner, repository)?;
     let now = now();
     // One Backup a second: a rewrite in the same second as another takes the next second free,
     // so no name is taken twice, and none holds another.
@@ -81,7 +76,7 @@ pub(crate) fn save(
             },
         ));
     }
-    delete_expired(runner, repository, &backups, now);
+    delete_expired_of(runner, repository, &backups, now);
     Ok(Backup {
         reference,
         branch: branch.map(str::to_owned),
@@ -96,11 +91,39 @@ pub(crate) fn forget(runner: &GitRunner, repository: &Repository, backup: &Backu
     let _ = runner.run(&repository.root, &args);
 }
 
+/// The Backups of `repository`, by reference. When git cannot list them, no Backup can be saved,
+/// and this returns why, with [`Failure::BackupNotSaved`] otherwise.
+fn list(runner: &GitRunner, repository: &Repository) -> Result<Vec<String>, Failure> {
+    let root = &repository.root;
+    let listed = runner
+        .run(root, &["for-each-ref", "--format=%(refname)", NAMESPACE])
+        .map_err(git_failed_to_start)?;
+    if !listed.success {
+        return Err(failure_of(
+            runner,
+            root,
+            &listed,
+            Failure::BackupNotSaved {
+                folder: root.clone(),
+            },
+        ));
+    }
+    Ok(listed.stdout_text().lines().map(str::to_owned).collect())
+}
+
+/// Deletes the Backups of `repository` saved more than 30 days ago, as [`delete_expired_of`] does.
+/// When git cannot list them, they stay until the next time.
+pub(crate) fn delete_expired(runner: &GitRunner, repository: &Repository) {
+    if let Ok(backups) = list(runner, repository) {
+        delete_expired_of(runner, repository, &backups, now());
+    }
+}
+
 /// Deletes those of `backups`, the Backups of `repository`, saved more than 30 days before `now`. A
 /// ref there whose name gikli did not write stays. The deletion is best-effort: one that fails
-/// leaves the Backup for the next time, and the operation log says why, as it does not stand in
-/// the way of the rewrite.
-fn delete_expired(runner: &GitRunner, repository: &Repository, backups: &[&str], now: u64) {
+/// leaves the Backup for the next time, and the operation log says why, as it stands in the way of
+/// nothing the user asked for.
+fn delete_expired_of(runner: &GitRunner, repository: &Repository, backups: &[String], now: u64) {
     let expired = backups.iter().filter(|backup| {
         saved_at(backup).is_some_and(|saved_at| saved_at.saturating_add(KEPT_FOR) < now)
     });
@@ -135,7 +158,7 @@ pub(crate) fn restore(
         // HEAD was detached, and is on a branch by now.
         None => return Err(moved()),
     };
-    if commit_of(runner, repository, &reference)?.as_deref() != head {
+    if details::commit_if_any(runner, repository, &reference)?.as_deref() != head {
         return Err(moved());
     }
     let root = &repository.root;
@@ -170,19 +193,6 @@ pub(crate) fn restore(
         ));
     }
     Ok(())
-}
-
-/// The commit `reference` of `repository` is on, if it is on one.
-fn commit_of(
-    runner: &GitRunner,
-    repository: &Repository,
-    reference: &str,
-) -> Result<Option<String>, Failure> {
-    match details::resolve(runner, repository, reference) {
-        Ok(commit) => Ok(Some(commit)),
-        Err(Failure::RevisionNotFound { .. }) => Ok(None),
-        Err(failure) => Err(failure),
-    }
 }
 
 /// The seconds since the epoch.

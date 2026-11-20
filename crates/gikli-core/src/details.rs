@@ -329,6 +329,20 @@ pub(crate) fn resolve(
     Ok(hash)
 }
 
+/// The full hash of the commit `revision` names in `repository`, as [`resolve`] finds it, or None
+/// when it names none, as a branch with no commit yet.
+pub(crate) fn commit_if_any(
+    runner: &GitRunner,
+    repository: &Repository,
+    revision: &str,
+) -> Result<Option<String>, Failure> {
+    match resolve(runner, repository, revision) {
+        Ok(commit) => Ok(Some(commit)),
+        Err(Failure::RevisionNotFound { .. }) => Ok(None),
+        Err(failure) => Err(failure),
+    }
+}
+
 /// The full hash of the commit `revision` names in `repository`, as [`resolve`] finds it, with
 /// [`Failure::RevisionNotFound`] naming the revision as the user knows it, `known_as`, when it
 /// names none: a branch by its name rather than its whole reference, for example.
