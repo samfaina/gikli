@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::{DeletedBranch, Failure, ListedCommit, Project, RemoteBranch, Repository, lock};
+use crate::{
+    Backup, DeletedBranch, Failure, ListedCommit, Project, RemoteBranch, Repository, Rewrite, lock,
+};
 
 /// A long-lived message about a Project, with the actions the user can take on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -52,6 +54,14 @@ pub enum NotificationKind {
     /// They stay in conflict, as a group in the changes view, until the user resolves them or
     /// aborts the operation that left them.
     ConflictsUnresolved { repository: Repository },
+    /// gikli rewrote the history of `repository` with `rewrite`, after saving `backup`, and left
+    /// the branch on the commit `head`, or on no commit when the rewrite took away the only one.
+    HistoryRewritten {
+        repository: Repository,
+        rewrite: Rewrite,
+        backup: Backup,
+        head: Option<String>,
+    },
 }
 
 /// An action a notification offers.
@@ -79,6 +89,8 @@ pub enum NotificationAction {
     /// Gives up the operation in progress that left the conflicts, and brings back what HEAD and
     /// the files were before it started.
     AbortOperation,
+    /// Undoes the history rewrite: brings the branch back to the Backup saved before it.
+    RestoreBackup,
 }
 
 /// What acting on a notification changed.
@@ -103,6 +115,14 @@ pub(crate) struct Deletion<'a> {
     pub repository: &'a Repository,
     pub branches: &'a [DeletedBranch],
     /// The commit HEAD was on when they went, if any.
+    pub head: Option<&'a str>,
+}
+
+/// The history rewrite a notification tells of.
+pub(crate) struct Rewritten<'a> {
+    pub repository: &'a Repository,
+    pub backup: &'a Backup,
+    /// The commit the rewrite left the branch on, if any.
     pub head: Option<&'a str>,
 }
 
@@ -133,6 +153,24 @@ impl Notification {
         }
     }
 
+    /// The history rewrite this notification tells of. One about anything else offers no Undo, and returns
+    /// [`Failure::NotificationActionNotOffered`].
+    pub(crate) fn history_rewrite(&self) -> Result<Rewritten<'_>, Failure> {
+        match &self.kind {
+            NotificationKind::HistoryRewritten {
+                repository,
+                backup,
+                head,
+                ..
+            } => Ok(Rewritten {
+                repository,
+                backup,
+                head: head.as_deref(),
+            }),
+            _ => Err(Failure::NotificationActionNotOffered { id: self.id }),
+        }
+    }
+
     /// The Repository whose unresolved conflicts this notification tells of. One about anything
     /// else offers no action on conflicts, and returns [`Failure::NotificationActionNotOffered`].
     pub(crate) fn unresolved_conflicts(&self) -> Result<&Repository, Failure> {
@@ -158,7 +196,8 @@ impl NotificationKind {
             Self::HookNotFinished { .. }
             | Self::BranchesDeleted { .. }
             | Self::RebaseStopped { .. }
-            | Self::ConflictsUnresolved { .. } => true,
+            | Self::ConflictsUnresolved { .. }
+            | Self::HistoryRewritten { .. } => true,
         }
     }
 
@@ -167,7 +206,9 @@ impl NotificationKind {
     fn happened_once(&self) -> bool {
         matches!(
             self,
-            Self::HookNotFinished { .. } | Self::BranchesDeleted { .. }
+            Self::HookNotFinished { .. }
+                | Self::BranchesDeleted { .. }
+                | Self::HistoryRewritten { .. }
         )
     }
 }

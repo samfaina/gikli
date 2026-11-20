@@ -751,6 +751,12 @@ describe("gikli", () => {
         timeout: 30000,
         timeoutMsg: "the next commit is a new one",
       });
+      const rewritten = $('[data-testid="notification"][data-kind="historyRewritten"]');
+      await rewritten.waitForDisplayed({ timeout: 30000 });
+      const undo = rewritten.$('[data-testid="notification-action"][data-action="restoreBackup"]');
+      assert.equal(await undo.isExisting(), true, "the notification of the amend offers Undo");
+      await rewritten.$('[data-testid="dismiss-notification"]').click();
+      await rewritten.waitForDisplayed({ timeout: 30000, reverse: true });
     });
 
     it("shows the commits in the log, and goes back to the changes", async () => {

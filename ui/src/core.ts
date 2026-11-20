@@ -334,6 +334,15 @@ export type Failure =
   /** The Repository has no commit yet. */
   | { kind: "nothingToAmend" }
   | { kind: "commitFailed"; folder: string }
+  /** Undo commit takes only the last commit of the current branch, and `commit` is not that one, or HEAD is on no branch. */
+  | { kind: "notLastCommit"; commit: string }
+  /** `commit` is on `branch`, the remote branch of a protected branch, such as `origin/main`: shared history stays. */
+  | { kind: "commitPushedToProtectedBranch"; commit: string; branch: string }
+  | { kind: "backupNotSaved"; folder: string }
+  | { kind: "backupNotRestored"; folder: string }
+  /** Undo of a history rewrite found `branch`, or the detached HEAD when it is null, moved since the rewrite. */
+  | { kind: "branchMovedSinceRewrite"; branch: string | null }
+  | { kind: "commitNotUndone"; folder: string }
   | { kind: "commitInputNotWritten"; folder: string; message: string }
   | { kind: "commitMessagesUnreadable"; folder: string }
   | { kind: "logUnreadable"; folder: string }
@@ -469,7 +478,22 @@ export type NotificationKind =
   /** A rebase stopped, on a conflict or at a commit to edit, and waits for the user to continue or abort it. */
   | { kind: "rebaseStopped"; repository: Repository }
   /** The user closed the conflicts dialog while files were still in conflict: they stay so until resolved or aborted. */
-  | { kind: "conflictsUnresolved"; repository: Repository };
+  | { kind: "conflictsUnresolved"; repository: Repository }
+  /** gikli rewrote the history with `rewrite` after saving `backup`, and left the branch on `head`, null for no commit. */
+  | { kind: "historyRewritten"; repository: Repository; rewrite: Rewrite; backup: Backup; head: string | null };
+
+/** A history rewrite gikli saved a Backup before. */
+export type Rewrite = "undoCommit" | "amend";
+
+/** The state of a branch gikli saved before a history rewrite, so the rewrite can be undone. */
+export interface Backup {
+  /** The ref that holds it, under `refs/gikli/backups/`. */
+  reference: string;
+  /** The local branch it saved, null for a detached HEAD. */
+  branch: string | null;
+  /** The full hash of the commit the branch was on before the rewrite. */
+  commit: string;
+}
 
 /** A branch of a remote: `branch` is its name there. */
 export interface RemoteBranch {
@@ -506,7 +530,9 @@ export type NotificationAction =
   /** Opens the conflicts dialog again. */
   | { action: "resolveConflicts" }
   /** Gives up the operation in progress that left the conflicts. */
-  | { action: "abortOperation" };
+  | { action: "abortOperation" }
+  /** Undoes the history rewrite: brings the branch back to the Backup saved before it. */
+  | { action: "restoreBackup" };
 
 /** A long-lived message about a Project, with the actions the user can take on it. */
 export interface Notification {
@@ -966,10 +992,11 @@ export function commitFiles(repository: Repository, paths: string[], message: st
 
 /**
  * Replaces the last commit with one that also holds the changes at `paths`, as they are in the
- * working tree, and has `message` as written. Rejects with a {@link Failure}.
+ * working tree, and has `message` as written. It saves a Backup first, and a notification about
+ * the Project at `project` offers to undo it. Rejects with a {@link Failure}.
  */
-export function amendLastCommit(repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
-  return invoke("amend_last_commit", { repository, paths, message });
+export function amendLastCommit(project: string, repository: Repository, paths: string[], message: string): Promise<ChangeSet> {
+  return invoke("amend_last_commit", { project, repository, paths, message });
 }
 
 /** Commits what is staged, with `message` as written. Rejects with a {@link Failure}. */
@@ -977,9 +1004,22 @@ export function commitStaged(repository: Repository, message: string): Promise<C
   return invoke("commit_staged", { repository, message });
 }
 
-/** Replaces the last commit with one that also holds what is staged, and has `message` as written. Rejects with a {@link Failure}. */
-export function amendWithStaged(repository: Repository, message: string): Promise<ChangeSet> {
-  return invoke("amend_with_staged", { repository, message });
+/**
+ * Replaces the last commit with one that also holds what is staged, and has `message` as written. It
+ * saves a Backup first, and a notification about the Project at `project` offers to undo it. Rejects
+ * with a {@link Failure}.
+ */
+export function amendWithStaged(project: string, repository: Repository, message: string): Promise<ChangeSet> {
+  return invoke("amend_with_staged", { project, repository, message });
+}
+
+/**
+ * Undoes `commit`, the last commit of the current branch: its changes come back uncommitted, in the
+ * Active changelist. It saves a Backup first, and a notification about the Project at `project`
+ * offers to undo it. Rejects with a {@link Failure}.
+ */
+export function undoCommit(project: string, repository: Repository, commit: string): Promise<ChangeSet> {
+  return invoke("undo_commit", { project, repository, commit });
 }
 
 /** A line of the graph, from a column at its start to a column at its end. */

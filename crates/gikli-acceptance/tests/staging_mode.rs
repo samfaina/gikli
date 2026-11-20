@@ -503,12 +503,19 @@ fn an_amend_puts_what_is_staged_into_the_last_commit() {
     let gikli = in_staging_mode(&sandbox);
     let root = opened(&gikli, &repository);
 
-    gikli.amend_with_staged(&root, "Amended").expect("amend");
+    gikli
+        .amend_with_staged(repository.root(), &root, "Amended")
+        .expect("amend");
 
     assert_eq!(commit_count(&repository), "1\n");
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a staged\n");
     assert_eq!(repository.git(&["log", "-1", "--format=%B"]), "Amended\n\n");
     assert_eq!(repository.status_by_git(), vec![" M b.txt"]);
+    assert_eq!(
+        gikli.notifications()[0].actions,
+        vec![gikli_core::NotificationAction::RestoreBackup],
+        "the amend saved a Backup, and offers to undo it"
+    );
 }
 
 #[test]
@@ -519,7 +526,7 @@ fn an_amend_needs_something_staged() {
     let root = opened(&gikli, &repository);
 
     let failure = gikli
-        .amend_with_staged(&root, "Only a new message")
+        .amend_with_staged(repository.root(), &root, "Only a new message")
         .expect_err("nothing is staged");
 
     assert_eq!(failure, gikli_core::Failure::NothingToCommit);
@@ -539,7 +546,7 @@ fn there_is_nothing_to_amend_before_the_first_commit() {
     let root = opened(&gikli, &repository);
 
     let failure = gikli
-        .amend_with_staged(&root, "No commit yet")
+        .amend_with_staged(repository.root(), &root, "No commit yet")
         .expect_err("no commit");
 
     assert_eq!(failure, gikli_core::Failure::NothingToAmend);

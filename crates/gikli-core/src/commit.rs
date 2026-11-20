@@ -77,6 +77,15 @@ pub(crate) enum CommitKind {
     Amend,
 }
 
+/// A commit to make: what it records, with which message, and whether it is a new one.
+#[derive(Clone, Copy)]
+pub(crate) struct Commit<'a> {
+    pub selection: &'a Selection,
+    pub message: &'a str,
+    pub scope: CommitScope,
+    pub kind: CommitKind,
+}
+
 /// What a commit records.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommitScope {

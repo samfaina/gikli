@@ -53,6 +53,7 @@ import {
   takeFailureAction,
   takeOperationAction,
   testGit,
+  undoCommit,
   unwatchChanges,
   watchChanges,
   windowForProject,
@@ -91,6 +92,7 @@ import { createPushDialog } from "./push-dialog";
 import { createPullDialog } from "./pull-dialog";
 import { createRejectedPushDialog } from "./rejected-push-dialog";
 import { createLogView } from "./log-view";
+import { SHORT_HASH_LENGTH } from "./log-details";
 import { createBranchSelector } from "./branch-selector";
 import { createNewBranchDialog } from "./new-branch-dialog";
 import { createRenameBranchDialog } from "./rename-branch-dialog";
@@ -229,6 +231,18 @@ const logView = createLogView({
   headMoved: (repository) => headMoved(repository),
   renameBranch: (repository, name) => renameBranchDialog.open(repository, name),
   deleteBranches: (repository, ticked) => deleteBranchesDialog.open(repository, ticked),
+  undoCommit: async (repository, commit) => {
+    const project = shownFolder;
+    if (project === null) {
+      return;
+    }
+    try {
+      await undoCommit(project, repository, commit);
+    } finally {
+      // The branch moved, or nothing did: reading again shows which.
+      headMoved(repository);
+    }
+  },
 });
 
 const branchSelector = createBranchSelector({
@@ -957,6 +971,7 @@ function repositoryView(repository: Repository): HTMLElement {
   });
   const commitPanel = createCommitPanel({
     repository,
+    project: () => shownFolder,
     describeChange,
     committed: () => void refreshChanges(),
     openPushDialog: () => pushDialog.open(repository),
@@ -1644,6 +1659,14 @@ function describeNotification(notification: Notification): string {
       return t("notificationRebaseStopped", { root: notification.kind.repository.root });
     case "conflictsUnresolved":
       return t("notificationConflictsUnresolved", { root: notification.kind.repository.root });
+    case "historyRewritten": {
+      const { repository, rewrite, backup } = notification.kind;
+      const branch = backup.branch ?? "HEAD";
+      const hash = backup.commit.slice(0, SHORT_HASH_LENGTH);
+      return rewrite === "undoCommit"
+        ? t("notificationCommitUndone", { hash, branch, root: repository.root, backup: backup.reference })
+        : t("notificationCommitAmended", { hash, branch, root: repository.root, backup: backup.reference });
+    }
   }
 }
 
@@ -1658,6 +1681,7 @@ function describeAction(action: NotificationAction): string {
     case "abortRebase":
     case "resolveConflicts":
     case "abortOperation":
+    case "restoreBackup":
       return t(action.action);
     case "showUnmergedCommits":
       return t("showUnmergedCommits", { branch: action.branch });
@@ -2076,6 +2100,18 @@ function describeFailure(failure: Failure): string {
       return t("failureNothingToAmend");
     case "commitFailed":
       return t("failureCommitFailed", { folder: failure.folder });
+    case "notLastCommit":
+      return t("failureNotLastCommit", { hash: failure.commit.slice(0, SHORT_HASH_LENGTH) });
+    case "commitPushedToProtectedBranch":
+      return t("failureCommitPushedToProtectedBranch", { hash: failure.commit.slice(0, SHORT_HASH_LENGTH), branch: failure.branch });
+    case "backupNotSaved":
+      return t("failureBackupNotSaved", { folder: failure.folder });
+    case "backupNotRestored":
+      return t("failureBackupNotRestored", { folder: failure.folder });
+    case "branchMovedSinceRewrite":
+      return t("failureBranchMovedSinceRewrite", { branch: failure.branch ?? "HEAD" });
+    case "commitNotUndone":
+      return t("failureCommitNotUndone", { folder: failure.folder });
     case "commitInputNotWritten":
       return t("failureCommitInputNotWritten", { folder: failure.folder, message: failure.message });
     case "logUnreadable":
