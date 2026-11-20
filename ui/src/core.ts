@@ -369,6 +369,12 @@ export type Failure =
   | { kind: "branchWithoutCommits"; branch: string }
   /** git could not push: the operation log shows why. */
   | { kind: "pushFailed"; folder: string }
+  /** HEAD is detached, so there is no current branch to pull into. */
+  | { kind: "detachedHeadNotPulled" }
+  /** git could not pull: the operation log shows why. */
+  | { kind: "pullFailed"; folder: string }
+  /** The pull options `first` and `second`, as git names them, contradict each other, so the pull did not start. */
+  | { kind: "pullOptionsIncompatible"; first: string; second: string }
   /** Another remote is already called `name`. */
   | { kind: "remoteNameTaken"; name: string }
   /** `name` is no name git takes for a remote. */
@@ -535,6 +541,8 @@ export type LongOperation =
   | { kind: "fetchRemote"; repository: Repository; remote: string }
   /** Pushing the current branch to the branch `branch` of `remote`. */
   | { kind: "push"; repository: Repository; remote: string; branch: string }
+  /** Pulling the branch `branch` of `remote` into the current branch. */
+  | { kind: "pull"; repository: Repository; remote: string; branch: string }
   /** Checking out `target`: a branch, a tag or a commit. */
   | { kind: "checkOut"; repository: Repository; target: string }
   /** Deleting the branch `branch` of `remote`, which a deleted branch followed. */
@@ -1411,6 +1419,62 @@ export function pushPlan(repository: Repository, target: PushTarget | null): Pro
  */
 export function push(repository: Repository, target: PushTarget, tags: PushTags): Promise<void> {
   return invoke("push", { repository, target, tags });
+}
+
+/** A remote of the Repository, with the names of the branches it had when it was last fetched. */
+export interface PullRemote {
+  name: string;
+  branches: string[];
+}
+
+/** What the pull dialog shows: the current branch, which the pull integrates into, the remotes, and the source it starts from. */
+export interface PullPlan {
+  repository: Repository;
+  /** The current branch, which the pull integrates into. */
+  branch: string;
+  remotes: PullRemote[];
+  /** The remote the dialog starts from: null when the Repository has none. */
+  remote: string | null;
+  /** The branch of `remote` the dialog starts from: null when there is none to start from. */
+  sourceBranch: string | null;
+}
+
+/** Where a pull takes the work it integrates from: the branch `branch` of the remote `remote`. */
+export interface PullSource {
+  remote: string;
+  branch: string;
+}
+
+/** How a pull integrates what it brings, each as the git option of that name. None ticked merges. */
+export interface PullOptions {
+  rebase: boolean;
+  ffOnly: boolean;
+  noFf: boolean;
+  squash: boolean;
+  noCommit: boolean;
+  noVerify: boolean;
+}
+
+/**
+ * What the pull dialog shows for `repository`: it starts from the source the current branch was last pulled from when that was
+ * not the default, and otherwise from its upstream, or `origin`. Rejects with a {@link Failure}.
+ */
+export function pullPlan(repository: Repository): Promise<PullPlan> {
+  return invoke("pull_plan", { repository });
+}
+
+/**
+ * Pulls `source` into the current branch of `repository`, a Repository of the Project at `project`, with `options`, as a long
+ * operation, and returns the operation in progress after that: a rebase or a merge that stopped. A pull that stops on a conflict
+ * raises `conflictsLeft`. Rejects with a {@link Failure}.
+ */
+export function pull(
+  project: string,
+  repository: Repository,
+  source: PullSource,
+  options: PullOptions,
+): Promise<OperationInProgress | null> {
+  return invoke("pull", { project, repository, source, options });
 }
 
 /** What follows a commit made with Commit and push: the push dialog, or a push that already ran because the settings suppress the dialog. */

@@ -166,14 +166,26 @@ pub(crate) fn check(
     target: &PushTarget,
     remotes: &[String],
 ) -> Result<(), Failure> {
-    if !remotes.contains(&target.remote) {
+    check_remote_branch(runner, repository, &target.remote, &target.branch, remotes)
+}
+
+/// Fails unless `remote` is one of `remotes`, those of `repository`, and `branch` a name git takes
+/// for a branch. git would take a remote it does not have for a path or a URL, and reach out there.
+pub(crate) fn check_remote_branch(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote: &str,
+    branch: &str,
+    remotes: &[String],
+) -> Result<(), Failure> {
+    if !remotes.iter().any(|known| known == remote) {
         return Err(Failure::RemoteNotFound {
-            remote: target.remote.clone(),
+            remote: remote.to_owned(),
         });
     }
-    if !is_reference_name(runner, repository, &format!("refs/heads/{}", target.branch))? {
+    if !is_reference_name(runner, repository, &format!("refs/heads/{branch}"))? {
         return Err(Failure::BranchNameInvalid {
-            name: target.branch.clone(),
+            name: branch.to_owned(),
         });
     }
     Ok(())
@@ -253,7 +265,7 @@ fn default_target(
 }
 
 /// The upstream of `branch` of `repository`, when it is a branch of a remote.
-fn upstream(
+pub(crate) fn upstream(
     runner: &GitRunner,
     repository: &Repository,
     branch: &str,

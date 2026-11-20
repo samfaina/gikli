@@ -188,6 +188,46 @@ pub(crate) fn fetch_destinations(
         .collect())
 }
 
+/// The names of the branches of `remote`, such as `main`, as `repository` holds them since it last
+/// fetched them, in the remote branches its fetch configuration writes them into, by name.
+pub(crate) fn remote_branches(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote: &str,
+) -> Result<Vec<String>, Failure> {
+    let refspecs: Vec<FetchRefspec> = fetch_refspecs(runner, repository)?
+        .into_iter()
+        .filter(|refspec| refspec.remote == remote)
+        .collect();
+    if refspecs.is_empty() {
+        return Ok(Vec::new());
+    }
+    // A pattern of `for-each-ref` matches the names under it as a folder, and the refspecs keep
+    // only the remote branches they write.
+    let mut args = vec!["for-each-ref", "--format=%(refname)"];
+    let patterns: Vec<&str> = refspecs
+        .iter()
+        .map(|refspec| match refspec.destination.split_once('*') {
+            Some((start, _)) => start,
+            None => refspec.destination.as_str(),
+        })
+        .collect();
+    args.extend(&patterns);
+    let listed = read_branches(runner, repository, &args)?;
+    let names: BTreeSet<String> = listed
+        .lines()
+        .filter_map(|remote_branch| {
+            refspecs
+                .iter()
+                .find_map(|refspec| refspec.source_of(remote_branch))
+        })
+        .filter_map(|source| source.strip_prefix("refs/heads/").map(str::to_owned))
+        // What the remote's HEAD points to is no branch of its own.
+        .filter(|name| name != "HEAD")
+        .collect();
+    Ok(names.into_iter().collect())
+}
+
 /// One refspec of the fetch configuration of a remote, such as
 /// `+refs/heads/*:refs/remotes/origin/*`: what it fetches, and where it writes it.
 struct FetchRefspec {

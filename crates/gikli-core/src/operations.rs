@@ -47,6 +47,12 @@ pub enum LongOperation {
         remote: String,
         branch: String,
     },
+    /// Pulling the branch `branch` of `remote` into the current branch of `repository`.
+    Pull {
+        repository: Repository,
+        remote: String,
+        branch: String,
+    },
     /// Deleting the branch `branch` of `remote`, which a branch of `repository` that the user
     /// deleted followed.
     DeleteRemoteBranch {

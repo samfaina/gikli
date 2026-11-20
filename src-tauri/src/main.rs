@@ -16,9 +16,9 @@ use gikli_core::{
     FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment, LocalBranch, LogCursor,
     LogFilter, LogPage, MoveTarget, NewBranchBase, Notification, NotificationAction,
     NotificationOutcome, OperationAction, OperationInProgress, OperationLogEntry, Project,
-    ProjectWindow, Prompt, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository,
-    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, TextSearch,
-    answer_askpass_request,
+    ProjectWindow, Prompt, PullOptions, PullPlan, PullSource, PushAfterCommit, PushPlan, PushTags,
+    PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings,
+    StagingSide, TextSearch, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -672,6 +672,22 @@ fn push_after_commit(
 }
 
 #[tauri::command(async)]
+fn pull_plan(gikli: State<'_, Gikli>, repository: Repository) -> Result<PullPlan, Failure> {
+    gikli.pull_plan(&repository)
+}
+
+#[tauri::command(async)]
+fn pull(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    source: PullSource,
+    options: PullOptions,
+) -> Result<Option<OperationInProgress>, Failure> {
+    gikli.pull(&project, &repository, &source, options)
+}
+
+#[tauri::command(async)]
 fn add_remote(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -1070,6 +1086,8 @@ fn main() {
             push_plan,
             push,
             push_after_commit,
+            pull_plan,
+            pull,
             add_remote,
             local_branches,
             current_branch,
