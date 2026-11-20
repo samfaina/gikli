@@ -43,14 +43,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # On a tag, fails before any other job starts when the tag cannot be a release: the commit it
-  # names is not in main's history, or its version is not the one Cargo.toml, package.json and
-  # package-lock.json carry.
+  # On the push of a tag, fails before any other job starts when the tag cannot be a release: the
+  # commit it names is not in main's history, or its version is not the one Cargo.toml,
+  # package.json and package-lock.json carry. A run by hand on a tag is a measurement, and skips it.
   release-tag:
     name: Check the release tag
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,8 +60,6 @@ jobs:
           fetch-depth: 0
 
       - name: Check that the tagged commit is on main
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           commit=$(git rev-parse "refs/tags/$TAG^{commit}")
           main=$(git rev-parse origin/main)
@@ -70,8 +70,6 @@ jobs:
           echo "The tag $TAG names commit $commit, in the history of main (at $main)."
 
       - name: Check that the tag names the version the repository carries
-        env:
-          TAG: ${{ github.ref_name }}
         run: .github/scripts/release-version.sh "$TAG"
 
   windows-and-macos:
@@ -135,8 +133,9 @@ jobs:
   linux:
     name: ${{ matrix.name }}
     # The image jobs above never stop these jobs: when the build fails, or is skipped on a branch
-    # other than main or on a tag, they run in the previous :latest. A tag is on main, whose push
-    # already made sure of its image. A release tag that fails its check stops them.
+    # other than main or on a tag, they run in the previous :latest. A tag is on main, and is pushed
+    # once main's run, which made sure of the image, has finished (ADR-0009). A release tag that
+    # fails its check stops them.
     needs: [release-tag, look-for-ci-image, build-ci-image]
     if: ${{ !cancelled() && (needs.release-tag.result == 'success' || needs.release-tag.result == 'skipped') }}
     runs-on: ubuntu-24.04
@@ -260,7 +259,7 @@ jobs:
     name: Publish the pre-release
     needs: [release-tag, windows-and-macos, linux]
     if: >-
-      ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') &&
+      ${{ !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
       needs.release-tag.result == 'success' && needs.windows-and-macos.result == 'success' &&
       needs.linux.result == 'success' }}
     runs-on: ubuntu-24.04

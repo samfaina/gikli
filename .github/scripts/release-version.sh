@@ -19,6 +19,10 @@ if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "::error::The tag '$tag' is not of the form vX.Y.Z" >&2
   exit 1
 fi
+if ! command -v node > /dev/null; then
+  echo "::error::node, which reads package.json and package-lock.json, is not on the PATH" >&2
+  exit 1
+fi
 version=${tag#v}
 failed=false
 
@@ -31,7 +35,7 @@ compare() {
 }
 
 # The value of $2, a JavaScript expression of the parsed file, in the JSON file $1.
-json() {
+json_value() {
   node -e "
     const file = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
     console.log(($2) ?? '');
@@ -46,10 +50,10 @@ compare "Cargo.toml ([workspace.package])" "$(awk '
     print value; exit
   }
 ' "$root/Cargo.toml" 2>/dev/null)"
-compare "package.json" "$(json "$root/package.json" "file.version")"
-compare "package-lock.json (version)" "$(json "$root/package-lock.json" "file.version")"
+compare "package.json" "$(json_value "$root/package.json" "file.version")"
+compare "package-lock.json (version)" "$(json_value "$root/package-lock.json" "file.version")"
 compare 'package-lock.json (packages[""].version)' \
-  "$(json "$root/package-lock.json" "file.packages?.['']?.version")"
+  "$(json_value "$root/package-lock.json" "file.packages?.['']?.version")"
 
 if [ "$failed" = true ]; then
   exit 1

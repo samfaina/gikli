@@ -93,7 +93,7 @@ test "$status" -ne 0 || fail "exit status 0, printed $output"
 
 test_name="a file without a version is an error that names the file"
 checkout no-version 0.2.0 0.2.0 0.2.0 0.2.0
-sed -i '/^version = /d' "$work/no-version/Cargo.toml"
+grep -v '^version = ' "$work/no-version/Cargo.toml" > "$work/Cargo.toml" && mv "$work/Cargo.toml" "$work/no-version/"
 rm "$work/no-version/package.json"
 output=$(check v0.2.0 no-version)
 status=$?

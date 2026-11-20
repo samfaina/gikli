@@ -108,7 +108,8 @@ fixes; every 0.x release is a pre-release. The first is `v0.1.0`.
    `[workspace.package]` section of `Cargo.toml`, in `package.json` and in both entries for the
    root package in `package-lock.json` (`npm install` updates the lockfile after `package.json`).
    `.github/scripts/release-version.sh vX.Y.Z` checks the three files before you tag.
-2. Merge it, and tag the commit it left on `main`:
+2. Merge it, wait for its run of the CI workflow on `main` to pass (it also makes sure of the
+   Linux jobs' CI image), and tag the commit it left on `main`:
 
    ```sh
    git tag -a vX.Y.Z -m "gikli X.Y.Z" <sha>
