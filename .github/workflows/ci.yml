@@ -167,6 +167,11 @@ jobs:
     # Well above the slowest job's usual 8 minutes, so a step that hangs stops its job long before
     # GitHub's 6-hour default. A run by hand repeats the smoke test, and gets the most a job can.
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 30 }}
+    # In a container a `run:` step without a shell runs under `sh` (dash), which knows none of the
+    # smoke test's `[[`, arrays or `${#…}`. bash, as windows-and-macos.yml names on each step.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
