@@ -224,6 +224,22 @@
         </div>
         <div id="new-branch-message" class="new-branch-message" data-testid="new-branch-message" role="status"></div>
       </section>
+      <section id="pull-dialog" class="branch-selector new-branch" data-testid="pull-dialog" role="dialog" aria-labelledby="pull-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="pull-title"></h2>
+          <button id="pull-cancel" type="button" data-testid="pull-cancel"></button>
+        </div>
+        <div class="pull-source">
+          <label class="new-branch-name"><span id="pull-remote-label"></span><select id="pull-remote" data-testid="pull-remote"></select></label>
+          <label class="new-branch-name"><span id="pull-branch-label"></span><input id="pull-branch" type="text" list="pull-branches" autocomplete="off" spellcheck="false" data-testid="pull-branch" /></label>
+          <datalist id="pull-branches" data-testid="pull-branches"></datalist>
+        </div>
+        <div class="new-branch-actions">
+          <div id="pull-options" class="pull-options" data-testid="pull-options"></div>
+          <button id="pull-start" type="button" data-testid="pull-start" disabled></button>
+        </div>
+        <div id="pull-message" class="new-branch-message" data-testid="pull-message" role="status"></div>
+      </section>
       <section id="rename-branch" class="branch-selector new-branch" data-testid="rename-branch" role="dialog" aria-labelledby="rename-branch-title" hidden>
         <div class="branch-selector-header">
           <h2 id="rename-branch-title"></h2>

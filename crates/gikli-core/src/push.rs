@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::GitRunner;
 use crate::listed_commit::{self, ListedCommit};
-use crate::sync::{configured, fetch_destinations, fetched_from, remotes};
+use crate::sync::{
+    configured, default_remote, fetch_destinations, fetched_from, head_branch, remotes,
+};
 use crate::{Failure, Repository, details, git_failed_to_start};
 
 /// Where a push sends the current branch: the branch `branch` of the remote `remote`.
@@ -166,14 +168,26 @@ pub(crate) fn check(
     target: &PushTarget,
     remotes: &[String],
 ) -> Result<(), Failure> {
-    if !remotes.contains(&target.remote) {
+    check_remote_branch(runner, repository, &target.remote, &target.branch, remotes)
+}
+
+/// Fails unless `remote` is one of `remotes`, those of `repository`, and `branch` a name git takes
+/// for a branch. git would take a remote it does not have for a path or a URL, and reach out there.
+pub(crate) fn check_remote_branch(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote: &str,
+    branch: &str,
+    remotes: &[String],
+) -> Result<(), Failure> {
+    if !remotes.iter().any(|known| known == remote) {
         return Err(Failure::RemoteNotFound {
-            remote: target.remote.clone(),
+            remote: remote.to_owned(),
         });
     }
-    if !is_reference_name(runner, repository, &format!("refs/heads/{}", target.branch))? {
+    if !is_reference_name(runner, repository, &format!("refs/heads/{branch}"))? {
         return Err(Failure::BranchNameInvalid {
-            name: target.branch.clone(),
+            name: branch.to_owned(),
         });
     }
     Ok(())
@@ -211,23 +225,11 @@ pub(crate) fn current_branch(
     runner: &GitRunner,
     repository: &Repository,
 ) -> Result<String, Failure> {
-    let head = runner
-        .run(&repository.root, &["symbolic-ref", "--quiet", "HEAD"])
-        .map_err(git_failed_to_start)?;
-    let head_ref = head.stdout_text();
-    let Some(branch) = head_ref
-        .trim_end()
-        .strip_prefix("refs/heads/")
-        .filter(|_| head.success)
-    else {
-        return Err(Failure::DetachedHeadNotPushed);
-    };
+    let branch = head_branch(runner, repository)?.ok_or(Failure::DetachedHeadNotPushed)?;
     if !details::exists(runner, repository, &format!("refs/heads/{branch}"))? {
-        return Err(Failure::BranchWithoutCommits {
-            branch: branch.to_owned(),
-        });
+        return Err(Failure::BranchWithoutCommits { branch });
     }
-    Ok(branch.to_owned())
+    Ok(branch)
 }
 
 /// Where `branch` of `repository`, with `remotes`, goes when the user does not choose: its
@@ -242,18 +244,14 @@ fn default_target(
     if let Some(upstream) = upstream(runner, repository, branch)? {
         return Ok(Some(upstream));
     }
-    let remote = remotes
-        .iter()
-        .find(|remote| *remote == "origin")
-        .or(remotes.first());
-    Ok(remote.map(|remote| PushTarget {
+    Ok(default_remote(remotes).map(|remote| PushTarget {
         remote: remote.clone(),
         branch: branch.to_owned(),
     }))
 }
 
 /// The upstream of `branch` of `repository`, when it is a branch of a remote.
-fn upstream(
+pub(crate) fn upstream(
     runner: &GitRunner,
     repository: &Repository,
     branch: &str,

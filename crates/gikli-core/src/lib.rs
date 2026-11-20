@@ -28,6 +28,7 @@ mod process_tree;
 mod processes;
 mod project;
 mod prompts;
+mod pull;
 mod push;
 mod rename_branch;
 mod rollback;
@@ -77,6 +78,7 @@ pub use notifications::{Notification, NotificationAction, NotificationKind, Noti
 pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
+pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
 pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
@@ -443,6 +445,19 @@ pub enum Failure {
     #[serde(rename_all = "camelCase")]
     PushFailed {
         folder: PathBuf,
+    },
+    /// HEAD is detached, so there is no current branch to pull into.
+    DetachedHeadNotPulled,
+    /// git could not pull into the Repository at `folder`. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    PullFailed {
+        folder: PathBuf,
+    },
+    /// The pull options `first` and `second`, as git names them, contradict each other, so the
+    /// pull did not start.
+    PullOptionsIncompatible {
+        first: String,
+        second: String,
     },
     /// git could not create the branch `name` in the Repository at `folder`. The operation log holds
     /// git's output.
@@ -1017,13 +1032,11 @@ impl Gikli {
         let args = delete_branches::delete_remote_branch_args(upstream);
         let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
         if !invocation.success {
-            let remotes = [upstream.remote.clone()];
-            let contacted = explainer::Contacted::Remotes(&remotes);
-            return Err(failure_of_contacting(
+            return Err(failure_of_contacting_remotes(
                 &runner,
                 root,
                 &invocation,
-                &contacted,
+                std::slice::from_ref(&upstream.remote),
                 Failure::RemoteBranchNotDeleted {
                     folder: root.clone(),
                     remote: upstream.remote.clone(),
@@ -2091,13 +2104,11 @@ impl Gikli {
         if invocation.success {
             return Ok(());
         }
-        let remotes = [remote];
-        let contacted = explainer::Contacted::Remotes(&remotes);
-        Err(failure_of_contacting(
+        Err(failure_of_contacting_remotes(
             &runner,
             root,
             &invocation,
-            &contacted,
+            &[remote],
             fallback,
         ))
     }
@@ -2166,12 +2177,11 @@ impl Gikli {
         let fallback = Failure::FetchFailed {
             folder: root.clone(),
         };
-        let contacted = explainer::Contacted::Remotes(remotes);
-        Err(failure_of_contacting(
+        Err(failure_of_contacting_remotes(
             runner,
             root,
             &invocation,
-            &contacted,
+            remotes,
             fallback,
         ))
     }
@@ -2215,13 +2225,11 @@ impl Gikli {
         if invocation.success {
             return Ok(());
         }
-        let remotes = [target.remote.clone()];
-        let contacted = explainer::Contacted::Remotes(&remotes);
-        Err(failure_of_contacting(
+        Err(failure_of_contacting_remotes(
             &runner,
             root,
             &invocation,
-            &contacted,
+            std::slice::from_ref(&target.remote),
             Failure::PushFailed {
                 folder: root.clone(),
             },
@@ -2244,6 +2252,73 @@ impl Gikli {
             }
             _ => Ok(PushAfterCommit::Dialog { plan }),
         }
+    }
+
+    /// What the pull dialog shows for `repository`: its current branch, which the pull integrates
+    /// into, its remotes with the branches each had when it was last fetched, and the remote and
+    /// branch the dialog starts from.
+    pub fn pull_plan(&self, repository: &Repository) -> Result<PullPlan, Failure> {
+        pull::plan(&self.runner(&repository.root)?, repository)
+    }
+
+    /// Pulls `source` into the current branch of `repository`, a Repository of the Project at
+    /// `project`, integrating it as `options` say, and returns the operation in progress after
+    /// that. A pull that stops on a conflict says so with [`Event::ConflictsLeft`], so the
+    /// conflicts dialog opens, and a rebase or a merge that stops is in progress. The pull runs as
+    /// a [`LongOperation`] that reports its progress and that the user can cancel. A detached HEAD
+    /// returns [`Failure::DetachedHeadNotPulled`].
+    pub fn pull(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        source: &PullSource,
+        options: PullOptions,
+    ) -> Result<Option<OperationInProgress>, Failure> {
+        let runner = self.runner(&repository.root)?.accepting_prepared_messages();
+        let root = &repository.root;
+        let branch = pull::current_branch(&runner, repository)?;
+        options.check()?;
+        push::check_remote_branch(
+            &runner,
+            repository,
+            &source.remote,
+            &source.branch,
+            &sync::remotes(&runner, repository)?,
+        )?;
+        if conflicts::any(&runner, repository)? {
+            return Err(Failure::ConflictsNotResolved);
+        }
+        let operation = LongOperation::Pull {
+            repository: repository.clone(),
+            remote: source.remote.clone(),
+            branch: source.branch.clone(),
+        };
+        let args = pull::pull_args(source, options);
+        let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
+        // A merge or a rebase that stops on a conflict waits for the user to resolve it, and so
+        // does a squash, with no operation to go on with. Files were in no conflict before, as
+        // git pulls nothing into a working tree that has some.
+        let stopped_on_conflict =
+            !invocation.success && !invocation.cancelled && conflicts::any(&runner, repository)?;
+        if !invocation.success && !stopped_on_conflict {
+            return Err(failure_of_contacting_remotes(
+                &runner,
+                root,
+                &invocation,
+                std::slice::from_ref(&source.remote),
+                Failure::PullFailed {
+                    folder: root.clone(),
+                },
+            ));
+        }
+        // Only a source the pull got to integrate is remembered, so a mistyped branch is not.
+        pull::remember(&runner, repository, &branch, source)?;
+        if stopped_on_conflict {
+            self.events.send(Event::ConflictsLeft {
+                repository: repository.clone(),
+            });
+        }
+        self.operation_in_progress(project, repository)
     }
 
     /// Defines the remote `name` of `repository` at `url`, as the push dialog offers when there is
@@ -3325,6 +3400,19 @@ fn failure_of_contacting(
         Some(explanation) => Failure::Explained { explanation },
         None => otherwise,
     }
+}
+
+/// The failure of `invocation`, which failed in `folder` and reached out to `remotes`, as
+/// [`failure_of`] tells it.
+fn failure_of_contacting_remotes(
+    runner: &GitRunner,
+    folder: &Path,
+    invocation: &Invocation,
+    remotes: &[String],
+    otherwise: Failure,
+) -> Failure {
+    let contacted = explainer::Contacted::Remotes(remotes);
+    failure_of_contacting(runner, folder, invocation, &contacted, otherwise)
 }
 
 /// The failure of git that could not check out a branch, a tag or a commit in `repository`.

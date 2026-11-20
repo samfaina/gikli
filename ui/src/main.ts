@@ -87,6 +87,7 @@ import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
 import { createPushDialog } from "./push-dialog";
+import { createPullDialog } from "./pull-dialog";
 import { createLogView } from "./log-view";
 import { createBranchSelector } from "./branch-selector";
 import { createNewBranchDialog } from "./new-branch-dialog";
@@ -236,6 +237,12 @@ const branchSelector = createBranchSelector({
 
 const newBranchDialog = createNewBranchDialog({
   errorView,
+  branchesMoved: (repository) => headMoved(repository),
+});
+
+const pullDialog = createPullDialog({
+  errorView,
+  project: () => shownFolder,
   branchesMoved: (repository) => headMoved(repository),
 });
 
@@ -728,6 +735,7 @@ function showProject(project: Project): void {
     logView.close();
     branchSelector.close();
     newBranchDialog.close();
+    pullDialog.close();
     renameBranchDialog.close();
     deleteBranchesDialog.close();
     unmergedCommitsView.close();
@@ -903,6 +911,11 @@ function repositoryView(repository: Repository): HTMLElement {
   pushButton.dataset.testid = "open-push";
   pushButton.textContent = t("pushOpen");
   pushButton.addEventListener("click", () => pushDialog.open(repository));
+  const pullButton = document.createElement("button");
+  pullButton.type = "button";
+  pullButton.dataset.testid = "open-pull";
+  pullButton.textContent = t("pullOpen");
+  pullButton.addEventListener("click", () => pullDialog.open(repository));
   // Outside the rows, which are drawn again on every read: what the user is typing stays.
   const form = changelistForm(() => void refreshChanges());
   const changes = document.createElement("div");
@@ -947,7 +960,7 @@ function repositoryView(repository: Repository): HTMLElement {
       save: ({ name, description }) => createChangelist(repository, name, description),
     }),
   );
-  header.append(title, refresh, fetchButton, pushButton, openLog, newChangelist);
+  header.append(title, refresh, fetchButton, pullButton, pushButton, openLog, newChangelist);
   const watching = document.createElement("div");
   const features = document.createElement("div");
   const changesColumn = document.createElement("div");
@@ -1810,6 +1823,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationFetchRemote", { root: operation.repository.root, remote: operation.remote });
     case "push":
       return t("operationPush", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
+    case "pull":
+      return t("operationPull", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
     case "checkOut":
       return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
     case "deleteRemoteBranch":
@@ -2087,6 +2102,12 @@ function describeFailure(failure: Failure): string {
       return t("failureBranchWithoutCommits", { branch: failure.branch });
     case "pushFailed":
       return t("failurePushFailed", { folder: failure.folder });
+    case "detachedHeadNotPulled":
+      return t("failureDetachedHeadNotPulled");
+    case "pullFailed":
+      return t("failurePullFailed", { folder: failure.folder });
+    case "pullOptionsIncompatible":
+      return t("failurePullOptionsIncompatible", { first: failure.first, second: failure.second });
     case "remoteNameTaken":
       return t("failureRemoteNameTaken", { name: failure.name });
     case "remoteNameInvalid":
