@@ -577,11 +577,12 @@ fn commit_files(
 #[tauri::command(async)]
 fn amend_last_commit(
     gikli: State<'_, Gikli>,
+    project: PathBuf,
     repository: Repository,
     paths: Vec<String>,
     message: String,
 ) -> Result<ChangeSet, Failure> {
-    gikli.amend_last_commit(&repository, &paths, &message)
+    gikli.amend_last_commit(&project, &repository, &paths, &message)
 }
 
 #[tauri::command(async)]
@@ -596,10 +597,21 @@ fn commit_staged(
 #[tauri::command(async)]
 fn amend_with_staged(
     gikli: State<'_, Gikli>,
+    project: PathBuf,
     repository: Repository,
     message: String,
 ) -> Result<ChangeSet, Failure> {
-    gikli.amend_with_staged(&repository, &message)
+    gikli.amend_with_staged(&project, &repository, &message)
+}
+
+#[tauri::command(async)]
+fn undo_commit(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    commit: String,
+) -> Result<ChangeSet, Failure> {
+    gikli.undo_commit(&project, &repository, &commit)
 }
 
 #[tauri::command(async)]
@@ -1097,6 +1109,7 @@ fn main() {
             amend_last_commit,
             commit_staged,
             amend_with_staged,
+            undo_commit,
             last_commit_message,
             set_commit_identity,
             read_log,

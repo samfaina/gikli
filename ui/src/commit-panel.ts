@@ -24,6 +24,8 @@ import { t } from "./strings";
 /** What the panel needs from the view of the Repository around it. */
 export interface CommitPanelHost {
   repository: Repository;
+  /** The folder of the Project shown, whose window shows the notification of an amend. */
+  project(): string | null;
   /** What to say about a change besides its path. */
   describeChange(change: Change): string;
   /** A commit went through, so the changes need reading again. */
@@ -328,10 +330,19 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       return;
     }
     try {
+      // The panel shows only in the window of a Project.
+      const project = host.project();
+      if (project === null) {
+        return;
+      }
       if (shownChanges?.staging != null) {
-        await (amend.checked ? amendWithStaged : commitStaged)(host.repository, message.value);
+        await (amend.checked
+          ? amendWithStaged(project, host.repository, message.value)
+          : commitStaged(host.repository, message.value));
       } else {
-        await (amend.checked ? amendLastCommit : commitFiles)(host.repository, [...ticked], message.value);
+        await (amend.checked
+          ? amendLastCommit(project, host.repository, [...ticked], message.value)
+          : commitFiles(host.repository, [...ticked], message.value));
       }
       // The next commit is a new one unless the user says otherwise.
       amend.checked = false;

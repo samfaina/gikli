@@ -54,6 +54,8 @@ export interface LogViewHost {
   renameBranch(repository: Repository, name: string): void;
   /** Opens the delete dialog on the local branches of `repository`, with `ticked` ticked if it is one. */
   deleteBranches(repository: Repository, ticked: string | null): void;
+  /** Undoes `commit`, the last commit of the current branch of `repository`. Rejects with a failure from the core. */
+  undoCommit(repository: Repository, commit: string): Promise<void>;
 }
 
 export interface LogView {
@@ -151,6 +153,15 @@ export function createLogView(host: LogViewHost): LogView {
       run: async (hash) => {
         if (repository !== null) {
           host.newBranch(repository, { kind: "commit", hash }, hash.slice(0, SHORT_HASH_LENGTH));
+        }
+      },
+    },
+    {
+      testId: "commit-undo",
+      label: () => t("logCommitMenuUndoCommit"),
+      run: async (hash) => {
+        if (repository !== null) {
+          await host.undoCommit(repository, hash);
         }
       },
     },

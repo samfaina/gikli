@@ -3,6 +3,7 @@
 //! The core owns all behavior. [`Gikli`] is its application interface: the commands the UI sends
 //! and the events it listens to. The UI and the tests use this same interface.
 
+mod backups;
 mod branches;
 mod capability;
 mod changelists;
@@ -38,6 +39,7 @@ mod shallow;
 mod status;
 mod sync;
 mod trace;
+mod undo_commit;
 mod url_passwords;
 mod version;
 mod watch;
@@ -51,6 +53,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
+pub use backups::{Backup, Rewrite};
 pub use branches::{Branch, BranchNode, Branches};
 pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
@@ -93,7 +96,7 @@ pub use window::ProjectWindow;
 use changelists::{ChangelistStore, Changelists};
 use events::EventBus;
 use git::{GitProgram, GitRunner, Invocation};
-use notifications::{Deletion, Notifications};
+use notifications::{Deletion, Notifications, Rewritten};
 use operation_log::OperationLog;
 use operations::LongOperations;
 use project::{ProjectRegistry, RememberedProject};
@@ -346,6 +349,40 @@ pub enum Failure {
     /// git could not commit in the Repository at `folder`. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     CommitFailed {
+        folder: PathBuf,
+    },
+    /// Undo commit takes only the last commit of the current branch, and `commit`, by its full
+    /// hash, is not that one, or HEAD is on no branch. Nothing changed.
+    NotLastCommit {
+        commit: String,
+    },
+    /// Undo commit does not rewrite shared history, and `commit` is on `branch`, the remote branch
+    /// of a protected branch, such as `origin/main`. Nothing changed.
+    CommitPushedToProtectedBranch {
+        commit: String,
+        branch: String,
+    },
+    /// git could not save a Backup in the Repository at `folder`, so the history rewrite it was
+    /// for did not happen. The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    BackupNotSaved {
+        folder: PathBuf,
+    },
+    /// Undo of a history rewrite brings back only the branch the rewrite left, and `branch`, or
+    /// the detached HEAD when there is none, has moved since. Nothing changed.
+    BranchMovedSinceRewrite {
+        branch: Option<String>,
+    },
+    /// git could not bring the branch back to a Backup in the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    BackupNotRestored {
+        folder: PathBuf,
+    },
+    /// git could not undo the last commit in the Repository at `folder`. The operation log holds
+    /// git's output.
+    #[serde(rename_all = "camelCase")]
+    CommitNotUndone {
         folder: PathBuf,
     },
     /// gikli could not write what git reads for a commit in the Repository at `folder`, so nothing
@@ -910,7 +947,8 @@ impl Gikli {
 
     /// Opens `folder` as a Project. The first time, gikli registers the Repository the folder is
     /// in. Every time, it offers the Repositories it finds at or inside the folder that are
-    /// neither registered nor ignored.
+    /// neither registered nor ignored, and deletes the Backups of its Repositories saved more than
+    /// 30 days ago.
     pub fn open_project(&self, folder: &Path) -> Result<Project, Failure> {
         let place = self.project_folder(folder)?;
         place.ensure_can_open()?;
@@ -937,6 +975,12 @@ impl Gikli {
         }
         self.notifications.withdraw_settled(&project);
         self.raise_project_notifications(&project);
+        for repository in &project.repositories {
+            // Best-effort: a Repository whose git cannot run keeps its Backups until next time.
+            if let Ok(runner) = self.runner(&repository.root) {
+                backups::delete_expired(&runner, repository);
+            }
+        }
         Ok(project)
     }
 
@@ -989,6 +1033,7 @@ impl Gikli {
                 let repository = notification.unresolved_conflicts()?;
                 return self.act_on_operation(&notification, repository, OperationAction::Abort);
             }
+            NotificationAction::RestoreBackup => return self.restore_backup(&notification),
         };
         Ok(NotificationOutcome::ProjectChanged(project))
     }
@@ -1068,6 +1113,20 @@ impl Gikli {
         }
         self.notifications.withdraw_action(notification.id, action);
         Ok(NotificationOutcome::BranchesChanged(repository.clone()))
+    }
+
+    /// Brings the branch the history rewrite `notification` tells of back to its Backup, and
+    /// removes the notification. When the branch moved since the rewrite, nothing changes, the
+    /// notification stays, and this returns [`Failure::BranchMovedSinceRewrite`].
+    fn restore_backup(&self, notification: &Notification) -> Result<NotificationOutcome, Failure> {
+        let Rewritten {
+            repository,
+            backup,
+            head,
+        } = notification.history_rewrite()?;
+        backups::restore(&self.runner(&repository.root)?, repository, backup, head)?;
+        self.notifications.dismiss(notification.id);
+        Ok(NotificationOutcome::HeadMoved(repository.clone()))
     }
 
     /// Takes `action` on the operation half done in `repository`, which `notification` tells of,
@@ -1687,19 +1746,23 @@ impl Gikli {
         paths: &[String],
         message: &str,
     ) -> Result<ChangeSet, Failure> {
-        self.commit_selection(repository, paths, message, commit::CommitKind::New)
+        self.commit_selection(None, repository, paths, message, commit::CommitKind::New)
     }
 
     /// Replaces the last commit of `repository` with one that also holds the changes at `paths`, as
     /// they are in the working tree, and has `message` as written, and returns the changes after
-    /// that. Everything else works as in [`Self::commit_files`].
+    /// that. It saves a Backup of the commit it replaces first, and raises a notification about the
+    /// Project at `project` that offers to undo the amend. Everything else works as in
+    /// [`Self::commit_files`].
     pub fn amend_last_commit(
         &self,
+        project: &Path,
         repository: &Repository,
         paths: &[String],
         message: &str,
     ) -> Result<ChangeSet, Failure> {
-        self.commit_selection(repository, paths, message, commit::CommitKind::Amend)
+        let kind = commit::CommitKind::Amend;
+        self.commit_selection(Some(project), repository, paths, message, kind)
     }
 
     /// Commits what is staged in `repository`, with `message` as written, and returns the changes
@@ -1712,22 +1775,32 @@ impl Gikli {
         repository: &Repository,
         message: &str,
     ) -> Result<ChangeSet, Failure> {
-        self.commit_index(repository, message, commit::CommitKind::New)
+        self.commit_index(None, repository, message, commit::CommitKind::New)
     }
 
     /// Replaces the last commit of `repository` with one that also holds what is staged, and has
-    /// `message` as written, and returns the changes after that. Everything else works as in
+    /// `message` as written, and returns the changes after that. It saves a Backup and raises a
+    /// notification as [`Self::amend_last_commit`] does. Everything else works as in
     /// [`Self::commit_staged`].
     pub fn amend_with_staged(
         &self,
+        project: &Path,
         repository: &Repository,
         message: &str,
     ) -> Result<ChangeSet, Failure> {
-        self.commit_index(repository, message, commit::CommitKind::Amend)
+        self.commit_index(
+            Some(project),
+            repository,
+            message,
+            commit::CommitKind::Amend,
+        )
     }
 
+    /// Commits the changes at `paths`. An amend raises its notification about the Project at
+    /// `project`.
     fn commit_selection(
         &self,
+        project: Option<&Path>,
         repository: &Repository,
         paths: &[String],
         message: &str,
@@ -1739,12 +1812,19 @@ impl Gikli {
         if selection.committed.is_empty() {
             return Err(Failure::NothingToCommit);
         }
-        let scope = commit::CommitScope::Selection;
-        self.run_commit(&runner, repository, &selection, message, scope, kind)
+        let commit = commit::Commit {
+            selection: &selection,
+            message,
+            scope: commit::CommitScope::Selection,
+            kind,
+        };
+        self.run_commit(&runner, project, repository, commit)
     }
 
+    /// Commits what is staged. An amend raises its notification about the Project at `project`.
     fn commit_index(
         &self,
+        project: Option<&Path>,
         repository: &Repository,
         message: &str,
         kind: commit::CommitKind,
@@ -1762,8 +1842,13 @@ impl Gikli {
             return Err(Failure::NothingToCommit);
         }
         let selection = commit::Selection::default();
-        let scope = commit::CommitScope::Index;
-        self.run_commit(&runner, repository, &selection, message, scope, kind)
+        let commit = commit::Commit {
+            selection: &selection,
+            message,
+            scope: commit::CommitScope::Index,
+            kind,
+        };
+        self.run_commit(&runner, project, repository, commit)
     }
 
     /// The runner for a commit in `repository` with `message`, once what can be told before reading
@@ -1784,16 +1869,22 @@ impl Gikli {
         Ok(runner)
     }
 
-    /// Makes the commit of `scope`, once it is known to have something to record.
+    /// Makes `commit`, once it is known to have something to record. An amend saves a Backup of the
+    /// commit it replaces first, and once it went through, raises a notification about the Project
+    /// at `project` that offers to undo it.
     fn run_commit(
         &self,
         runner: &GitRunner,
+        project: Option<&Path>,
         repository: &Repository,
-        selection: &commit::Selection,
-        message: &str,
-        scope: commit::CommitScope,
-        kind: commit::CommitKind,
+        commit: commit::Commit<'_>,
     ) -> Result<ChangeSet, Failure> {
+        let commit::Commit {
+            selection,
+            message,
+            scope,
+            kind,
+        } = commit;
         commit::ensure_identity(runner, &repository.root)?;
         let operation = LongOperation::CommitFiles {
             repository: repository.clone(),
@@ -1812,6 +1903,10 @@ impl Gikli {
                     message: error.to_string(),
                 }
             })?;
+        let backup = match kind {
+            commit::CommitKind::Amend => Some(self.back_up_head(runner, repository)?),
+            commit::CommitKind::New => None,
+        };
         let failed = self
             .operations
             .run(operation, runner.runs_natively(), |run| {
@@ -1833,17 +1928,88 @@ impl Gikli {
                 }
                 Ok(Some(committed))
             })
-            .map_err(git_failed_to_start)?;
-        if let Some(invocation) = failed {
-            return Err(failure_of(
+            .map_err(git_failed_to_start);
+        let failure = match failed {
+            Ok(None) => None,
+            Ok(Some(invocation)) => Some(failure_of(
                 runner,
                 root,
                 &invocation,
                 Failure::CommitFailed {
                     folder: root.clone(),
                 },
-            ));
+            )),
+            Err(failure) => Some(failure),
+        };
+        if let Some(failure) = failure {
+            if let Some(backup) = &backup {
+                // Nothing was rewritten, so there is nothing to undo.
+                backups::forget(runner, repository, backup);
+            }
+            return Err(failure);
         }
+        if let (Some(backup), Some(project)) = (backup, project) {
+            self.raise_history_rewritten(runner, project, repository, Rewrite::Amend, backup)?;
+        }
+        self.read_changes(repository)
+    }
+
+    /// Saves a Backup of the commit HEAD of `repository` is on, with the branch it is on, if any.
+    fn back_up_head(&self, runner: &GitRunner, repository: &Repository) -> Result<Backup, Failure> {
+        let branch = sync::head_branch(runner, repository)?;
+        let head = details::resolve(runner, repository, "HEAD")?;
+        backups::save(runner, repository, branch.as_deref(), &head)
+    }
+
+    /// Raises a notification about the Project at `project` that tells of `rewrite`, the history
+    /// rewrite in `repository` that `backup` was saved for, and offers to undo it.
+    fn raise_history_rewritten(
+        &self,
+        runner: &GitRunner,
+        project: &Path,
+        repository: &Repository,
+        rewrite: Rewrite,
+        backup: Backup,
+    ) -> Result<(), Failure> {
+        let head = details::commit_if_any(runner, repository, "HEAD")?;
+        self.notifications.raise(
+            project,
+            NotificationKind::HistoryRewritten {
+                repository: repository.clone(),
+                rewrite,
+                backup,
+                head,
+            },
+            vec![NotificationAction::RestoreBackup],
+        );
+        Ok(())
+    }
+
+    /// Undoes `commit`, the last commit of the current branch of `repository`: the branch goes
+    /// back to the commit before it, and its changes stay, uncommitted, in the Active changelist.
+    /// Returns the changes after that.
+    pub fn undo_commit(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        commit: &str,
+    ) -> Result<ChangeSet, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let commit = details::resolve(&runner, repository, commit)?;
+        let branch = sync::head_branch(&runner, repository)?;
+        let head = details::commit_if_any(&runner, repository, "HEAD")?;
+        let Some(branch) = branch.filter(|_| head.as_ref() == Some(&commit)) else {
+            return Err(Failure::NotLastCommit { commit });
+        };
+        if let Some(branch) = undo_commit::protected_branch_holding(&runner, repository, &commit)? {
+            return Err(Failure::CommitPushedToProtectedBranch { commit, branch });
+        }
+        let backup = backups::save(&runner, repository, Some(&branch), &commit)?;
+        if let Err(failure) = undo_commit::undo(&runner, repository, &branch, &commit) {
+            backups::forget(&runner, repository, &backup);
+            return Err(failure);
+        }
+        self.raise_history_rewritten(&runner, project, repository, Rewrite::UndoCommit, backup)?;
         self.read_changes(repository)
     }
 
