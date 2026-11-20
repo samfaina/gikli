@@ -73,6 +73,18 @@ impl PushTags {
     }
 }
 
+/// How a push that its upstream rejected integrates the commits the branch lacks before pushing
+/// again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateMethod {
+    /// Merges the upstream into the branch, as `git pull --no-rebase` does.
+    #[default]
+    Merge,
+    /// Rebases the branch onto the upstream, as `git pull --rebase` does.
+    Rebase,
+}
+
 /// The protected branches: those where shared history lives. In this scope they are the default
 /// list of the reference, whose expressions match a whole branch name.
 const PROTECTED_BRANCHES: [&str; 2] = ["master", "main"];
@@ -90,7 +102,13 @@ pub(crate) fn push_args(
     tags: PushTags,
     set_upstream: bool,
 ) -> Vec<String> {
-    let mut args = vec!["push".to_owned(), "--progress".to_owned()];
+    // `--porcelain` writes the status of each reference to the output gikli reads, in words git
+    // does not translate, so a rejection is told apart from other failures.
+    let mut args = vec![
+        "push".to_owned(),
+        "--progress".to_owned(),
+        "--porcelain".to_owned(),
+    ];
     if set_upstream {
         args.push("--set-upstream".to_owned());
     }
@@ -101,6 +119,26 @@ pub(crate) fn push_args(
         format!("refs/heads/{branch}:refs/heads/{}", target.branch),
     ]);
     args
+}
+
+/// Whether `stdout`, what `git push --porcelain` of `branch` to `target` wrote, says the remote
+/// rejected the branch as it holds commits the branch lacks: `fetch first` when the Repository does
+/// not have them, and `non-fast-forward` when it does.
+pub(crate) fn rejected_for_commits_it_lacks(
+    stdout: &[u8],
+    branch: &str,
+    target: &PushTarget,
+) -> bool {
+    let reference = format!("refs/heads/{branch}:refs/heads/{}", target.branch);
+    String::from_utf8_lossy(stdout).lines().any(|line| {
+        let mut fields = line.split('\t');
+        fields.next() == Some("!")
+            && fields.next() == Some(reference.as_str())
+            && matches!(
+                fields.next(),
+                Some("[rejected] (fetch first)" | "[rejected] (non-fast-forward)")
+            )
+    })
 }
 
 /// What a push of the current branch of `repository` would send to `target`, or to the branch it

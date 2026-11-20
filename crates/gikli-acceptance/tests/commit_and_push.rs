@@ -246,7 +246,7 @@ fn without_a_remote_the_dialog_opens_to_define_one_even_when_suppressed() {
 }
 
 #[test]
-fn a_push_git_rejects_after_the_commit_fails_and_keeps_the_commit() {
+fn a_push_the_upstream_rejects_after_the_commit_offers_to_update_and_keeps_the_commit() {
     let sandbox = Sandbox::new();
     let (remote, mine) = remote_and_clone(&sandbox);
     let other = sandbox.clone_of(&remote, "other");
@@ -263,8 +263,10 @@ fn a_push_git_rejects_after_the_commit_fails_and_keeps_the_commit() {
 
     assert_eq!(
         rejected,
-        Err(Failure::PushFailed {
-            folder: root.root.clone()
+        Err(Failure::PushRejected {
+            folder: root.root.clone(),
+            remote: "origin".to_owned(),
+            branch: "main".to_owned(),
         }),
         "the remote has a commit the branch lacks"
     );

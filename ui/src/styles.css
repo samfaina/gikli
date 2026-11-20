@@ -1677,3 +1677,7 @@ button:disabled {
   flex-wrap: wrap;
   gap: 4px;
 }
+
+.rejected-push-explanation {
+  margin: 0;
+}

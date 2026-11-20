@@ -16,6 +16,7 @@ import {
   type Change,
   type ChangeSet,
   type CommitWarning,
+  type PushTarget,
   type Repository,
 } from "./core";
 import { t } from "./strings";
@@ -31,6 +32,8 @@ export interface CommitPanelHost {
   openPushDialog(): void;
   /** Commit and push pushed at once, as the settings suppress the dialog, so the branches may have moved, even when the push failed. */
   branchesMoved(): void;
+  /** That push was rejected by `target`, the upstream of the current branch, as it has commits the branch lacks, so the user chooses how to integrate them. */
+  pushRejected(target: PushTarget): void;
   /** What to show for an error from the core. `retry` runs once the user has done what it offers. */
   errorView(error: unknown, retry?: () => void): HTMLElement;
 }
@@ -370,6 +373,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       result.replaceChildren(host.errorView(error, () => void pushAgain()));
       // A push that failed may still have moved remote branches.
       host.branchesMoved();
+      if (isFailure(error) && error.kind === "pushRejected") {
+        host.pushRejected({ remote: error.remote, branch: error.branch });
+      }
     }
   }
 

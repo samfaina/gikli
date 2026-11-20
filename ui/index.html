@@ -57,6 +57,7 @@
         <label class="settings-check"><input id="clear-commit-message-after-commit" type="checkbox" data-testid="clear-commit-message-after-commit" /><span id="clear-commit-message-after-commit-label"></span></label>
         <label class="settings-check"><input id="show-push-dialog-for-commit-and-push" type="checkbox" data-testid="show-push-dialog-for-commit-and-push" /><span id="show-push-dialog-for-commit-and-push-label"></span></label>
         <label class="settings-check"><input id="show-push-dialog-only-for-protected-branches" type="checkbox" data-testid="show-push-dialog-only-for-protected-branches" /><span id="show-push-dialog-only-for-protected-branches-label"></span></label>
+        <label class="settings-check"><input id="auto-update-if-push-rejected" type="checkbox" data-testid="auto-update-if-push-rejected" /><span id="auto-update-if-push-rejected-label"></span></label>
         <label class="settings-check"><input id="staging-mode" type="checkbox" data-testid="staging-mode" /><span id="staging-mode-label"></span></label>
         <p id="staging-mode-hint" class="hint"></p>
       </section>
@@ -239,6 +240,19 @@
           <button id="pull-start" type="button" data-testid="pull-start" disabled></button>
         </div>
         <div id="pull-message" class="new-branch-message" data-testid="pull-message" role="status"></div>
+      </section>
+      <section id="rejected-push-dialog" class="branch-selector new-branch" data-testid="rejected-push-dialog" role="dialog" aria-labelledby="rejected-push-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="rejected-push-title"></h2>
+          <button id="rejected-push-cancel" type="button" data-testid="rejected-push-cancel"></button>
+        </div>
+        <p id="rejected-push-explanation" class="rejected-push-explanation"></p>
+        <div class="new-branch-actions">
+          <label><input id="rejected-push-remember" type="checkbox" data-testid="rejected-push-remember" /><span id="rejected-push-remember-label"></span></label>
+          <button id="rejected-push-merge" type="button" data-testid="rejected-push-merge"></button>
+          <button id="rejected-push-rebase" type="button" data-testid="rejected-push-rebase"></button>
+        </div>
+        <div id="rejected-push-message" class="new-branch-message" data-testid="rejected-push-message" role="status"></div>
       </section>
       <section id="rename-branch" class="branch-selector new-branch" data-testid="rename-branch" role="dialog" aria-labelledby="rename-branch-title" hidden>
         <div class="branch-selector-header">

@@ -79,7 +79,7 @@ pub use operation_log::OperationLogEntry;
 pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
 pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
-pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget};
+pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget, UpdateMethod};
 pub use rollback::RollbackPlan;
 pub use settings::Settings;
 pub use status::{
@@ -444,6 +444,21 @@ pub enum Failure {
     /// git could not push from the Repository at `folder`. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     PushFailed {
+        folder: PathBuf,
+    },
+    /// The upstream of the current branch, the branch `branch` of `remote`, rejected the push from
+    /// the Repository at `folder`, as it has commits the branch lacks, and the settings say to ask
+    /// the user how to integrate them before pushing again.
+    #[serde(rename_all = "camelCase")]
+    PushRejected {
+        folder: PathBuf,
+        remote: String,
+        branch: String,
+    },
+    /// Integrating the upstream that rejected a push from the Repository at `folder` stopped on a
+    /// conflict, so nothing was pushed. The user resolves it and pushes again.
+    #[serde(rename_all = "camelCase")]
+    UpdateStoppedOnConflicts {
         folder: PathBuf,
     },
     /// HEAD is detached, so there is no current branch to pull into.
@@ -849,6 +864,13 @@ impl Gikli {
         self.change_settings(|settings| {
             settings.show_push_dialog_only_for_protected_branches = only_protected;
         })
+    }
+
+    /// Makes a push of the current branch that its upstream rejects integrate the commits the
+    /// branch lacks and push again without asking, with the method the user last chose to
+    /// remember, or merge, or ask the user how first.
+    pub fn set_auto_update_if_push_rejected(&self, auto_update: bool) -> Result<Settings, Failure> {
+        self.change_settings(|settings| settings.auto_update_if_push_rejected = auto_update)
     }
 
     /// Switches between Changelist mode and Staging mode. The Changelists stay as they are.
@@ -2199,7 +2221,87 @@ impl Gikli {
 
     /// Pushes the current branch of `repository` to `target`, with the tags `tags` asks for. The
     /// push runs as a [`LongOperation`] that reports its progress and that the user can cancel.
+    /// When `target` is the upstream of the branch and rejects the push, as it has commits the
+    /// branch lacks, the push returns [`Failure::PushRejected`], so the user chooses how to
+    /// integrate them, unless [`Settings::auto_update_if_push_rejected`] is on: then it integrates
+    /// them with [`Settings::push_rejected_update_method`] and pushes again, as
+    /// [`Gikli::update_and_push`] does.
     pub fn push(
+        &self,
+        repository: &Repository,
+        target: &PushTarget,
+        tags: PushTags,
+    ) -> Result<(), Failure> {
+        match self.push_once(repository, target, tags) {
+            Err(Failure::PushRejected { .. }) if self.settings().auto_update_if_push_rejected => {
+                let method = self.settings().push_rejected_update_method;
+                self.update_then_push(repository, target, tags, method)
+            }
+            pushed => pushed,
+        }
+    }
+
+    /// Integrates `target`, the upstream of the current branch of `repository` that rejected its
+    /// push, into the branch with `method`, and pushes the branch there again with the tags `tags`
+    /// asks for, as the user chose after [`Failure::PushRejected`]. With `remember`, a rejected
+    /// push integrates with `method` without asking from then on, as
+    /// [`Settings::auto_update_if_push_rejected`] says. The update runs as a pull, a
+    /// [`LongOperation`] of its own. An update that stops on a conflict says so with
+    /// [`Event::ConflictsLeft`] and returns [`Failure::UpdateStoppedOnConflicts`], with nothing
+    /// pushed.
+    pub fn update_and_push(
+        &self,
+        repository: &Repository,
+        target: &PushTarget,
+        tags: PushTags,
+        method: UpdateMethod,
+        remember: bool,
+    ) -> Result<(), Failure> {
+        if remember {
+            self.change_settings(|settings| {
+                settings.auto_update_if_push_rejected = true;
+                settings.push_rejected_update_method = method;
+            })?;
+        }
+        self.update_then_push(repository, target, tags, method)
+    }
+
+    /// Integrates `target` into the current branch of `repository` with `method` and pushes the
+    /// branch there again, once.
+    fn update_then_push(
+        &self,
+        repository: &Repository,
+        target: &PushTarget,
+        tags: PushTags,
+        method: UpdateMethod,
+    ) -> Result<(), Failure> {
+        let runner = self.runner(&repository.root)?.accepting_prepared_messages();
+        push::current_branch(&runner, repository)?;
+        push::check(
+            &runner,
+            repository,
+            target,
+            &sync::remotes(&runner, repository)?,
+        )?;
+        let source = PullSource {
+            remote: target.remote.clone(),
+            branch: target.branch.clone(),
+        };
+        let options = PullOptions {
+            rebase: method == UpdateMethod::Rebase,
+            ..PullOptions::default()
+        };
+        if self.pull_into(&runner, repository, &source, options)? {
+            return Err(Failure::UpdateStoppedOnConflicts {
+                folder: repository.root.clone(),
+            });
+        }
+        self.push_once(repository, target, tags)
+    }
+
+    /// Pushes the current branch of `repository` to `target` once, as [`Gikli::push`] does
+    /// without updating.
+    fn push_once(
         &self,
         repository: &Repository,
         target: &PushTarget,
@@ -2222,8 +2324,17 @@ impl Gikli {
         let set_upstream = push::sets_upstream(&runner, repository, &branch, target)?;
         let args = push::push_args(&branch, target, tags, set_upstream);
         let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
-        if invocation.success {
+        // What git says of the branch, not only how it ended, tells whether it went.
+        let rejected = push::rejected_for_commits_it_lacks(&invocation.stdout, &branch, target);
+        if invocation.success && !rejected {
             return Ok(());
+        }
+        if rejected && push::upstream(&runner, repository, &branch)?.as_ref() == Some(target) {
+            return Err(Failure::PushRejected {
+                folder: root.clone(),
+                remote: target.remote.clone(),
+                branch: target.branch.clone(),
+            });
         }
         Err(failure_of_contacting_remotes(
             &runner,
@@ -2275,7 +2386,6 @@ impl Gikli {
         options: PullOptions,
     ) -> Result<Option<OperationInProgress>, Failure> {
         let runner = self.runner(&repository.root)?.accepting_prepared_messages();
-        let root = &repository.root;
         let branch = pull::current_branch(&runner, repository)?;
         options.check()?;
         push::check_remote_branch(
@@ -2285,7 +2395,25 @@ impl Gikli {
             &source.branch,
             &sync::remotes(&runner, repository)?,
         )?;
-        if conflicts::any(&runner, repository)? {
+        self.pull_into(&runner, repository, source, options)?;
+        // Only a source the pull got to integrate is remembered, so a mistyped branch is not.
+        pull::remember(&runner, repository, &branch, source)?;
+        self.operation_in_progress(project, repository)
+    }
+
+    /// Pulls `source` into the current branch of `repository` with `options`, through `runner`,
+    /// which takes the messages git prepared as they are, and returns whether git stopped on a
+    /// conflict, which it says with [`Event::ConflictsLeft`]. Any other failure of git's is
+    /// [`Failure::PullFailed`], unless it is one of contacting the remote.
+    fn pull_into(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        source: &PullSource,
+        options: PullOptions,
+    ) -> Result<bool, Failure> {
+        let root = &repository.root;
+        if conflicts::any(runner, repository)? {
             return Err(Failure::ConflictsNotResolved);
         }
         let operation = LongOperation::Pull {
@@ -2294,15 +2422,15 @@ impl Gikli {
             branch: source.branch.clone(),
         };
         let args = pull::pull_args(source, options);
-        let invocation = self.run_operation(&runner, operation, root, &as_args(&args))?;
+        let invocation = self.run_operation(runner, operation, root, &as_args(&args))?;
         // A merge or a rebase that stops on a conflict waits for the user to resolve it, and so
         // does a squash, with no operation to go on with. Files were in no conflict before, as
         // git pulls nothing into a working tree that has some.
         let stopped_on_conflict =
-            !invocation.success && !invocation.cancelled && conflicts::any(&runner, repository)?;
+            !invocation.success && !invocation.cancelled && conflicts::any(runner, repository)?;
         if !invocation.success && !stopped_on_conflict {
             return Err(failure_of_contacting_remotes(
-                &runner,
+                runner,
                 root,
                 &invocation,
                 std::slice::from_ref(&source.remote),
@@ -2311,14 +2439,12 @@ impl Gikli {
                 },
             ));
         }
-        // Only a source the pull got to integrate is remembered, so a mistyped branch is not.
-        pull::remember(&runner, repository, &branch, source)?;
         if stopped_on_conflict {
             self.events.send(Event::ConflictsLeft {
                 repository: repository.clone(),
             });
         }
-        self.operation_in_progress(project, repository)
+        Ok(stopped_on_conflict)
     }
 
     /// Defines the remote `name` of `repository` at `url`, as the push dialog offers when there is
