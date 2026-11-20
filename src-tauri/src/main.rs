@@ -18,7 +18,7 @@ use gikli_core::{
     NotificationOutcome, OperationAction, OperationInProgress, OperationLogEntry, Project,
     ProjectWindow, Prompt, PullOptions, PullPlan, PullSource, PushAfterCommit, PushPlan, PushTags,
     PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings,
-    StagingSide, TextSearch, answer_askpass_request,
+    StagingSide, TextSearch, UpdateMethod, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -191,6 +191,14 @@ fn set_show_push_dialog_only_for_protected_branches(
     only_protected: bool,
 ) -> Result<Settings, Failure> {
     gikli.set_show_push_dialog_only_for_protected_branches(only_protected)
+}
+
+#[tauri::command]
+fn set_auto_update_if_push_rejected(
+    gikli: State<'_, Gikli>,
+    auto_update: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_auto_update_if_push_rejected(auto_update)
 }
 
 #[tauri::command]
@@ -664,6 +672,18 @@ fn push(
 }
 
 #[tauri::command(async)]
+fn update_and_push(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    target: PushTarget,
+    tags: PushTags,
+    method: UpdateMethod,
+    remember: bool,
+) -> Result<(), Failure> {
+    gikli.update_and_push(&repository, &target, tags, method, remember)
+}
+
+#[tauri::command(async)]
 fn push_after_commit(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -1085,6 +1105,7 @@ fn main() {
             fetch_branch,
             push_plan,
             push,
+            update_and_push,
             push_after_commit,
             pull_plan,
             pull,
@@ -1123,6 +1144,7 @@ fn main() {
             set_clear_commit_message_after_commit,
             set_show_push_dialog_for_commit_and_push,
             set_show_push_dialog_only_for_protected_branches,
+            set_auto_update_if_push_rejected,
             set_staging_mode,
             watch_changes,
             unwatch_changes,

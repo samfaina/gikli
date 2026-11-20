@@ -39,6 +39,7 @@ import {
   setGitPath,
   setGoToNextFileAfterLastChange,
   setOperationLogSoftWrap,
+  setAutoUpdateIfPushRejected,
   setShowPushDialogForCommitAndPush,
   setShowPushDialogOnlyForProtectedBranches,
   setShowIgnoredFiles,
@@ -88,6 +89,7 @@ import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
 import { createPushDialog } from "./push-dialog";
 import { createPullDialog } from "./pull-dialog";
+import { createRejectedPushDialog } from "./rejected-push-dialog";
 import { createLogView } from "./log-view";
 import { createBranchSelector } from "./branch-selector";
 import { createNewBranchDialog } from "./new-branch-dialog";
@@ -134,6 +136,7 @@ const warnOnUnusualCommitStateInput = element<HTMLInputElement>("warn-on-unusual
 const clearCommitMessageInput = element<HTMLInputElement>("clear-commit-message-after-commit");
 const showPushDialogInput = element<HTMLInputElement>("show-push-dialog-for-commit-and-push");
 const showPushDialogOnlyProtectedInput = element<HTMLInputElement>("show-push-dialog-only-for-protected-branches");
+const autoUpdateIfPushRejectedInput = element<HTMLInputElement>("auto-update-if-push-rejected");
 const stagingModeInput = element<HTMLInputElement>("staging-mode");
 
 document.title = t("appTitle");
@@ -175,6 +178,7 @@ element<HTMLElement>("warn-on-unusual-commit-state-label").textContent = t("warn
 element<HTMLElement>("clear-commit-message-after-commit-label").textContent = t("clearCommitMessageAfterCommit");
 element<HTMLElement>("show-push-dialog-for-commit-and-push-label").textContent = t("showPushDialogForCommitAndPush");
 element<HTMLElement>("show-push-dialog-only-for-protected-branches-label").textContent = t("showPushDialogOnlyForProtectedBranches");
+element<HTMLElement>("auto-update-if-push-rejected-label").textContent = t("autoUpdateIfPushRejected");
 element<HTMLElement>("staging-mode-label").textContent = t("stagingMode");
 element<HTMLElement>("staging-mode-hint").textContent = t("stagingModeHint");
 
@@ -297,8 +301,14 @@ const fileHistoryView = createFileHistoryView({
 /** The views the push dialog took the place of, which come back when it closes. */
 let underPushDialog: HTMLElement[] = [];
 
+const rejectedPushDialog = createRejectedPushDialog({
+  errorView,
+  branchesMoved: (repository) => headMoved(repository),
+});
+
 const pushDialog = createPushDialog({
   errorView,
+  pushRejected: (repository, target, tags, pushed) => rejectedPushDialog.open(repository, target, tags, pushed),
   opened: () => {
     underPushDialog.push(...[projectView, logSection].filter((view) => !view.hidden));
     for (const view of underPushDialog) {
@@ -344,6 +354,7 @@ saveOnChange(
   showPushDialogOnlyProtectedInput,
   async (checked) => (await setShowPushDialogOnlyForProtectedBranches(checked)).showPushDialogOnlyForProtectedBranches,
 );
+saveOnChange(autoUpdateIfPushRejectedInput, async (checked) => (await setAutoUpdateIfPushRejected(checked)).autoUpdateIfPushRejected);
 saveOnChange(stagingModeInput, async (checked) => {
   const saved = await setStagingMode(checked);
   for (const { refresh } of shownRepositories.values()) {
@@ -390,6 +401,7 @@ settingsButton.addEventListener("click", async () => {
     showPushDialogInput.checked = current.showPushDialogForCommitAndPush;
     showPushDialogOnlyProtectedInput.checked = current.showPushDialogOnlyForProtectedBranches;
     showPushDialogOnlyProtectedInput.disabled = !current.showPushDialogForCommitAndPush;
+    autoUpdateIfPushRejectedInput.checked = current.autoUpdateIfPushRejected;
     stagingModeInput.checked = current.stagingMode;
     gitTestResult.textContent = "";
   }
@@ -736,6 +748,7 @@ function showProject(project: Project): void {
     branchSelector.close();
     newBranchDialog.close();
     pullDialog.close();
+    rejectedPushDialog.close();
     renameBranchDialog.close();
     deleteBranchesDialog.close();
     unmergedCommitsView.close();
@@ -947,6 +960,7 @@ function repositoryView(repository: Repository): HTMLElement {
     describeChange,
     committed: () => void refreshChanges(),
     openPushDialog: () => pushDialog.open(repository),
+    pushRejected: (target, pushed) => rejectedPushDialog.open(repository, target, "none", pushed),
     branchesMoved: () => statusArea.refresh(repository.root),
     errorView,
   });
@@ -2102,6 +2116,10 @@ function describeFailure(failure: Failure): string {
       return t("failureBranchWithoutCommits", { branch: failure.branch });
     case "pushFailed":
       return t("failurePushFailed", { folder: failure.folder });
+    case "pushRejected":
+      return t("failurePushRejected", { folder: failure.folder, remote: failure.remote, branch: failure.branch });
+    case "updateStoppedOnConflicts":
+      return t("failureUpdateStoppedOnConflicts", { folder: failure.folder });
     case "detachedHeadNotPulled":
       return t("failureDetachedHeadNotPulled");
     case "pullFailed":

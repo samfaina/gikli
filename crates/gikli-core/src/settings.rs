@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::ChangeGrouping;
-use crate::push::{self, PushTarget};
+use crate::push::{self, PushTarget, UpdateMethod};
 
 /// gikli's application settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +41,12 @@ pub struct Settings {
     /// Whether Commit and push opens the push dialog only when the push goes to a protected
     /// branch, and pushes at once otherwise. It applies while the dialog shows for Commit and push.
     pub show_push_dialog_only_for_protected_branches: bool,
+    /// Whether a push of the current branch that its upstream rejects, as it has incoming commits,
+    /// integrates them and pushes again without asking. When off, the user chooses how.
+    pub auto_update_if_push_rejected: bool,
+    /// How such a push integrates the commits without asking: the method the user last chose to
+    /// remember, and merge until they choose one.
+    pub push_rejected_update_method: UpdateMethod,
     /// Whether the changes view shows the git index as Staged and Unstaged changes instead of
     /// Changelists.
     pub staging_mode: bool,
@@ -78,6 +84,8 @@ impl Default for Settings {
             clear_commit_message_after_commit: true,
             show_push_dialog_for_commit_and_push: true,
             show_push_dialog_only_for_protected_branches: false,
+            auto_update_if_push_rejected: false,
+            push_rejected_update_method: UpdateMethod::Merge,
             staging_mode: false,
             show_long_edges: false,
             commit_changes_grouping: ChangeGrouping::default(),

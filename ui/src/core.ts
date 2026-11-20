@@ -44,6 +44,10 @@ export interface Settings {
   showPushDialogForCommitAndPush: boolean;
   /** Whether Commit and push opens the push dialog only when the push goes to a protected branch. */
   showPushDialogOnlyForProtectedBranches: boolean;
+  /** Whether a push of the current branch that its upstream rejects integrates the commits it lacks and pushes again without asking. */
+  autoUpdateIfPushRejected: boolean;
+  /** How such a push integrates them without asking: the method last remembered, merge until one is. */
+  pushRejectedUpdateMethod: UpdateMethod;
   /** Whether the changes view shows the git index as Staged and Unstaged changes instead of Changelists. */
   stagingMode: boolean;
   /** Whether the log draws an edge that spans many rows whole, instead of as two arrows. */
@@ -369,6 +373,10 @@ export type Failure =
   | { kind: "branchWithoutCommits"; branch: string }
   /** git could not push: the operation log shows why. */
   | { kind: "pushFailed"; folder: string }
+  /** The upstream of the current branch, `branch` of `remote`, rejected the push as it has commits the branch lacks: the user chooses how to integrate them. */
+  | { kind: "pushRejected"; folder: string; remote: string; branch: string }
+  /** Integrating the upstream that rejected a push stopped on a conflict, so nothing was pushed. */
+  | { kind: "updateStoppedOnConflicts"; folder: string }
   /** HEAD is detached, so there is no current branch to pull into. */
   | { kind: "detachedHeadNotPulled" }
   /** git could not pull: the operation log shows why. */
@@ -699,6 +707,11 @@ export function setShowPushDialogForCommitAndPush(show: boolean): Promise<Settin
 /** Makes Commit and push open the push dialog only for a push to a protected branch, or for every push. Rejects with a {@link Failure}. */
 export function setShowPushDialogOnlyForProtectedBranches(onlyProtected: boolean): Promise<Settings> {
   return invoke("set_show_push_dialog_only_for_protected_branches", { onlyProtected });
+}
+
+/** Makes a push its upstream rejects integrate the commits the branch lacks and push again without asking, or ask first. Rejects with a {@link Failure}. */
+export function setAutoUpdateIfPushRejected(autoUpdate: boolean): Promise<Settings> {
+  return invoke("set_auto_update_if_push_rejected", { autoUpdate });
 }
 
 /** Switches between Changelist mode and Staging mode. Rejects with a {@link Failure}. */
@@ -1419,6 +1432,23 @@ export function pushPlan(repository: Repository, target: PushTarget | null): Pro
  */
 export function push(repository: Repository, target: PushTarget, tags: PushTags): Promise<void> {
   return invoke("push", { repository, target, tags });
+}
+
+/** How a push its upstream rejected integrates the commits the branch lacks: `git pull --no-rebase` or `git pull --rebase`. */
+export type UpdateMethod = "merge" | "rebase";
+
+/**
+ * Integrates `target`, the upstream that rejected the push of the current branch of `repository`, with `method`, and
+ * pushes again with `tags`. With `remember`, later rejected pushes do so without asking. Rejects with a {@link Failure}.
+ */
+export function updateAndPush(
+  repository: Repository,
+  target: PushTarget,
+  tags: PushTags,
+  method: UpdateMethod,
+  remember: boolean,
+): Promise<void> {
+  return invoke("update_and_push", { repository, target, tags, method, remember });
 }
 
 /** A remote of the Repository, with the names of the branches it had when it was last fetched. */

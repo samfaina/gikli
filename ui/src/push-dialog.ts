@@ -8,6 +8,7 @@ import type { MergeView } from "@codemirror/merge";
 import {
   addRemote,
   commitChanges,
+  isFailure,
   push,
   pushPlan,
   revisionFileDiff,
@@ -34,6 +35,11 @@ export interface PushDialogHost {
   closed(): void;
   /** The push or the new remote changed the branches of `repository`. */
   branchesMoved(repository: Repository): void;
+  /**
+   * `target`, the upstream of the current branch of `repository`, rejected its push with `tags`, as it has incoming
+   * commits, so the user chooses how to integrate them. `pushed` runs once the push went through after all.
+   */
+  pushRejected(repository: Repository, target: PushTarget, tags: PushTags, pushed: () => void): void;
 }
 
 export interface PushDialog {
@@ -352,6 +358,13 @@ export function createPushDialog(host: PushDialogHost): PushDialog {
       if (repository === shown) {
         message.replaceChildren(host.errorView(error));
         pushButton.disabled = false;
+        if (isFailure(error) && error.kind === "pushRejected") {
+          host.pushRejected(shown, target, tags, () => {
+            if (repository === shown) {
+              close();
+            }
+          });
+        }
       }
     }
   }
