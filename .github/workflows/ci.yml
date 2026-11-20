@@ -5,6 +5,9 @@
 # image (.github/ci-image/Dockerfile), which holds both gits, the Tauri prerequisites and the smoke
 # test's WebDriver, so they reach none of Ubuntu's package servers, Launchpad or kernel.org.
 #
+# A push to main whose files all count as docs (the paths-ignore below) runs none of it, as a
+# docs-only pull request skips the PR gate: no build or test reads those files.
+#
 # Run by hand (workflow_dispatch), on any branch, it runs the same jobs and measures how often the
 # smoke test fails on Linux and on Windows (issues #152 and #155): each Linux and Windows job runs
 # the smoke test the number of times asked for, in a row, and says how many of those runs failed.
@@ -23,6 +26,12 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # The three docs globs of .github/scripts/docs-only.sh, which the PR gate runs: paths-ignore
+    # cannot call it, so keep the two in step. GitHub evaluates no path filter on the push of a tag.
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - ".out-of-scope/**"
   workflow_dispatch:
     inputs:
       smoke-runs:

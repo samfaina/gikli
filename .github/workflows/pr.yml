@@ -1,6 +1,12 @@
-# The PR gate (ADR-0008): a pull request against main runs this one job, on Windows with the
-# runner's preinstalled git: the build, the core tests, the UI typecheck, the smoke test's helper
-# tests and the smoke test. The full matrix runs once the pull request is merged (ci.yml).
+# The PR gate (ADR-0008): a pull request against main runs one job on Windows with the runner's
+# preinstalled git: the build, the core tests, the UI typecheck, the smoke test's helper tests and
+# the smoke test. The full matrix runs once the pull request is merged (ci.yml).
+#
+# A docs-only pull request skips that job: a first job, on Linux, lists the files the pull request
+# changes and says whether every one of them counts as docs (.github/scripts/docs-only.sh). That
+# job is a check of its own that ends green in seconds, so a docs-only pull request still gets one
+# green check, and the Windows job shows as skipped, with no Windows runner started. When the
+# listing fails or may be incomplete, the Windows job runs: an error never skips the gate.
 #
 # A workflow of its own, not a job of ci.yml: a job that ci.yml skipped on a pull request would
 # still show on it, as a skipped check.
@@ -18,8 +24,59 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Docs-only change?
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Lists the pull request's files.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs-only: ${{ steps.classify.outputs.docs-only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Say whether every changed file counts as docs
+        id: classify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          docs_only=false
+          # GitHub lists at most 3,000 of a pull request's files: fewer than it says the pull
+          # request changes, or any failure, and the gate runs.
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" > "$RUNNER_TEMP/files.json"; then
+            listed=$(jq '[.[][]] | length' "$RUNNER_TEMP/files.json")
+            if [ "$listed" -eq "$CHANGED_FILES" ]; then
+              # A renamed file gives its old path too, which must count as docs as well.
+              jq -r '.[][] | .filename, (.previous_filename // empty)' "$RUNNER_TEMP/files.json" > "$RUNNER_TEMP/paths"
+              echo "::group::The $listed files this pull request changes"
+              cat "$RUNNER_TEMP/paths"
+              echo "::endgroup::"
+              docs_only=$(.github/scripts/docs-only.sh < "$RUNNER_TEMP/paths")
+            else
+              echo "::warning::GitHub listed $listed of the $CHANGED_FILES files this pull request changes: the PR gate runs."
+            fi
+          else
+            echo "::warning::The files this pull request changes could not be listed: the PR gate runs."
+          fi
+          if [ "$docs_only" = true ]; then
+            echo "Every file this pull request changes counts as docs: the PR gate is skipped."
+          else
+            echo "This pull request is not docs-only: the PR gate runs."
+          fi
+          echo "docs-only=$docs_only" >> "$GITHUB_OUTPUT"
+
   gate:
     name: PR gate
+    needs: changes
+    # Skipped only when the first job says the pull request is docs-only: when that job fails, the
+    # gate still runs.
+    if: ${{ !cancelled() && needs.changes.outputs.docs-only != 'true' }}
     uses: ./.github/workflows/windows-and-macos.yml
     with:
       matrix: '[{"name": "Windows", "os": "windows-latest", "git": "preinstalled"}]'
