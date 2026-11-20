@@ -159,10 +159,19 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       # Docker's default 64 MB of shared memory is little for WebKitGTK.
-      options: --shm-size=1g
+      #
+      # --init: PID 1 must reap orphans, and the runner makes it `tail`, which does not (ADR-0008).
+      # Without it a cancelled run's killed processes stay zombies, keep its process group alive,
+      # and the cancel waits out gikli-core's `GRACE`.
+      options: --shm-size=1g --init
     # Well above the slowest job's usual 8 minutes, so a step that hangs stops its job long before
     # GitHub's 6-hour default. A run by hand repeats the smoke test, and gets the most a job can.
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 360 || 30 }}
+    # In a container a `run:` step without a shell runs under `sh` (dash), which knows none of the
+    # smoke test's `[[`, arrays or `${#…}`. bash, as windows-and-macos.yml names on each step.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
