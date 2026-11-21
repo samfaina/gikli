@@ -357,6 +357,15 @@ export const en = {
   failureCommitsToPickNotKept:
     "gikli could not write {file}, where it keeps the commits left to cherry-pick: {message}. Continuing the cherry-pick does not pick them: pick them again once it is over.",
   failureCherryPickFailed: "git could not cherry-pick onto the current branch of {folder}. The operation log shows git's output.",
+  failureCommitNotOnCurrentBranch: "The current branch does not hold {hash}, so nothing was reverted.",
+  failureStagedChangesBlockRevert:
+    "Changes are staged in {folder}: {files}. Aborting a revert would lose them, so nothing was reverted. Commit or unstage them first.",
+  failureNextRevertFailed: "The commit went through, but {hash} could not be reverted after it: {reason}",
+  failureNextRevertFailedWithLeft:
+    "The commit went through, but {hash} could not be reverted after it, nor the commits left after it ({left}): {reason}",
+  failureCommitsToRevertNotKept:
+    "gikli could not write {file}, where it keeps the commits left to revert: {message}. Committing this revert does not revert them: revert them again once it is over.",
+  failureRevertFailed: "git could not revert a commit of the current branch of {folder}. The operation log shows git's output.",
   failureLocalChangesNotKeptForMerge:
     "gikli could not write {file}, where it keeps the local changes it saved around the merge: {message}. They wait in the stash list: apply them once the merge is over.",
   failurePullOptionsIncompatible: "{first} and {second} cannot be used together.",
@@ -547,6 +556,7 @@ export const en = {
   logCommitMenuNewBranch: "New Branch…",
   logCommitMenuUndoCommit: "Undo Commit",
   logCommitMenuCherryPick: "Cherry-Pick",
+  logCommitMenuRevert: "Revert Commit",
   logNewBranch: "New Branch…",
   logNewBranchTitle: "Create a branch from the branch chosen, or from HEAD",
   logRenameBranch: "Rename…",
@@ -680,6 +690,7 @@ export const en = {
   operationMerge: "Merging {branch} into the current branch of {root}",
   operationCherryPick: "Cherry-picking {count} commits onto the current branch of {root}",
   operationCherryPickOne: "Cherry-picking a commit onto the current branch of {root}",
+  operationRevert: "Reverting {hash} in {root}",
   operationCheckOut: "Checking out {target} in {root}",
   operationResolveConflicts: "Resolving conflicts in {root}",
   operationApplyStash: "Applying a stash in {root}",

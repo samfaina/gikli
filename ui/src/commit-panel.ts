@@ -1,4 +1,5 @@
 // The panel next to the changes where the user commits a Changelist or selected files. It blocks nothing: the changes stay in reach while it is open.
+// While a revert is in progress, it starts from the inverse commit: the files the reverted commit changed ticked, and the automatic message.
 
 import {
   amendLastCommit,
@@ -9,6 +10,7 @@ import {
   isFailure,
   lastCommitMessage,
   prefilledCommitMessage,
+  preparedRevert,
   previousCommitMessages,
   pushAfterCommit,
   setCommitIdentity,
@@ -117,6 +119,10 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   let prefilledFor = "";
   /** Tells the last request for a pre-filled message from those it replaced. */
   let prefillRequests = 0;
+  /** The commit whose revert the ticks and the message were last set for, so that what the user changes in them stays. */
+  let revertShown: string | null = null;
+  /** Tells the last request for the revert in progress from those it replaced. */
+  let revertRequests = 0;
 
   const updateSubmit = (): void => {
     const staging = shownChanges?.staging ?? null;
@@ -335,14 +341,23 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       if (project === null) {
         return;
       }
-      if (shownChanges?.staging != null) {
-        await (amend.checked
-          ? amendWithStaged(project, host.repository, message.value)
-          : commitStaged(host.repository, message.value));
-      } else {
-        await (amend.checked
-          ? amendLastCommit(project, host.repository, [...ticked], message.value)
-          : commitFiles(host.repository, [...ticked], message.value));
+      /** What kept the next revert from following a commit that went through, if anything did. */
+      let nextRevertFailed: unknown = null;
+      try {
+        if (shownChanges?.staging != null) {
+          await (amend.checked
+            ? amendWithStaged(project, host.repository, message.value)
+            : commitStaged(host.repository, message.value));
+        } else {
+          await (amend.checked
+            ? amendLastCommit(project, host.repository, [...ticked], message.value)
+            : commitFiles(host.repository, [...ticked], message.value));
+        }
+      } catch (error) {
+        if (!isFailure(error) || error.kind !== "nextRevertFailed") {
+          throw error;
+        }
+        nextRevertFailed = error;
       }
       // The next commit is a new one unless the user says otherwise.
       amend.checked = false;
@@ -360,6 +375,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       host.committed();
       if (pushAfter) {
         await pushAfterCommitted();
+      }
+      if (nextRevertFailed !== null) {
+        result.prepend(host.errorView(nextRevertFailed));
       }
     } catch (error) {
       if (isFailure(error) && error.kind === "commitIdentityMissing") {
@@ -419,6 +437,37 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     void commitUnlessWarned();
   });
 
+  /**
+   * Starts from the revert in progress, once for each commit it undoes: ticks the files the commit changed, and only those, and
+   * puts its automatic message in, so the user unticks what they keep out of the inverse commit.
+   */
+  async function followRevert(): Promise<void> {
+    const request = ++revertRequests;
+    try {
+      const prepared = await preparedRevert(host.repository);
+      if (request !== revertRequests || shownChanges === null) {
+        return;
+      }
+      if (prepared === null || prepared.commit === revertShown) {
+        revertShown = prepared?.commit ?? null;
+        return;
+      }
+      revertShown = prepared.commit;
+      const listed = listedPaths(shownChanges);
+      ticked = new Set(prepared.paths.filter((path) => listed.has(path)));
+      amend.checked = false;
+      message.value = prepared.message;
+      prefilled = message.value;
+      prefilledFor = "";
+      prefillRequests++;
+      draw();
+    } catch (error) {
+      if (request === revertRequests) {
+        result.replaceChildren(host.errorView(error));
+      }
+    }
+  }
+
   updateSubmit();
   void loadPreviousMessages();
   return {
@@ -426,9 +475,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     drawn: (changeSet) => {
       const active = changeSet.changelists.find((list) => list.active);
       const activePaths = new Set((active?.group.changes ?? []).map((change) => change.path));
-      const listed = new Set(
-        [...changeSet.changelists.flatMap((list) => list.group.changes), ...changeSet.unversionedFiles.changes].map((change) => change.path),
-      );
+      const listed = listedPaths(changeSet);
       if (active !== undefined && active.id !== activeId) {
         activeId = active.id;
         ticked = new Set(activePaths);
@@ -441,8 +488,16 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       shownActivePaths = activePaths;
       shownChanges = changeSet;
       draw();
+      void followRevert();
     },
   };
+}
+
+/** The paths of the files the panel can tick in `changeSet`: those of the Changelists and the Unversioned Files. */
+function listedPaths(changeSet: ChangeSet): Set<string> {
+  return new Set(
+    [...changeSet.changelists.flatMap((list) => list.group.changes), ...changeSet.unversionedFiles.changes].map((change) => change.path),
+  );
 }
 
 /** Says where a commit would go and lets the user go on with it or leave it. */

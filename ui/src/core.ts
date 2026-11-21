@@ -424,6 +424,16 @@ export type Failure =
   | { kind: "commitsToPickNotKept"; file: string; message: string }
   /** git could not cherry-pick commits onto the current branch: the operation log shows why. */
   | { kind: "cherryPickFailed"; folder: string }
+  /** Revert undoes only commits the current branch holds, and it does not hold `commit`, by its full hash. Nothing changed. */
+  | { kind: "commitNotOnCurrentBranch"; commit: string }
+  /** The commits left to revert once the revert in progress is over could not be kept in `file`, as `message` says. */
+  | { kind: "commitsToRevertNotKept"; file: string; message: string }
+  /** Files at `paths` have changes staged, which aborting a revert would lose, so it does not start. Nothing changed. */
+  | { kind: "stagedChangesBlockRevert"; folder: string; paths: string[] }
+  /** The commit went through, and the revert of `commit`, the next one waiting, could not start after it, as `failure` says; nor did those `left` after it. */
+  | { kind: "nextRevertFailed"; commit: string; left: string[]; failure: Failure }
+  /** git could not revert a commit of the current branch: the operation log shows why. */
+  | { kind: "revertFailed"; folder: string }
   /** The pull options `first` and `second`, as git names them, contradict each other, so the pull did not start. */
   | { kind: "pullOptionsIncompatible"; first: string; second: string }
   /** Another remote is already called `name`. */
@@ -649,6 +659,8 @@ export type LongOperation =
   | { kind: "merge"; repository: Repository; branch: string }
   /** Cherry-picking `commits` commits onto the current branch of `repository`, where a hook can take as long as it likes. */
   | { kind: "cherryPick"; repository: Repository; commits: number }
+  /** Bringing the inverse of `commit` into the working tree of `repository`, for the user to commit it. */
+  | { kind: "revert"; repository: Repository; commit: string }
   /** Checking out `target`: a branch, a tag or a commit. */
   | { kind: "checkOut"; repository: Repository; target: string }
   /** Deleting the branch `branch` of `remote`, which a deleted branch followed. */
@@ -1686,6 +1698,32 @@ export function mergeBlocked(error: unknown): Extract<Failure, { kind: "mergeBlo
  */
 export function cherryPick(project: string, repository: Repository, commits: string[]): Promise<OperationInProgress | null> {
   return invoke("cherry_pick", { project, repository, commits });
+}
+
+/** The inverse of a commit that git brought into the working tree and the index without committing it, for the commit panel. */
+export interface PreparedRevert {
+  /** The commit it undoes, by its full hash. */
+  commit: string;
+  /** The automatic message of the inverse commit. */
+  message: string;
+  /** The files the commit changed, ordered by path, which the commit panel ticks to begin with. */
+  paths: string[];
+}
+
+/**
+ * Reverts `commits` of `repository`, each with an inverse commit of its own, in the order given, newest first as the log lists
+ * them, and resolves to the first one, brought into the working tree for the commit panel. Each one the user commits or skips
+ * brings the next, and a commit after which the next cannot start rejects with `nextRevertFailed`, with the commit made. One that
+ * stops on a conflict raises `conflictsLeft`. Rejects with a {@link Failure}: `commitNotOnCurrentBranch` for a commit the current
+ * branch does not hold, and `stagedChangesBlockRevert` over staged changes, with nothing reverted.
+ */
+export function revertCommits(repository: Repository, commits: string[]): Promise<PreparedRevert> {
+  return invoke("revert_commits", { repository, commits });
+}
+
+/** The revert of a commit half done in `repository`, for the commit panel to start from, if one is. */
+export function preparedRevert(repository: Repository): Promise<PreparedRevert | null> {
+  return invoke("prepared_revert", { repository });
 }
 
 /** Makes a cherry-pick of a commit a protected branch of a remote holds add where it came from to its message, or not. */

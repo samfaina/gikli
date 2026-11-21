@@ -30,6 +30,7 @@ import {
   readChanges,
   removeRepository,
   renameChangelist,
+  revertCommits,
   runningOperations as runningOperationsOfCore,
   setActiveChangelist,
   setChangelistComment,
@@ -267,6 +268,13 @@ const logView = createLogView({
       // A cherry-pick that failed may still have picked the commits before the one it failed on.
       headMoved(repository);
     }
+  },
+  revertCommits: async (repository, commits) => {
+    // The inverse of the first one waits in the working tree for the commit panel, beside the changes, which reads it from there:
+    // one that stops on a conflict opens the conflicts dialog too.
+    await revertCommits(repository, commits);
+    logView.close();
+    headMoved(repository);
   },
 });
 
@@ -2006,6 +2014,8 @@ function describeOperation(operation: LongOperation): string {
       return operation.commits === 1
         ? t("operationCherryPickOne", { root: operation.repository.root })
         : t("operationCherryPick", { root: operation.repository.root, count: String(operation.commits) });
+    case "revert":
+      return t("operationRevert", { root: operation.repository.root, hash: operation.commit.slice(0, SHORT_HASH_LENGTH) });
     case "checkOut":
       return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
     case "deleteRemoteBranch":
@@ -2330,6 +2340,21 @@ function describeFailure(failure: Failure): string {
       return t("failureCommitsToPickNotKept", { file: failure.file, message: failure.message });
     case "cherryPickFailed":
       return t("failureCherryPickFailed", { folder: failure.folder });
+    case "commitNotOnCurrentBranch":
+      return t("failureCommitNotOnCurrentBranch", { hash: failure.commit.slice(0, SHORT_HASH_LENGTH) });
+    case "commitsToRevertNotKept":
+      return t("failureCommitsToRevertNotKept", { file: failure.file, message: failure.message });
+    case "stagedChangesBlockRevert":
+      return t("failureStagedChangesBlockRevert", { folder: failure.folder, files: failure.paths.join(", ") });
+    case "nextRevertFailed": {
+      const hash = failure.commit.slice(0, SHORT_HASH_LENGTH);
+      const reason = describeFailure(failure.failure);
+      return failure.left.length === 0
+        ? t("failureNextRevertFailed", { hash, reason })
+        : t("failureNextRevertFailedWithLeft", { hash, reason, left: failure.left.map((left) => left.slice(0, SHORT_HASH_LENGTH)).join(", ") });
+    }
+    case "revertFailed":
+      return t("failureRevertFailed", { folder: failure.folder });
     case "localChangesNotKeptForMerge":
       return t("failureLocalChangesNotKeptForMerge", { file: failure.file, message: failure.message });
     case "pullOptionsIncompatible":

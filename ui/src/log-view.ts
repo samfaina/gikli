@@ -1,6 +1,6 @@
 // The log: the commit list with its graph, the search, filter and go-to above it, the branches
 // pane before it, and what the selected commit changed and its details beside it. Ctrl or Shift
-// and a click select several commits, for an action on all of them such as cherry-pick. The core reads
+// and a click select several commits, for an action on all of them such as cherry-pick or revert. The core reads
 // the commits and lays out the graph a page at a time; this draws only the rows in view, and asks
 // for the next page as the user nears the end.
 
@@ -64,6 +64,8 @@ export interface LogViewHost {
   undoCommit(repository: Repository, commit: string): Promise<void>;
   /** Cherry-picks `commits` of `repository` onto its current branch, oldest first. Rejects with a failure from the core. */
   cherryPick(repository: Repository, commits: string[]): Promise<void>;
+  /** Reverts `commits` of `repository`, newest first, each with an inverse commit the commit panel commits. Rejects with a failure from the core. */
+  revertCommits(repository: Repository, commits: string[]): Promise<void>;
 }
 
 export interface LogView {
@@ -182,8 +184,21 @@ export function createLogView(host: LogViewHost): LogView {
       run: async (hashes) => {
         if (repository !== null) {
           // Oldest first: the log lists the newest first.
-          const order = (hash: string): number => rows.findIndex((row) => row.hash === hash);
-          await host.cherryPick(repository, [...hashes].sort((a, b) => order(b) - order(a)));
+          await host.cherryPick(repository, newestFirst(hashes).reverse());
+        }
+      },
+    },
+    {
+      testId: "commit-revert",
+      label: () => t("logCommitMenuRevert"),
+      several: true,
+      // Only what the current branch holds can be undone on it, and git reverts a merge only against a parent the user picks.
+      enabled: (hashes) =>
+        hashes.every((hash) => rows.some((row) => row.hash === hash && row.onCurrentBranch && row.parents.length <= 1)),
+      run: async (hashes) => {
+        if (repository !== null) {
+          // Newest first, so each inverse commit undoes changes nothing after it touched.
+          await host.revertCommits(repository, newestFirst(hashes));
         }
       },
     },
@@ -786,6 +801,12 @@ export function createLogView(host: LogViewHost): LogView {
     }
     void select(hash);
     menu.open([hash], event.clientX, event.clientY, list);
+  }
+
+  /** The commits `hashes`, newest first, as the log lists them. */
+  function newestFirst(hashes: string[]): string[] {
+    const order = (hash: string): number => rows.findIndex((row) => row.hash === hash);
+    return [...hashes].sort((a, b) => order(a) - order(b));
   }
 
   /** The hashes of the selected commits, as the log lists them. */

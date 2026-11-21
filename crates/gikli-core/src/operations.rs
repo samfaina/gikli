@@ -78,6 +78,12 @@ pub enum LongOperation {
         repository: Repository,
         commits: usize,
     },
+    /// Bringing the inverse of `commit` into the working tree of `repository`, for the user to
+    /// commit it, where a filter can take as long as a hook.
+    Revert {
+        repository: Repository,
+        commit: String,
+    },
     /// Taking `action` on the `operation` half done in `repository`, where a hook can take as long
     /// as it likes.
     TakeOperationAction {

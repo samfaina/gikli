@@ -16,11 +16,11 @@ use gikli_core::{
     CurrentBranch, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment,
     LocalBranch, LocalCommits, LogCursor, LogFilter, LogPage, MoveTarget, NewBranchBase,
     Notification, NotificationAction, NotificationOutcome, OperationAction, OperationInProgress,
-    OperationLogEntry, OverLocalChanges, Project, ProjectWindow, Prompt, PullOptions, PullPlan,
-    PullSource, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository,
-    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, StashDiffBase,
-    StashFileDiff, StashOptions, Stashes, TextSearch, UnstashOptions, UnstashPlan, Unstashed,
-    UpdateMethod, answer_askpass_request,
+    OperationLogEntry, OverLocalChanges, PreparedRevert, Project, ProjectWindow, Prompt,
+    PullOptions, PullPlan, PullSource, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel,
+    Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide,
+    StashDiffBase, StashFileDiff, StashOptions, Stashes, TextSearch, UnstashOptions, UnstashPlan,
+    Unstashed, UpdateMethod, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -948,6 +948,23 @@ fn cherry_pick(
 }
 
 #[tauri::command(async)]
+fn revert_commits(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    commits: Vec<String>,
+) -> Result<PreparedRevert, Failure> {
+    gikli.revert_commits(&repository, &commits)
+}
+
+#[tauri::command(async)]
+fn prepared_revert(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+) -> Result<Option<PreparedRevert>, Failure> {
+    gikli.prepared_revert(&repository)
+}
+
+#[tauri::command(async)]
 fn merge_over_local_changes(
     gikli: State<'_, Gikli>,
     project: PathBuf,
@@ -1300,6 +1317,8 @@ fn main() {
             merge_into_current,
             merge_over_local_changes,
             cherry_pick,
+            revert_commits,
+            prepared_revert,
             go_to_branch,
             go_to,
             filtered_log_reaches,

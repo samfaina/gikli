@@ -35,6 +35,7 @@ mod prompts;
 mod pull;
 mod push;
 mod rename_branch;
+mod revert;
 mod rollback;
 mod saved_local_changes;
 mod search_history;
@@ -89,6 +90,7 @@ pub use operations::{LongOperation, Progress, RunningOperation};
 pub use prompts::{Prompt, PromptKind, answer_askpass_request};
 pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
 pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget, UpdateMethod};
+pub use revert::PreparedRevert;
 pub use rollback::RollbackPlan;
 use saved_local_changes::AwaitingMergeStore;
 pub use saved_local_changes::{RestoredLocalChanges, SavedLocalChanges};
@@ -556,6 +558,39 @@ pub enum Failure {
     /// The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     CherryPickFailed {
+        folder: PathBuf,
+    },
+    /// Revert undoes only commits the current branch holds, and it does not hold `commit`, by its
+    /// full hash. Nothing changed.
+    CommitNotOnCurrentBranch {
+        commit: String,
+    },
+    /// The commits of a revert from gikli left to revert once the one in progress is over could
+    /// not be kept in `file`, as `message` says, so going on with it from gikli does not revert
+    /// them.
+    CommitsToRevertNotKept {
+        file: PathBuf,
+        message: String,
+    },
+    /// Files at `paths` of the Repository at `folder` have changes staged, which aborting a revert
+    /// would lose, as it takes the index back to HEAD, so the revert does not start. Nothing
+    /// changed.
+    StagedChangesBlockRevert {
+        folder: PathBuf,
+        paths: Vec<String>,
+    },
+    /// The commit that ended a revert from gikli went through, and the revert of `commit`, by its
+    /// full hash, the next one waiting, could not start after it, as `failure` says. Neither it
+    /// nor the commits `left` after it are reverted.
+    NextRevertFailed {
+        commit: String,
+        left: Vec<String>,
+        failure: Box<Failure>,
+    },
+    /// git could not revert a commit of the current branch of the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    RevertFailed {
         folder: PathBuf,
     },
     /// The pull options `first` and `second`, as git names them, contradict each other, so the
@@ -2044,9 +2079,10 @@ impl Gikli {
         Ok(runner)
     }
 
-    /// Makes `commit`, once it is known to have something to record. An amend saves a Backup of the
-    /// commit it replaces first, and once it went through, raises a notification about the Project
-    /// at `project` that offers to undo it.
+    /// Makes `commit`, once it is known to have something to record, as [`Self::make_commit`]
+    /// does, and returns the changes after that. A commit that ends a revert from gikli with
+    /// commits left after it reverts the next one, for the commit panel to commit next, and when
+    /// that one cannot start, returns [`Failure::NextRevertFailed`], with the commit made.
     fn run_commit(
         &self,
         runner: &GitRunner,
@@ -2054,6 +2090,22 @@ impl Gikli {
         repository: &Repository,
         commit: commit::Commit<'_>,
     ) -> Result<ChangeSet, Failure> {
+        self.going_on_with_revert(runner, repository, false, || {
+            self.make_commit(runner, project, repository, commit)
+        })?;
+        self.read_changes(repository)
+    }
+
+    /// Makes `commit`, once it is known to have something to record. An amend saves a Backup of the
+    /// commit it replaces first, and once it went through, raises a notification about the Project
+    /// at `project` that offers to undo it.
+    fn make_commit(
+        &self,
+        runner: &GitRunner,
+        project: Option<&Path>,
+        repository: &Repository,
+        commit: commit::Commit<'_>,
+    ) -> Result<(), Failure> {
         let commit::Commit {
             selection,
             message,
@@ -2126,7 +2178,7 @@ impl Gikli {
         if let (Some(backup), Some(project)) = (backup, project) {
             self.raise_history_rewritten(runner, project, repository, Rewrite::Amend, backup)?;
         }
-        self.read_changes(repository)
+        Ok(())
     }
 
     /// Saves a Backup of the commit HEAD of `repository` is on, with the branch it is on, if any.
@@ -2210,6 +2262,10 @@ impl Gikli {
         repository: &Repository,
         paths: &[String],
     ) -> Result<Option<String>, Failure> {
+        // The inverse commit of a revert in progress has a message of its own.
+        if let Some(prepared) = self.prepared_revert(repository)? {
+            return Ok(Some(prepared.message));
+        }
         let changes = self.read_changes(repository)?;
         if let Some(comment) = commit::comment_of_selection(&changes, paths) {
             return Ok(Some(comment));
@@ -2888,6 +2944,176 @@ impl Gikli {
         Ok(())
     }
 
+    /// Reverts `commits` of `repository`, each with an inverse commit of its own that the user
+    /// reviews in the commit panel, in the order given, as the log gives the commits the user
+    /// selected, newest first. git brings the inverse of the first one into the working tree and
+    /// the index, without committing it, and this returns it, with the automatic message and the
+    /// files to tick. The revert is in progress until the user commits it, with any of its files
+    /// unticked, or skips or aborts it. What the user left out of an inverse commit stays on disk,
+    /// unstaged once the next revert starts, so aborting that one keeps it.
+    ///
+    /// A revert that stops on a conflict says so with [`Event::ConflictsLeft`], so the conflicts
+    /// dialog opens, and the user commits it once the conflicts are resolved. The commits after
+    /// the first wait in the git directory, and gikli reverts the next one once the user committed
+    /// or skipped the one before from gikli, and gives them up when the user aborts it. git runs as
+    /// a [`LongOperation`] that the user can cancel. A commit the current branch does not hold
+    /// returns [`Failure::CommitNotOnCurrentBranch`], an operation half done in the Repository
+    /// [`Failure::OperationAlreadyInProgress`], and changes staged, which aborting would lose,
+    /// [`Failure::StagedChangesBlockRevert`]: nothing is reverted. When the next revert cannot
+    /// start after the one before was committed, the commit returns [`Failure::NextRevertFailed`].
+    pub fn revert_commits(
+        &self,
+        repository: &Repository,
+        commits: &[String],
+    ) -> Result<PreparedRevert, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let commits = revert::commits_to_revert(&runner, repository, commits)?;
+        if let Some(operation) = in_progress::read(&runner, repository)? {
+            return Err(Failure::OperationAlreadyInProgress {
+                operation: operation.kind,
+            });
+        }
+        // Aborting a revert takes the index back to HEAD, and the staged changes with it.
+        let staged = revert::staged_paths(&runner, repository)?;
+        if !staged.is_empty() {
+            return Err(Failure::StagedChangesBlockRevert {
+                folder: repository.root.clone(),
+                paths: staged,
+            });
+        }
+        self.revert_in_turn(&runner, repository, commits)?;
+        self.prepared_revert(repository)?
+            .ok_or_else(|| Failure::RevertFailed {
+                folder: repository.root.clone(),
+            })
+    }
+
+    /// Brings the inverse of the first of `commits` into `repository` through `runner`, as
+    /// [`Self::prepare_revert`] does, and once that revert is in progress, keeps the others in the
+    /// git directory, for gikli to revert one after the other as each one before is over.
+    fn revert_in_turn(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        commits: Vec<String>,
+    ) -> Result<(), Failure> {
+        let Some((first, rest)) = commits.split_first() else {
+            return Ok(());
+        };
+        let reverted = self.prepare_revert(runner, repository, first);
+        // Kept once the revert is in progress, so a read of the operation in progress meanwhile,
+        // which gives them up when there is none, keeps them.
+        if !rest.is_empty() && in_progress::read(runner, repository)?.is_some() {
+            revert::LeftToRevert::in_git_dir(&in_progress::git_dir(runner, repository)?)
+                .keep(rest)?;
+        }
+        reverted
+    }
+
+    /// Runs `step`, which may end the revert half done in `repository`, through `runner`, and when
+    /// it is a revert from gikli with commits left to revert after it, reverts the next one once it
+    /// is over, unless `gives_up`, as when the user aborted it. While it is still half done, as
+    /// when the step failed, they keep waiting.
+    fn going_on_with_revert<T>(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        gives_up: bool,
+        step: impl FnOnce() -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        let reverting = in_progress::read(runner, repository)?
+            .is_some_and(|operation| operation.kind == OperationKind::Revert);
+        if !reverting {
+            return step();
+        }
+        let left = revert::LeftToRevert::in_git_dir(&in_progress::git_dir(runner, repository)?);
+        // Taken first, so a read of the operation in progress while git goes on keeps them.
+        let waiting = left.take();
+        let taken = step();
+        if waiting.is_empty() {
+            return taken;
+        }
+        if in_progress::read(runner, repository)?.is_some() {
+            left.keep(&waiting)?;
+        } else if taken.is_ok() && !gives_up {
+            self.revert_next(runner, repository, waiting)?;
+        }
+        taken
+    }
+
+    /// Reverts the first of `waiting`, the commits left once the revert before them is over, and
+    /// keeps the others, as [`Self::revert_in_turn`] does. What the user left out of the inverse
+    /// commit before stays staged, and aborting this revert would take it back to HEAD, so it is
+    /// unstaged first, and stays on disk. When the revert cannot start, the failure says so, with
+    /// the commits that were left, as nothing reverts them any longer.
+    fn revert_next(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        waiting: Vec<String>,
+    ) -> Result<(), Failure> {
+        let Some((next, after)) = waiting.split_first() else {
+            return Ok(());
+        };
+        let (next, after) = (next.clone(), after.to_vec());
+        let reverted = revert::unstage_all(runner, repository)
+            .and_then(|()| self.revert_in_turn(runner, repository, waiting));
+        match reverted {
+            Err(failure) if in_progress::read(runner, repository)?.is_none() => {
+                Err(Failure::NextRevertFailed {
+                    commit: next,
+                    left: after,
+                    failure: Box::new(failure),
+                })
+            }
+            reverted => reverted,
+        }
+    }
+
+    /// The revert of a commit half done in `repository`, for the commit panel to start from, if
+    /// one is: one that [`Self::revert_commits`] prepared, or one git stopped on, whoever started
+    /// it.
+    pub fn prepared_revert(
+        &self,
+        repository: &Repository,
+    ) -> Result<Option<PreparedRevert>, Failure> {
+        revert::prepared(&self.runner(&repository.root)?, repository)
+    }
+
+    /// Brings the inverse of `commit` into the working tree and the index of `repository` through
+    /// `runner`, without committing it. A revert that stops on a conflict is in progress, and says
+    /// so with [`Event::ConflictsLeft`]. Any other failure of git's is the one git's output
+    /// explains, or [`Failure::RevertFailed`].
+    fn prepare_revert(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        commit: &str,
+    ) -> Result<(), Failure> {
+        let root = &repository.root;
+        let operation = LongOperation::Revert {
+            repository: repository.clone(),
+            commit: commit.to_owned(),
+        };
+        let (invocation, stopped_on_conflict) = self.run_stopping_on_conflicts(
+            runner,
+            repository,
+            operation,
+            &revert::prepare_args(commit),
+        )?;
+        if invocation.success || stopped_on_conflict {
+            return Ok(());
+        }
+        Err(failure_of(
+            runner,
+            root,
+            &invocation,
+            Failure::RevertFailed {
+                folder: root.clone(),
+            },
+        ))
+    }
+
     /// Runs `planned`, the merge of `branch` into the current branch of `repository`, through
     /// `runner`, which takes the messages git prepared as they are, and returns whether git stopped
     /// on a conflict, which it says with [`Event::ConflictsLeft`]. Any other failure of git's is
@@ -3442,8 +3668,10 @@ impl Gikli {
         }
         let operation = in_progress::read(&runner, repository)?;
         if operation.is_none() {
-            // The cherry-pick they waited for is over without gikli continuing it.
-            cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(&runner, repository)?).take();
+            // The cherry-pick or revert they waited for is over without gikli going on with it.
+            let git_dir = in_progress::git_dir(&runner, repository)?;
+            cherry_pick::LeftToPick::in_git_dir(&git_dir).take();
+            revert::LeftToRevert::in_git_dir(&git_dir).take();
         }
         if operation.is_none() && !in_conflict {
             self.restore_saved_for_merge(project, &runner, repository)?;
@@ -3596,7 +3824,8 @@ impl Gikli {
     /// `project`, and returns the operation in progress after that. A rebase, revert or
     /// cherry-pick that goes on and stops at a later commit, on a conflict or on one the
     /// resolution left empty, is still in progress. A cherry-pick from gikli that is over once the
-    /// user continued or skipped picks the commits left after it, as [`Self::cherry_pick`] tells.
+    /// user continued or skipped picks the commits left after it, as [`Self::cherry_pick`] tells,
+    /// and a revert from gikli reverts the next one, as [`Self::revert_commits`] tells.
     /// git runs as a [`LongOperation`] that reports the hook it waits on and that the user can
     /// cancel, and takes the messages it prepared for the commits it makes as they are. With
     /// nothing half done this returns [`Failure::NoOperationInProgress`], with an action the
@@ -3608,23 +3837,29 @@ impl Gikli {
         repository: &Repository,
         action: OperationAction,
     ) -> Result<Option<OperationInProgress>, Failure> {
-        self.run_operation_action_picking_the_rest(repository, action)?;
+        self.run_operation_action_going_on(repository, action)?;
         self.operation_in_progress(project, repository)
     }
 
     /// Takes `action` on the operation half done in `repository`, as [`Self::run_operation_action`]
-    /// does, and when it is a cherry-pick from gikli with commits left to pick after it, picks
-    /// them once it is over, unless the user aborted it. While it is still half done, as when the
+    /// does, and when it is a cherry-pick or a revert from gikli with commits left after it, goes
+    /// on with them once it is over, unless the user aborted it: picks them, or reverts the next
+    /// one, as [`Self::going_on_with_revert`] tells. While it is still half done, as when the
     /// action failed or git stopped again, they keep waiting.
-    fn run_operation_action_picking_the_rest(
+    fn run_operation_action_going_on(
         &self,
         repository: &Repository,
         action: OperationAction,
     ) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?.accepting_prepared_messages();
-        let picking = in_progress::read(&runner, repository)?
-            .is_some_and(|operation| operation.kind == OperationKind::CherryPick);
-        if !picking {
+        let kind = in_progress::read(&runner, repository)?.map(|operation| operation.kind);
+        if kind == Some(OperationKind::Revert) {
+            let gives_up = action == OperationAction::Abort;
+            return self.going_on_with_revert(&runner, repository, gives_up, || {
+                self.run_operation_action(repository, action)
+            });
+        }
+        if kind != Some(OperationKind::CherryPick) {
             return self.run_operation_action(repository, action);
         }
         let left = cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(&runner, repository)?);
