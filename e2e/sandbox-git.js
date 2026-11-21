@@ -20,6 +20,28 @@ export function runGit(cwd, gitconfig, ...args) {
   return String(git.stdout);
 }
 
+/** How long {@link runGitPastIndexLock} waits for the index to be unlocked, in milliseconds. */
+const INDEX_LOCK_PATIENCE = 30000;
+
+/**
+ * Runs git as {@link runGit} does, and again while another git holds the lock of the index, as the
+ * app's own git does while it writes the index: during a cherry-pick or a revert that a case failed
+ * in the middle of, when its cleanup starts at once.
+ */
+export async function runGitPastIndexLock(cwd, gitconfig, ...args) {
+  const until = Date.now() + INDEX_LOCK_PATIENCE;
+  for (;;) {
+    try {
+      return runGit(cwd, gitconfig, ...args);
+    } catch (error) {
+      if (!error.message.includes("index.lock") || Date.now() > until) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+}
+
 /** The options that give git who commits for the smoke test's own fixtures. */
 export const FIXTURE_IDENTITY = ["-c", "user.name=gikli", "-c", "user.email=gikli@example.com"];
 

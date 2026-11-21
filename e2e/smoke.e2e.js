@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { Key } from "webdriverio";
 
 import { doubleClickUntilDisplayed } from "./double-click.js";
-import { commitStaged, FIXTURE_IDENTITY, runGit, sandboxGitconfig } from "./sandbox-git.js";
+import { commitStaged, FIXTURE_IDENTITY, runGit, runGitPastIndexLock, sandboxGitconfig } from "./sandbox-git.js";
 
 /**
  * The Refresh button, once no read of the changes is under way. It is disabled during one, as when
@@ -668,7 +668,11 @@ describe("gikli", () => {
 
       await $(`[data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
       assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s|%an"), "Commit from the panel|Smoke\n");
-      assert.equal(await $('[data-testid="commit-message"]').getValue(), "");
+      // The watcher can show the changes after the commit before the panel reads the setting that clears the message.
+      await browser.waitUntil(async () => (await $('[data-testid="commit-message"]').getValue()) === "", {
+        timeout: 30000,
+        timeoutMsg: "the message was not cleared after the commit",
+      });
     });
 
     it("keeps the message after a commit when the option to clear it is off", async () => {
@@ -990,6 +994,192 @@ describe("gikli", () => {
         runGit(repository, gitconfig, "restore", "--", file);
         runGit(repository, gitconfig, "switch", "--quiet", "main");
         runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/merge", "smoke/merge-base");
+      }
+    });
+
+    /** Runs git in the smoke test's repository, as the cases about commits do. */
+    const git = (...args) => runGit(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), ...args);
+
+    /** Runs git in the smoke test's repository once the app's own git no longer holds the lock of the index. */
+    const gitPastIndexLock = (...args) => runGitPastIndexLock(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), ...args);
+
+    /** The full hash of the commit `revision` names in the smoke test's repository. */
+    const commitOf = (revision) => git("rev-parse", revision).trim();
+
+    /**
+     * Unstages what the cases before left staged, and returns its paths, for {@link stageAgain} to
+     * stage once the case is over: git cherry-picks only onto an index that matches HEAD, and gikli
+     * reverts only then, as aborting the revert would lose what is staged. The files stay on disk
+     * meantime: a new file shows in Unversioned Files until it is staged again, and then goes to the
+     * Active changelist.
+     */
+    async function unstageAll() {
+      const staged = git("diff", "--cached", "--name-only", "--no-renames", "-z").split("\0").filter(Boolean);
+      if (staged.length > 0) {
+        await gitPastIndexLock("reset", "--quiet", "--", ...staged);
+      }
+      return staged;
+    }
+
+    /** Stages `paths` again, as {@link unstageAll} found them. */
+    async function stageAgain(paths) {
+      if (paths.length > 0) {
+        await gitPastIndexLock("add", "--", ...paths);
+      }
+    }
+
+    /**
+     * Closes the log when a case about commits leaves it open, then waits for the cherry-pick or the
+     * revert the case started, if one still runs, so that the cleanup of git that follows does not race
+     * it. Neither a click that fails nor an operation that does not end stops that cleanup.
+     */
+    async function closeLogAndWaitForOperations() {
+      const close = $('[data-testid="log-close"]');
+      if (await close.isDisplayed()) {
+        await close.click().catch((error) => console.warn(`closing the log failed: ${error.message}`));
+      }
+      await $('[data-testid="operations"]')
+        .waitForDisplayed({ timeout: 30000, reverse: true })
+        .catch((error) => console.warn(`an operation is still running: ${error.message}`));
+    }
+
+    /** Whether `ref` names a commit in the smoke test's repository, as `REVERT_HEAD` does while a revert is in progress. */
+    function hasRef(ref) {
+      try {
+        git("rev-parse", "--quiet", "--verify", `${ref}^{commit}`);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * Ends the cherry-pick or the revert a case about commits leaves in progress when it fails
+     * halfway, keeping the changes the cases before it left in the working tree, goes back to main,
+     * and deletes those of `branches` the case made.
+     */
+    async function endOperationAndReturnToMain(...branches) {
+      if (hasRef("REVERT_HEAD") || hasRef("CHERRY_PICK_HEAD")) {
+        // --merge takes back what the index holds alone: the changes the cases before left are not staged.
+        await gitPastIndexLock("reset", "--quiet", "--merge");
+      }
+      await gitPastIndexLock("switch", "--quiet", "main");
+      const made = branches.filter((branch) => git("branch", "--list", branch).trim() !== "");
+      if (made.length > 0) {
+        await gitPastIndexLock("branch", "--delete", "--force", ...made);
+      }
+    }
+
+    it("cherry-picks a commit of another branch onto the current one from the commit menu of the log", async () => {
+      const file = "cherry-picked.txt";
+      const subject = "On the branch the cherry-pick takes from";
+      const staged = await unstageAll();
+      try {
+        // On branches of their own, so main keeps its commits.
+        git("switch", "--quiet", "--create", "smoke/cherry-pick-onto");
+        git("switch", "--quiet", "--create", "smoke/cherry-pick");
+        // Without a line end, which `core.autocrlf` would change when the app's git writes the file.
+        fs.writeFileSync(inRepository(file), "picked");
+        git("add", "--", file);
+        commitStaged(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), subject);
+        const picked = commitOf("HEAD");
+        git("switch", "--quiet", "smoke/cherry-pick-onto");
+        const base = commitOf("HEAD");
+
+        // The log opens on every branch, the one the commit is on among them.
+        await $('[data-testid="open-log"]').click();
+        const row = `[data-testid="log-row"][data-hash="${picked}"]`;
+        await $(row).waitForDisplayed({ timeout: 30000 });
+        await untilLogRead();
+        // The right-click selects the commit alone, and opens its menu.
+        await openContextMenu(row);
+        const cherryPick = $('[data-testid="commit-menu"] [data-testid="commit-cherry-pick"]');
+        await cherryPick.waitForEnabled({ timeout: 30000 });
+        await cherryPick.click();
+
+        await browser.waitUntil(() => commitOf("HEAD") !== base, { timeout: 30000, timeoutMsg: "nothing was cherry-picked" });
+        const head = commitOf("HEAD");
+        assert.equal(commitOf("HEAD~1"), base, "the commit goes on top of the current branch");
+        assert.equal(git("log", "-1", "--format=%s", "HEAD"), `${subject}\n`);
+        assert.equal(commitOf(`HEAD:${file}`), commitOf(`${picked}:${file}`), "the commit brings the change");
+        const onCurrentBranch = $(`[data-testid="log-row"][data-hash="${head}"]`);
+        await onCurrentBranch.waitForDisplayed({ timeout: 30000 });
+        assert.ok((await onCurrentBranch.getAttribute("class")).split(" ").includes("current-branch"), "the log shows it on the current branch");
+        // Not getText: WebKitWebDriver answers "" for an element with overflow: hidden, as a cell of the log is.
+        assert.equal(await onCurrentBranch.$(".log-subject").getProperty("textContent"), subject);
+
+        await $('[data-testid="log-close"]').click();
+        await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+      } finally {
+        // The next cases start from main, whatever this one left.
+        await closeLogAndWaitForOperations();
+        await endOperationAndReturnToMain("smoke/cherry-pick", "smoke/cherry-pick-onto");
+        await stageAgain(staged);
+      }
+    });
+
+    // The panel commits as who the user said in the case that commits from it first.
+    it("reverts a commit from the commit menu of the log, and commits the inverse commit from the panel as it starts", async () => {
+      const file = "reverted.txt";
+      const subject = "The commit the revert undoes";
+      /** Commits `file` holding `text`, without a line end, which `core.autocrlf` would change when the app's git writes the file. */
+      const commitFile = (text, message) => {
+        fs.writeFileSync(inRepository(file), text);
+        git("add", "--", file);
+        commitStaged(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), message);
+      };
+      const staged = await unstageAll();
+      try {
+        // On a branch of its own, so main keeps its commits.
+        git("switch", "--quiet", "--create", "smoke/revert");
+        commitFile("before", "Before the reverted commit");
+        commitFile("after", subject);
+        const reverted = commitOf("HEAD");
+
+        await $('[data-testid="open-log"]').click();
+        const row = `[data-testid="log-row"][data-hash="${reverted}"]`;
+        await $(row).waitForDisplayed({ timeout: 30000 });
+        await untilLogRead();
+        // The right-click selects the commit alone, and opens its menu.
+        await openContextMenu(row);
+        const revert = $('[data-testid="commit-menu"] [data-testid="commit-revert"]');
+        await revert.waitForEnabled({ timeout: 30000 });
+        await revert.click();
+
+        await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
+        const ticked = async () => {
+          const paths = [];
+          for (const item of await $$('[data-testid="commit-file"]')) {
+            if (await item.$("input").isSelected()) {
+              paths.push(await item.getAttribute("data-path"));
+            }
+          }
+          return paths;
+        };
+        await browser.waitUntil(async () => JSON.stringify(await ticked()) === JSON.stringify([file]), {
+          timeout: 30000,
+          timeoutMsg: "the panel did not tick the reverted file alone",
+        });
+        const message = $('[data-testid="commit-message"]');
+        await browser.waitUntil(async () => (await message.getValue()).startsWith(`Revert "${subject}"`), {
+          timeout: 30000,
+          timeoutMsg: "the panel did not start from the automatic message of the revert",
+        });
+        assert.equal(commitOf("HEAD"), reverted, "nothing is committed before the panel");
+
+        await $('[data-testid="commit-submit"]').click();
+
+        await browser.waitUntil(() => commitOf("HEAD") !== reverted, { timeout: 30000, timeoutMsg: "the inverse commit was not made" });
+        assert.equal(commitOf("HEAD~1"), reverted, "the inverse commit goes on top of the reverted one");
+        assert.equal(git("log", "-1", "--format=%s", "HEAD"), `Revert "${subject}"\n`);
+        assert.equal(commitOf(`HEAD:${file}`), commitOf(`${reverted}~1:${file}`), "the file is back as it was before the reverted commit");
+        assert.equal(hasRef("REVERT_HEAD"), false, "no revert is left in progress");
+        assert.equal(git("status", "--porcelain", "--", file), "", "the working tree has nothing left of the revert");
+      } finally {
+        // The next cases start from main, whatever this one left.
+        await closeLogAndWaitForOperations();
+        await endOperationAndReturnToMain("smoke/revert");
+        await stageAgain(staged);
       }
     });
 
