@@ -33,6 +33,7 @@ mod pull;
 mod push;
 mod rename_branch;
 mod rollback;
+mod saved_local_changes;
 mod search_history;
 mod settings;
 mod shallow;
@@ -47,7 +48,7 @@ mod watch;
 mod window;
 mod wsl;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -85,6 +86,7 @@ pub use prompts::{Prompt, PromptKind, answer_askpass_request};
 pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
 pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget, UpdateMethod};
 pub use rollback::RollbackPlan;
+pub use saved_local_changes::{RestoredLocalChanges, SavedLocalChanges};
 pub use settings::Settings;
 pub use stash::{
     Stash, StashDiffBase, StashFileDiff, StashOptions, StashUnavailable, Stashes, UnstashOptions,
@@ -700,6 +702,13 @@ pub enum Failure {
     /// unavailable.
     #[serde(rename_all = "camelCase")]
     StashUnavailable {
+        folder: PathBuf,
+        reason: StashUnavailable,
+    },
+    /// The local changes of the Repository at `folder` cannot be saved for `reason`, as they are
+    /// saved in a stash, so an operation that saves them first is unavailable.
+    #[serde(rename_all = "camelCase")]
+    LocalChangesNotSavable {
         folder: PathBuf,
         reason: StashUnavailable,
     },
@@ -3525,6 +3534,78 @@ impl Gikli {
             });
         }
         Ok((invocation, stopped_on_conflict))
+    }
+
+    /// Puts the uncommitted changes to tracked files of `repository` aside in a stash, before an
+    /// operation that needs a clean working tree, as Saved local changes. Files git does not track
+    /// stay, as git's own autostash leaves them. When there is nothing to save, nothing is put
+    /// aside, and restoring what this returns restores nothing.
+    pub fn save_local_changes(
+        &self,
+        repository: &Repository,
+    ) -> Result<SavedLocalChanges, Failure> {
+        let runner = self.runner(&repository.root)?;
+        let mut changelists = BTreeMap::new();
+        self.read_changes_with_choice(repository, |lists| {
+            changelists = lists.assignments();
+            Ok(())
+        })?;
+        let options = StashOptions {
+            message: saved_local_changes::STASH_MESSAGE.to_owned(),
+            keep_index: false,
+            include_untracked: false,
+        };
+        let stash = match stash::push(&runner, repository, &options) {
+            Ok(()) => stash::list(&runner, repository)?
+                .entries
+                .into_iter()
+                .next()
+                .map(|stash| stash.hash),
+            Err(Failure::NothingToStash { .. }) => None,
+            Err(Failure::StashUnavailable { folder, reason }) => {
+                return Err(Failure::LocalChangesNotSavable { folder, reason });
+            }
+            Err(failure) => return Err(failure),
+        };
+        Ok(SavedLocalChanges {
+            repository: repository.clone(),
+            changelists: if stash.is_some() {
+                changelists
+            } else {
+                BTreeMap::new()
+            },
+            stash,
+        })
+    }
+
+    /// Restores `saved`, the local changes [`Self::save_local_changes`] put aside, in its
+    /// Repository of the Project at `project`, and drops the stash that held them. Only that stash
+    /// is restored, and nothing when nothing was saved. When restoring leaves files in conflict,
+    /// it says so with [`Event::ConflictsLeft`], so conflict resolution opens, and the stash is
+    /// kept, as a pop that conflicts keeps it.
+    pub fn restore_local_changes(
+        &self,
+        project: &Path,
+        saved: &SavedLocalChanges,
+    ) -> Result<RestoredLocalChanges, Failure> {
+        let Some(hash) = &saved.stash else {
+            return Ok(RestoredLocalChanges {
+                conflicts_left: false,
+            });
+        };
+        let repository = &saved.repository;
+        let runner = self.runner(&repository.root)?;
+        let args = ["stash", "apply", "--quiet", hash.as_str()];
+        let unstashed = self.bring_back(&runner, project, repository, hash, &args, true)?;
+        // The Changelists follow what git holds now first, so a file committed since leaves its
+        // Changelist before the restored changes go back to theirs.
+        self.read_changes_with_choice(repository, |lists| {
+            lists.put_back(&saved.changelists);
+            Ok(())
+        })?;
+        Ok(RestoredLocalChanges {
+            conflicts_left: unstashed.conflicts_left,
+        })
     }
 
     /// The files the stash whose commit is `hash` holds in `repository`, by path: each change to a

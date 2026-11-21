@@ -1,8 +1,8 @@
 //! The Changelist store: the Changelists of a Repository, kept as versioned JSON in its git
 //! directory (ADR-0005), and how they follow what happens in git.
 
-use std::collections::BTreeSet;
 use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::hash::{BuildHasher, Hasher};
 use std::io;
@@ -208,6 +208,32 @@ impl Changelists {
             self.active.clone_from(&self.changelists[to].id);
         }
         Ok(())
+    }
+
+    /// The identifier of the Changelist each changed file belongs to, by path.
+    pub fn assignments(&self) -> BTreeMap<String, String> {
+        self.changelists
+            .iter()
+            .flat_map(|list| {
+                list.files
+                    .iter()
+                    .map(|file| (file.clone(), list.id.clone()))
+            })
+            .collect()
+    }
+
+    /// Puts each changed file back in the Changelist `assignments` say it belonged to. A file that
+    /// is not changed now, or whose Changelist is gone, stays where it is.
+    pub fn put_back(&mut self, assignments: &BTreeMap<String, String>) {
+        for (path, id) in assignments {
+            let (Some(from), Ok(to)) =
+                (self.place_holding(Path::new(path)), self.place_with_id(id))
+            else {
+                continue;
+            };
+            let file = self.changelists[from].files.take(path.as_str());
+            self.changelists[to].files.extend(file);
+        }
     }
 
     /// The place in [`Self::lists`] of the Changelist the changed file at `path` belongs to.

@@ -330,6 +330,8 @@ export const en = {
   failureHistoryNotFetched:
     "git could not fetch the rest of the history of {folder} from {remote}. The operation log shows git's output.",
   failureRevisionNotFound: "No commit goes by {revision}.",
+  failureLocalChangesNotSavableNoCommits:
+    "The local changes of {folder} cannot be saved: it has no commit yet, and gikli saves them in a stash, which git makes against one. Make the first commit.",
   failureNothingToStash: "There is nothing to stash in {folder}: it has no uncommitted changes. Files git does not track count only when the stash includes them.",
   failureNotStashed: "git could not stash the changes in {folder}. The operation log shows git's output.",
   failureStashesUnreadable: "git could not list the stashes of {folder}. The operation log shows git's output.",

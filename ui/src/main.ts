@@ -88,7 +88,7 @@ import { element, hasShortcutKey } from "./dom";
 import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
-import { createStashDialog, STASH_UNAVAILABLE_LABELS } from "./stash-dialog";
+import { createStashDialog, LOCAL_CHANGES_NOT_SAVABLE_LABELS, STASH_UNAVAILABLE_LABELS } from "./stash-dialog";
 import { createStashesView } from "./stashes-view";
 import { createUnstashDialog } from "./unstash-dialog";
 import { createPushDialog } from "./push-dialog";
@@ -2266,6 +2266,8 @@ function describeFailure(failure: Failure): string {
       return t("failureFileVersionNotRestored", { path: failure.path });
     case "stashUnavailable":
       return t(STASH_UNAVAILABLE_LABELS[failure.reason]);
+    case "localChangesNotSavable":
+      return t(LOCAL_CHANGES_NOT_SAVABLE_LABELS[failure.reason], { folder: failure.folder });
     case "nothingToStash":
       return t("failureNothingToStash", { folder: failure.folder });
     case "notStashed":

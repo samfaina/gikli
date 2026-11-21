@@ -27,6 +27,11 @@ export const STASH_UNAVAILABLE_LABELS: Record<StashUnavailable, StringKey> = {
   noCommits: "stashUnavailableNoCommits",
 };
 
+/** What the user reads when the local changes of a Repository cannot be saved in a stash. */
+export const LOCAL_CHANGES_NOT_SAVABLE_LABELS: Record<StashUnavailable, StringKey> = {
+  noCommits: "failureLocalChangesNotSavableNoCommits",
+};
+
 export function createStashDialog(host: StashDialogHost): StashDialog {
   const view = element<HTMLElement>("stash-dialog");
   const title = element<HTMLElement>("stash-dialog-title");
