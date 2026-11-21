@@ -16,7 +16,9 @@ pub(crate) fn undo(
     let root = &repository.root;
     let reference = format!("refs/heads/{branch}");
     let undone = match details::resolve(runner, repository, &format!("{commit}~")) {
-        Ok(parent) => runner.run(root, &["reset", "--soft", "--end-of-options", &parent]),
+        // No `--end-of-options`: before git 2.44, `git reset` takes it for a revision. The parent
+        // is a full hash, which no option starts like, and `--` ends the revision.
+        Ok(parent) => runner.run(root, &["reset", "--soft", &parent, "--"]),
         // `git reset` cannot go back past the root commit. Deleting the branch, while HEAD stays on
         // it, leaves the index as it is.
         Err(Failure::RevisionNotFound { .. }) => {

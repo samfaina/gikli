@@ -176,7 +176,9 @@ pub(crate) fn restore(
             Rewrite::UndoCommit | Rewrite::Amend => "--soft",
             Rewrite::DropLocalCommits => "--keep",
         };
-        runner.run(root, &["reset", mode, "--end-of-options", &backup.commit])
+        // No `--end-of-options`: before git 2.44, `git reset` takes it for a revision. The commit
+        // is a full hash, which no option starts like, and `--` ends the revision.
+        runner.run(root, &["reset", mode, &backup.commit, "--"])
     } else {
         let message = "gikli: restore backup";
         let old_value = head.unwrap_or_default();
