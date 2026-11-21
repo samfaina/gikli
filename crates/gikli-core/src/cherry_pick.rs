@@ -31,7 +31,7 @@ pub(crate) fn commits_to_pick(
 }
 
 /// Whether HEAD of `repository` reaches `commit`, so the current branch holds it.
-fn on_current_branch(
+pub(crate) fn on_current_branch(
     runner: &GitRunner,
     repository: &Repository,
     commit: &str,

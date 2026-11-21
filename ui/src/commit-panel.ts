@@ -1,4 +1,5 @@
 // The panel next to the changes where the user commits a Changelist or selected files. It blocks nothing: the changes stay in reach while it is open.
+// While a revert is in progress, it starts from the inverse commit: the files the reverted commit changed ticked, and the automatic message.
 
 import {
   amendLastCommit,
@@ -9,6 +10,7 @@ import {
   isFailure,
   lastCommitMessage,
   prefilledCommitMessage,
+  preparedRevert,
   previousCommitMessages,
   pushAfterCommit,
   setCommitIdentity,
@@ -117,6 +119,10 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   let prefilledFor = "";
   /** Tells the last request for a pre-filled message from those it replaced. */
   let prefillRequests = 0;
+  /** The commit whose revert the ticks and the message were last set for, so that what the user changes in them stays. */
+  let revertShown: string | null = null;
+  /** Tells the last request for the revert in progress from those it replaced. */
+  let revertRequests = 0;
 
   const updateSubmit = (): void => {
     const staging = shownChanges?.staging ?? null;
@@ -419,6 +425,41 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     void commitUnlessWarned();
   });
 
+  /**
+   * Starts from the revert in progress, once for each commit it undoes: ticks the files the commit changed, and only those, and
+   * puts its automatic message in, so the user unticks what they keep out of the inverse commit.
+   */
+  async function followRevert(): Promise<void> {
+    const request = ++revertRequests;
+    try {
+      const prepared = await preparedRevert(host.repository);
+      if (request !== revertRequests || shownChanges === null) {
+        return;
+      }
+      if (prepared === null || prepared.commit === revertShown) {
+        revertShown = prepared?.commit ?? null;
+        return;
+      }
+      revertShown = prepared.commit;
+      const listed = new Set(
+        [...shownChanges.changelists.flatMap((list) => list.group.changes), ...shownChanges.unversionedFiles.changes].map(
+          (change) => change.path,
+        ),
+      );
+      ticked = new Set(prepared.paths.filter((path) => listed.has(path)));
+      amend.checked = false;
+      message.value = prepared.message;
+      prefilled = message.value;
+      prefilledFor = "";
+      prefillRequests++;
+      draw();
+    } catch (error) {
+      if (request === revertRequests) {
+        result.replaceChildren(host.errorView(error));
+      }
+    }
+  }
+
   updateSubmit();
   void loadPreviousMessages();
   return {
@@ -441,6 +482,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       shownActivePaths = activePaths;
       shownChanges = changeSet;
       draw();
+      void followRevert();
     },
   };
 }
