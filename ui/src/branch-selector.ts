@@ -1,16 +1,19 @@
 // The branch selector: opened from the current branch in the status area, it shows what HEAD is
 // on with the operation half done there, and every branch and tag in the groups Recent, Local,
-// Remote and Tags, with a search across them. Picking a local branch or a tag checks it out, and a
-// new branch starts from HEAD. The core lists, groups and searches them, and checks them out; this
-// draws them and keeps the options.
+// Remote and Tags, with a search across them. Picking a local branch, a remote branch or a tag
+// checks it out, and a new branch starts from HEAD. The core lists, groups and searches them, and
+// checks them out; this draws them and keeps the options.
 
 import type { BlockedCheckout } from "./blocked-checkout-dialog";
+import type { LostLocalCommits } from "./local-commits-dialog";
 import { branchGroup, branchList, flatBranchList, upstreamMark, type BranchActions } from "./branch-tree";
 import {
   branches as readBranches,
   checkOutBranch,
+  checkOutRemoteBranch,
   checkOutTag,
   checkoutBlocked,
+  localCommitsWouldBeLost,
   type CheckoutTarget,
   setGroupBranchesByDirectory,
   setShowRecentBranches,
@@ -34,14 +37,16 @@ import { t } from "./strings";
 export interface BranchSelectorHost {
   /** What to show for an error from the core. */
   errorView(error: unknown): HTMLElement;
-  /** Shows the latest commit of `branch` of `repository` in the log, as picking a remote branch does until checking one out ships. */
-  showBranch(repository: Repository, branch: Branch): void;
+  /** The folder of the Project the window shows, or null when it shows none. */
+  project(): string | null;
   /** Opens the new branch dialog on a branch of `repository` that starts from HEAD. */
   newBranch(repository: Repository): void;
   /** HEAD of `repository` moved to another branch or commit. */
   headMoved(repository: Repository): void;
   /** Files block the checkout of `target` in `repository`, as `blocked` lists them, for the user to choose how to go on. */
   checkoutBlocked(repository: Repository, target: CheckoutTarget, blocked: BlockedCheckout): void;
+  /** Checking out a remote branch of `repository` would lose the local commits `lost` tells of, for the user to choose what happens to them. */
+  localCommitsWouldBeLost(repository: Repository, lost: LostLocalCommits): void;
   /** What shows the operation half done in the Repository, and takes the actions on it. */
   operations: OperationsHost;
 }
@@ -205,19 +210,20 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   }
 
   /**
-   * Checks out a local branch or a tag the user picked, and closes the selector once HEAD is on it; a failure shows in the
-   * selector. A remote branch shows its latest commit in the log.
+   * Checks out a local branch, a remote branch or a tag the user picked, and closes the selector once HEAD is on it; a failure shows
+   * in the selector.
    */
   async function pick(shown: Repository, branch: Branch): Promise<void> {
-    const { name, kind } = branch.label;
-    if (checkingOut) {
+    const { name } = branch.label;
+    const project = host.project();
+    if (checkingOut || project === null) {
       return;
     }
-    if (kind !== "local" && kind !== "tag") {
-      close();
-      host.showBranch(shown, branch);
+    const picked = checkoutOf(project, shown, branch);
+    if (picked === null) {
       return;
     }
+    const { target, run } = picked;
     // The lists are not read again while the checkout runs, so they do not take the place of what it says.
     window.clearTimeout(searchTimer);
     latestRead += 1;
@@ -228,7 +234,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     groups.replaceChildren(progress);
     let failure: { error: unknown } | null = null;
     try {
-      await (kind === "local" ? checkOutBranch(shown, name) : checkOutTag(shown, name));
+      await run();
     } catch (error) {
       failure = { error };
     } finally {
@@ -240,11 +246,15 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
       return;
     }
     const blocked = failure === null ? null : checkoutBlocked(failure.error);
+    const lost = failure === null ? null : localCommitsWouldBeLost(failure.error);
     if (failure === null) {
       close();
     } else if (blocked !== null) {
       close();
-      host.checkoutBlocked(shown, kind === "local" ? { kind: "branch", name } : { kind: "tag", name }, blocked);
+      host.checkoutBlocked(shown, target, blocked);
+    } else if (lost !== null) {
+      close();
+      host.localCommitsWouldBeLost(shown, lost);
     } else {
       groups.replaceChildren(host.errorView(failure.error));
     }
@@ -259,6 +269,24 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   }
 
   return { toggle, close };
+}
+
+/**
+ * The checkout picking `branch` of `repository`, a Repository of the Project at `project`, runs: of a local branch, a remote branch
+ * or a tag, with the target it takes HEAD to. Null for HEAD itself.
+ */
+function checkoutOf(project: string, repository: Repository, branch: Branch): { target: CheckoutTarget; run: () => Promise<CurrentBranch> } | null {
+  const { name, kind } = branch.label;
+  switch (kind) {
+    case "local":
+      return { target: { kind: "branch", name }, run: () => checkOutBranch(repository, name) };
+    case "remote":
+      return { target: { kind: "remoteBranch", name, localCommits: null }, run: () => checkOutRemoteBranch(project, repository, name, null) };
+    case "tag":
+      return { target: { kind: "tag", name }, run: () => checkOutTag(repository, name) };
+    case "head":
+      return null;
+  }
 }
 
 function nodesList(nodes: BranchNode[], actions: BranchActions): HTMLElement | null {

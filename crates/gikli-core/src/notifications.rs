@@ -132,6 +132,7 @@ pub(crate) struct Deletion<'a> {
 /// The history rewrite a notification tells of.
 pub(crate) struct Rewritten<'a> {
     pub repository: &'a Repository,
+    pub rewrite: Rewrite,
     pub backup: &'a Backup,
     /// The commit the rewrite left the branch on, if any.
     pub head: Option<&'a str>,
@@ -170,11 +171,12 @@ impl Notification {
         match &self.kind {
             NotificationKind::HistoryRewritten {
                 repository,
+                rewrite,
                 backup,
                 head,
-                ..
             } => Ok(Rewritten {
                 repository,
+                rewrite: *rewrite,
                 backup,
                 head: head.as_deref(),
             }),

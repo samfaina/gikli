@@ -14,8 +14,8 @@ use gikli_core::{
     Branches, CapabilityState, ChangeGroup, ChangeGrouping, ChangeSet, CheckoutTarget,
     CloneUrlForms, CommitChanges, CommitDetails, CommitWarning, ConflictSide, ConflictedFile,
     CurrentBranch, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment,
-    LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget, NewBranchBase, Notification,
-    NotificationAction, NotificationOutcome, OperationAction, OperationInProgress,
+    LocalBranch, LocalCommits, LogCursor, LogFilter, LogPage, MoveTarget, NewBranchBase,
+    Notification, NotificationAction, NotificationOutcome, OperationAction, OperationInProgress,
     OperationLogEntry, OverLocalChanges, Project, ProjectWindow, Prompt, PullOptions, PullPlan,
     PullSource, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository,
     RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, StashDiffBase,
@@ -898,6 +898,17 @@ fn check_out_revision(
 }
 
 #[tauri::command(async)]
+fn check_out_remote_branch(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    name: String,
+    local_commits: Option<LocalCommits>,
+) -> Result<CurrentBranch, Failure> {
+    gikli.check_out_remote_branch(&project, &repository, &name, local_commits)
+}
+
+#[tauri::command(async)]
 fn check_out_over_local_changes(
     gikli: State<'_, Gikli>,
     project: PathBuf,
@@ -1246,6 +1257,7 @@ fn main() {
             check_out_branch,
             check_out_tag,
             check_out_revision,
+            check_out_remote_branch,
             check_out_over_local_changes,
             go_to_branch,
             go_to,

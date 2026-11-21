@@ -387,6 +387,11 @@ export type Failure =
    * track that it would overwrite or remove, which the user moves or commits. Both by path, relative to the Repository root.
    */
   | { kind: "checkoutBlocked"; folder: string; localChanges: string[]; untrackedFiles: string[] }
+  /**
+   * Checking out the remote branch `remoteBranch` would move the local branch `branch` to it and lose `commits` of its commits, and
+   * nothing changed. The user drops them, with a Backup, or rebases them onto the remote branch, with {@link checkOutRemoteBranch}.
+   */
+  | { kind: "localCommitsWouldBeLost"; branch: string; remoteBranch: string; commits: number }
   /** HEAD is detached, so there is no current branch to push. */
   | { kind: "detachedHeadNotPushed" }
   /** The current branch has no commit yet, so there is nothing to push. */
@@ -519,7 +524,7 @@ export type NotificationKind =
   | { kind: "stashKept"; repository: Repository; stash: Stash };
 
 /** A history rewrite gikli saved a Backup before. */
-export type Rewrite = "undoCommit" | "amend";
+export type Rewrite = "undoCommit" | "amend" | "dropLocalCommits";
 
 /** The state of a branch gikli saved before a history rewrite, so the rewrite can be undone. */
 export interface Backup {
@@ -1325,7 +1330,27 @@ export type CheckoutTarget =
   | { kind: "branch"; name: string }
   | { kind: "tag"; name: string }
   | { kind: "revision"; revision: string }
-  | { kind: "newBranch"; name: string; base: NewBranchBase };
+  | { kind: "newBranch"; name: string; base: NewBranchBase }
+  | { kind: "remoteBranch"; name: string; localCommits: LocalCommits | null };
+
+/** What happens to the commits of a local branch that checking out the remote branch of its name would lose, as the user chose. */
+export type LocalCommits = "drop" | "rebase";
+
+/**
+ * Checks out the remote branch `name`, such as `origin/main`, as the local branch of its name that follows it, and returns what HEAD
+ * is on after that. A local branch of that name moves to it when none of its commits would be lost, and otherwise as `localCommits`
+ * says: dropping them, once a Backup holds them, which raises a notification about the Project at `project` that offers Undo, or
+ * rebasing them onto it, which can stop on a conflict and raise `conflictsLeft`. Rejects with a {@link Failure}:
+ * `localCommitsWouldBeLost` when commits would be lost and `localCommits` is null, and `checkoutBlocked` when files block it.
+ */
+export function checkOutRemoteBranch(project: string, repository: Repository, name: string, localCommits: LocalCommits | null): Promise<CurrentBranch> {
+  return invoke("check_out_remote_branch", { project, repository, name, localCommits });
+}
+
+/** The local commits a checkout of a remote branch would lose, as `error` tells of them, or null when it tells of another failure. */
+export function localCommitsWouldBeLost(error: unknown): Extract<Failure, { kind: "localCommitsWouldBeLost" }> | null {
+  return isFailure(error) && error.kind === "localCommitsWouldBeLost" ? error : null;
+}
 
 /**
  * What happens to the local changes that block a checkout: discarding the changes to `files`, the blocking files the user confirmed,
