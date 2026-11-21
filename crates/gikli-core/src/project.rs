@@ -77,6 +77,21 @@ pub(crate) fn write_at_once(file: &Path, contents: &[u8]) -> io::Result<()> {
     fs::rename(&partial, file)
 }
 
+/// Takes `file` away and returns what it held, so that one taker alone gets it, even when another
+/// one in this process or another takes it at the same time. None when there is no file, or it
+/// cannot be read.
+pub(crate) fn take_once(file: &Path) -> Option<Vec<u8>> {
+    let mut taken = file.as_os_str().to_owned();
+    taken.push(format!(".taken-{}", std::process::id()));
+    let taken = PathBuf::from(taken);
+    // Renaming is what one taker alone gets to do.
+    fs::rename(file, &taken).ok()?;
+    let contents = fs::read(&taken);
+    // A file that cannot be removed lies where no taker looks.
+    let _ = fs::remove_file(&taken);
+    contents.ok()
+}
+
 /// The folders below `folder` that hold a `.git` entry, so may be the roots of Repositories,
 /// ordered by path. Links are not followed, so a link to a folder above cannot loop.
 pub(crate) fn nested_candidates(folder: &Path) -> Vec<PathBuf> {

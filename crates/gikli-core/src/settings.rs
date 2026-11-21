@@ -45,6 +45,10 @@ pub struct Settings {
     /// Whether a push of the current branch that its upstream rejects, as it has incoming commits,
     /// integrates them and pushes again without asking. When off, the user chooses how.
     pub auto_update_if_push_rejected: bool,
+    /// Whether a cherry-pick of a commit that a protected branch of a remote holds adds where it
+    /// came from to its message, as `(cherry picked from commit <hash>)`. Other commits are
+    /// picked with their message as it is either way.
+    pub add_cherry_picked_from_for_protected_branches: bool,
     /// How such a push integrates the commits without asking: the method the user last chose to
     /// remember, and merge until they choose one.
     pub push_rejected_update_method: UpdateMethod,
@@ -88,6 +92,7 @@ impl Default for Settings {
             show_push_dialog_for_commit_and_push: true,
             show_push_dialog_only_for_protected_branches: false,
             auto_update_if_push_rejected: false,
+            add_cherry_picked_from_for_protected_branches: true,
             push_rejected_update_method: UpdateMethod::Merge,
             staging_mode: false,
             show_long_edges: false,

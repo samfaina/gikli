@@ -2,13 +2,12 @@
 //! that needs a clean working tree, and restores when the operation finishes.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::project::write_at_once;
+use crate::project::{take_once, write_at_once};
 use crate::{Failure, Repository};
 
 /// The message of the stash that holds Saved local changes.
@@ -64,14 +63,6 @@ impl AwaitingMergeStore {
     /// another one in this window or another reads the merge over at the same time. What cannot be
     /// read does not wait: its stash stays in the stash list, for the user to apply.
     pub fn take(&self) -> Option<SavedLocalChanges> {
-        let mut taken = self.file.as_os_str().to_owned();
-        taken.push(format!(".taken-{}", std::process::id()));
-        let taken = PathBuf::from(taken);
-        // Renaming is what one taker alone gets to do.
-        fs::rename(&self.file, &taken).ok()?;
-        let json = fs::read(&taken);
-        // A file that cannot be removed lies where no restore looks.
-        let _ = fs::remove_file(&taken);
-        serde_json::from_slice(&json.ok()?).ok()
+        serde_json::from_slice(&take_once(&self.file)?).ok()
     }
 }
