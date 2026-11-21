@@ -1690,3 +1690,23 @@ button:disabled {
 .rejected-push-explanation {
   margin: 0;
 }
+
+.blocked-checkout-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.blocked-checkout-group p {
+  margin: 0;
+}
+
+.blocked-checkout-files {
+  max-height: 160px;
+  margin: 0;
+  padding: 0 0 0 16px;
+  overflow: auto;
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}

@@ -4,11 +4,14 @@
 // new branch starts from HEAD. The core lists, groups and searches them, and checks them out; this
 // draws them and keeps the options.
 
+import type { BlockedCheckout } from "./blocked-checkout-dialog";
 import { branchGroup, branchList, flatBranchList, upstreamMark, type BranchActions } from "./branch-tree";
 import {
   branches as readBranches,
   checkOutBranch,
   checkOutTag,
+  checkoutBlocked,
+  type CheckoutTarget,
   setGroupBranchesByDirectory,
   setShowRecentBranches,
   setShowTagsInBranchSelector,
@@ -37,6 +40,8 @@ export interface BranchSelectorHost {
   newBranch(repository: Repository): void;
   /** HEAD of `repository` moved to another branch or commit. */
   headMoved(repository: Repository): void;
+  /** Files block the checkout of `target` in `repository`, as `blocked` lists them, for the user to choose how to go on. */
+  checkoutBlocked(repository: Repository, target: CheckoutTarget, blocked: BlockedCheckout): void;
   /** What shows the operation half done in the Repository, and takes the actions on it. */
   operations: OperationsHost;
 }
@@ -234,8 +239,12 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     if (repository !== shown) {
       return;
     }
+    const blocked = failure === null ? null : checkoutBlocked(failure.error);
     if (failure === null) {
       close();
+    } else if (blocked !== null) {
+      close();
+      host.checkoutBlocked(shown, kind === "local" ? { kind: "branch", name } : { kind: "tag", name }, blocked);
     } else {
       groups.replaceChildren(host.errorView(failure.error));
     }

@@ -381,6 +381,12 @@ export type Failure =
   | { kind: "remoteBranchNotDeleted"; folder: string; remote: string; branch: string }
   /** git could not check out a branch, a tag or a commit: the operation log shows why. */
   | { kind: "checkoutFailed"; folder: string }
+  /**
+   * Files block the checkout, and nothing changed. `localChanges` are files with uncommitted changes it would overwrite, which the user
+   * can discard or save and restore around the checkout with {@link checkOutOverLocalChanges}; `untrackedFiles` are files git does not
+   * track that it would overwrite or remove, which the user moves or commits. Both by path, relative to the Repository root.
+   */
+  | { kind: "checkoutBlocked"; folder: string; localChanges: string[]; untrackedFiles: string[] }
   /** HEAD is detached, so there is no current branch to push. */
   | { kind: "detachedHeadNotPushed" }
   /** The current branch has no commit yet, so there is nothing to push. */
@@ -1312,6 +1318,33 @@ export function checkOutTag(repository: Repository, name: string): Promise<Curre
 /** Checks out the commit `revision` names on a detached HEAD, and returns what HEAD is on after that. Rejects with a {@link Failure}. */
 export function checkOutRevision(repository: Repository, revision: string): Promise<CurrentBranch> {
   return invoke("check_out_revision", { repository, revision });
+}
+
+/** What a checkout takes HEAD to. */
+export type CheckoutTarget =
+  | { kind: "branch"; name: string }
+  | { kind: "tag"; name: string }
+  | { kind: "revision"; revision: string }
+  | { kind: "newBranch"; name: string; base: NewBranchBase };
+
+/**
+ * What happens to the local changes that block a checkout: discarding the changes to `files`, the blocking files the user confirmed,
+ * which the others stay beside, or saving them, checking out and restoring them in their Changelists.
+ */
+export type OverLocalChanges = { kind: "discard"; files: string[] } | { kind: "saveAndRestore" };
+
+/**
+ * Checks out `target` once the local changes that blocked it have gone as `over` says, and returns what HEAD is on after that. A
+ * restore that conflicts keeps the saved changes and raises `conflictsLeft`. Rejects with a {@link Failure}: `checkoutBlocked` again
+ * when the files that block it are no longer the ones the user confirmed, or files git does not track still block it.
+ */
+export function checkOutOverLocalChanges(project: string, repository: Repository, target: CheckoutTarget, over: OverLocalChanges): Promise<CurrentBranch> {
+  return invoke("check_out_over_local_changes", { project, repository, target, over });
+}
+
+/** The blocked checkout `error` tells of, or null when it tells of another failure. */
+export function checkoutBlocked(error: unknown): Extract<Failure, { kind: "checkoutBlocked" }> | null {
+  return isFailure(error) && error.kind === "checkoutBlocked" ? error : null;
 }
 
 /** What HEAD of `repository` is on. Rejects with a {@link Failure}. */

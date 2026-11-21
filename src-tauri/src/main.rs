@@ -11,15 +11,16 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use gikli_core::{
-    Branches, CapabilityState, ChangeGroup, ChangeGrouping, ChangeSet, CloneUrlForms,
-    CommitChanges, CommitDetails, CommitWarning, ConflictSide, ConflictedFile, CurrentBranch,
-    Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment, LocalBranch,
-    LogCursor, LogFilter, LogPage, MoveTarget, NewBranchBase, Notification, NotificationAction,
-    NotificationOutcome, OperationAction, OperationInProgress, OperationLogEntry, Project,
-    ProjectWindow, Prompt, PullOptions, PullPlan, PullSource, PushAfterCommit, PushPlan, PushTags,
-    PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings,
-    StagingSide, StashDiffBase, StashFileDiff, StashOptions, Stashes, TextSearch, UnstashOptions,
-    UnstashPlan, Unstashed, UpdateMethod, answer_askpass_request,
+    Branches, CapabilityState, ChangeGroup, ChangeGrouping, ChangeSet, CheckoutTarget,
+    CloneUrlForms, CommitChanges, CommitDetails, CommitWarning, ConflictSide, ConflictedFile,
+    CurrentBranch, Failure, FailureAction, FileDiff, FileHistory, Gikli, GitCheck, HostEnvironment,
+    LocalBranch, LogCursor, LogFilter, LogPage, MoveTarget, NewBranchBase, Notification,
+    NotificationAction, NotificationOutcome, OperationAction, OperationInProgress,
+    OperationLogEntry, OverLocalChanges, Project, ProjectWindow, Prompt, PullOptions, PullPlan,
+    PullSource, PushAfterCommit, PushPlan, PushTags, PushTarget, RefLabel, Repository,
+    RevisionFileDiff, RollbackPlan, RunningOperation, Settings, StagingSide, StashDiffBase,
+    StashFileDiff, StashOptions, Stashes, TextSearch, UnstashOptions, UnstashPlan, Unstashed,
+    UpdateMethod, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -897,6 +898,17 @@ fn check_out_revision(
 }
 
 #[tauri::command(async)]
+fn check_out_over_local_changes(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    target: CheckoutTarget,
+    over: OverLocalChanges,
+) -> Result<CurrentBranch, Failure> {
+    gikli.check_out_over_local_changes(&project, &repository, &target, &over)
+}
+
+#[tauri::command(async)]
 fn go_to_branch(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -1234,6 +1246,7 @@ fn main() {
             check_out_branch,
             check_out_tag,
             check_out_revision,
+            check_out_over_local_changes,
             go_to_branch,
             go_to,
             filtered_log_reaches,
