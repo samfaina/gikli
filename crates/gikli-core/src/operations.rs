@@ -72,6 +72,12 @@ pub enum LongOperation {
         repository: Repository,
         branch: String,
     },
+    /// Cherry-picking `commits` commits onto the current branch of `repository`, where a hook can
+    /// take as long as it likes.
+    CherryPick {
+        repository: Repository,
+        commits: usize,
+    },
     /// Taking `action` on the `operation` half done in `repository`, where a hook can take as long
     /// as it likes.
     TakeOperationAction {

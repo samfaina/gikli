@@ -54,6 +54,7 @@ import {
   takeOperationAction,
   testGit,
   undoCommit,
+  cherryPick,
   unwatchChanges,
   watchChanges,
   windowForProject,
@@ -248,6 +249,19 @@ const logView = createLogView({
       await undoCommit(project, repository, commit);
     } finally {
       // The branch moved, or nothing did: reading again shows which.
+      headMoved(repository);
+    }
+  },
+  cherryPick: async (repository, commits) => {
+    const project = shownFolder;
+    if (project === null) {
+      return;
+    }
+    try {
+      // One that stops on a conflict opens the conflicts dialog, and the status area offers to go on or abort.
+      await cherryPick(project, repository, commits);
+    } finally {
+      // A cherry-pick that failed may still have picked the commits before the one it failed on.
       headMoved(repository);
     }
   },
@@ -1980,6 +1994,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationPull", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
     case "merge":
       return t("operationMerge", { root: operation.repository.root, branch: operation.branch });
+    case "cherryPick":
+      return t("operationCherryPick", { root: operation.repository.root, count: String(operation.commits) });
     case "checkOut":
       return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
     case "deleteRemoteBranch":
@@ -2296,6 +2312,14 @@ function describeFailure(failure: Failure): string {
       return t("failureMergeBlocked", { folder: failure.folder, files: [...failure.localChanges, ...failure.untrackedFiles].join(", ") });
     case "mergeFailed":
       return t("failureMergeFailed", { folder: failure.folder });
+    case "commitOnCurrentBranch":
+      return t("failureCommitOnCurrentBranch", { hash: failure.commit.slice(0, SHORT_HASH_LENGTH) });
+    case "operationAlreadyInProgress":
+      return t("failureOperationAlreadyInProgress", { operation: describeOperationKind(failure.operation) });
+    case "commitsToPickNotKept":
+      return t("failureCommitsToPickNotKept", { file: failure.file, message: failure.message });
+    case "cherryPickFailed":
+      return t("failureCherryPickFailed", { folder: failure.folder });
     case "localChangesNotKeptForMerge":
       return t("failureLocalChangesNotKeptForMerge", { file: failure.file, message: failure.message });
     case "pullOptionsIncompatible":

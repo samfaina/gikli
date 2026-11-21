@@ -46,6 +46,8 @@ export interface Settings {
   showPushDialogOnlyForProtectedBranches: boolean;
   /** Whether a push of the current branch that its upstream rejects integrates the commits it lacks and pushes again without asking. */
   autoUpdateIfPushRejected: boolean;
+  /** Whether a cherry-pick of a commit a protected branch of a remote holds adds where it came from to its message. */
+  addCherryPickedFromForProtectedBranches: boolean;
   /** How such a push integrates them without asking: the method last remembered, merge until one is. */
   pushRejectedUpdateMethod: UpdateMethod;
   /** Whether the changes view shows the git index as Staged and Unstaged changes instead of Changelists. */
@@ -414,6 +416,14 @@ export type Failure =
   | { kind: "mergeBlocked"; folder: string; localChanges: string[]; untrackedFiles: string[] }
   /** git could not merge a branch into the current branch: the operation log shows why. */
   | { kind: "mergeFailed"; folder: string }
+  /** Cherry-pick brings only commits the current branch does not hold, and it holds `commit`, by its full hash. Nothing changed. */
+  | { kind: "commitOnCurrentBranch"; commit: string }
+  /** `operation` is half done, so another one does not start until the user continues or aborts it. Nothing changed. */
+  | { kind: "operationAlreadyInProgress"; operation: OperationKind }
+  /** The commits left to pick once a cherry-pick stopped half done goes on could not be kept in `file`, as `message` says. */
+  | { kind: "commitsToPickNotKept"; file: string; message: string }
+  /** git could not cherry-pick commits onto the current branch: the operation log shows why. */
+  | { kind: "cherryPickFailed"; folder: string }
   /** The pull options `first` and `second`, as git names them, contradict each other, so the pull did not start. */
   | { kind: "pullOptionsIncompatible"; first: string; second: string }
   /** Another remote is already called `name`. */
@@ -637,6 +647,8 @@ export type LongOperation =
   | { kind: "pull"; repository: Repository; remote: string; branch: string }
   /** Merging `branch` into the current branch of `repository`, where a hook can take as long as it likes. */
   | { kind: "merge"; repository: Repository; branch: string }
+  /** Cherry-picking `commits` commits onto the current branch of `repository`, where a hook can take as long as it likes. */
+  | { kind: "cherryPick"; repository: Repository; commits: number }
   /** Checking out `target`: a branch, a tag or a commit. */
   | { kind: "checkOut"; repository: Repository; target: string }
   /** Deleting the branch `branch` of `remote`, which a deleted branch followed. */
@@ -1657,6 +1669,21 @@ export function mergeIntoCurrent(project: string, repository: Repository, branch
  * committed.
  * Rejects with a {@link Failure}: `mergeBlocked` again when files git does not track still block it, with the changes back.
  */
+/**
+ * Cherry-picks `commits` of `repository` onto its current branch, in the order given, oldest first as the log lists them, and
+ * returns the operation in progress after that: a cherry-pick that stopped on a conflict, which raises `conflictsLeft`, or on a
+ * commit left empty. A commit that a protected branch of a remote holds gets where it came from in its message, as the setting
+ * says. Rejects with a {@link Failure}: `commitOnCurrentBranch` for a commit the current branch holds, with nothing picked.
+ */
+export function cherryPick(project: string, repository: Repository, commits: string[]): Promise<OperationInProgress | null> {
+  return invoke("cherry_pick", { project, repository, commits });
+}
+
+/** Makes a cherry-pick of a commit a protected branch of a remote holds add where it came from to its message, or not. */
+export function setAddCherryPickedFromForProtectedBranches(add: boolean): Promise<Settings> {
+  return invoke("set_add_cherry_picked_from_for_protected_branches", { add });
+}
+
 export function mergeOverLocalChanges(project: string, repository: Repository, branch: RefLabel): Promise<OperationInProgress | null> {
   return invoke("merge_over_local_changes", { project, repository, branch });
 }

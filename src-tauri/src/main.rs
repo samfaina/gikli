@@ -196,6 +196,14 @@ fn set_show_push_dialog_only_for_protected_branches(
 }
 
 #[tauri::command]
+fn set_add_cherry_picked_from_for_protected_branches(
+    gikli: State<'_, Gikli>,
+    add: bool,
+) -> Result<Settings, Failure> {
+    gikli.set_add_cherry_picked_from_for_protected_branches(add)
+}
+
+#[tauri::command]
 fn set_auto_update_if_push_rejected(
     gikli: State<'_, Gikli>,
     auto_update: bool,
@@ -930,6 +938,16 @@ fn merge_into_current(
 }
 
 #[tauri::command(async)]
+fn cherry_pick(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    commits: Vec<String>,
+) -> Result<Option<OperationInProgress>, Failure> {
+    gikli.cherry_pick(&project, &repository, &commits)
+}
+
+#[tauri::command(async)]
 fn merge_over_local_changes(
     gikli: State<'_, Gikli>,
     project: PathBuf,
@@ -1281,6 +1299,7 @@ fn main() {
             check_out_over_local_changes,
             merge_into_current,
             merge_over_local_changes,
+            cherry_pick,
             go_to_branch,
             go_to,
             filtered_log_reaches,
@@ -1306,6 +1325,7 @@ fn main() {
             set_show_push_dialog_for_commit_and_push,
             set_show_push_dialog_only_for_protected_branches,
             set_auto_update_if_push_rejected,
+            set_add_cherry_picked_from_for_protected_branches,
             set_staging_mode,
             watch_changes,
             unwatch_changes,

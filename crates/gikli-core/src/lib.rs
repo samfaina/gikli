@@ -8,6 +8,7 @@ mod branches;
 mod capability;
 mod changelists;
 mod checkout;
+mod cherry_pick;
 mod clone_url;
 mod commit;
 mod conflicts;
@@ -534,6 +535,29 @@ pub enum Failure {
     MergeFailed {
         folder: PathBuf,
     },
+    /// Cherry-pick brings only commits the current branch does not hold, and it holds `commit`, by
+    /// its full hash. Nothing changed.
+    CommitOnCurrentBranch {
+        commit: String,
+    },
+    /// `operation` is half done in the Repository, so another one does not start until the user
+    /// continues or aborts it. Nothing changed.
+    OperationAlreadyInProgress {
+        operation: OperationKind,
+    },
+    /// The commits of a cherry-pick that git stopped half done, left to pick once it goes on,
+    /// could not be kept in `file`, as `message` says, so continuing it from gikli does not pick
+    /// them.
+    CommitsToPickNotKept {
+        file: PathBuf,
+        message: String,
+    },
+    /// git could not cherry-pick commits onto the current branch of the Repository at `folder`.
+    /// The operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    CherryPickFailed {
+        folder: PathBuf,
+    },
     /// The pull options `first` and `second`, as git names them, contradict each other, so the
     /// pull did not start.
     PullOptionsIncompatible {
@@ -1030,6 +1054,17 @@ impl Gikli {
     /// remember, or merge, or ask the user how first.
     pub fn set_auto_update_if_push_rejected(&self, auto_update: bool) -> Result<Settings, Failure> {
         self.change_settings(|settings| settings.auto_update_if_push_rejected = auto_update)
+    }
+
+    /// Makes a cherry-pick of a commit that a protected branch of a remote holds add where it came
+    /// from to its message, or pick it with its message as it is.
+    pub fn set_add_cherry_picked_from_for_protected_branches(
+        &self,
+        add: bool,
+    ) -> Result<Settings, Failure> {
+        self.change_settings(|settings| {
+            settings.add_cherry_picked_from_for_protected_branches = add;
+        })
     }
 
     /// Makes the diff of a file in a stash compare it with the file on disk or with the file in
@@ -2768,6 +2803,90 @@ impl Gikli {
         self.operation_in_progress(project, repository)
     }
 
+    /// Cherry-picks `commits` of `repository`, a Repository of the Project at `project`, onto its
+    /// current branch, in the order given, as the log gives the commits the user selected, oldest
+    /// first, and returns the operation in progress after that. git keeps the message of each
+    /// commit, and adds where it came from to it when a protected branch of a remote holds it, as
+    /// [`Settings::add_cherry_picked_from_for_protected_branches`] says by default.
+    ///
+    /// A cherry-pick that stops on a conflict says so with [`Event::ConflictsLeft`], so the
+    /// conflicts dialog opens, and is in progress, as is one that stops on a commit whose changes
+    /// the branch has already, for the user to skip. The commits picked with where they came from
+    /// and the others go in runs of their own, and those of the runs after the one git stopped
+    /// on are picked once the user continues it from gikli, and given up when they abort it. Each
+    /// run goes as a [`LongOperation`] that reports the hook it waits on and that the user can
+    /// cancel. A commit the current branch holds already
+    /// returns [`Failure::CommitOnCurrentBranch`], and an operation half done in the Repository
+    /// [`Failure::OperationAlreadyInProgress`]: nothing is picked.
+    pub fn cherry_pick(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        commits: &[String],
+    ) -> Result<Option<OperationInProgress>, Failure> {
+        let runner = self.runner(&repository.root)?.accepting_prepared_messages();
+        let commits = cherry_pick::commits_to_pick(&runner, repository, commits)?;
+        if let Some(operation) = in_progress::read(&runner, repository)? {
+            return Err(Failure::OperationAlreadyInProgress {
+                operation: operation.kind,
+            });
+        }
+        let marked = self
+            .settings()
+            .add_cherry_picked_from_for_protected_branches;
+        let runs = cherry_pick::runs(&runner, repository, &commits, marked)?;
+        self.pick(&runner, repository, runs)?;
+        self.operation_in_progress(project, repository)
+    }
+
+    /// Cherry-picks `runs` onto the current branch of `repository` through `runner`, which takes
+    /// the messages git prepared as they are, one after the other. When git stops half done, on a
+    /// conflict or on a commit left empty, the runs after it wait in the git directory, for
+    /// [`Self::take_operation_action`] to pick once the user continues. Any other failure of git's
+    /// is the one git's output explains, or [`Failure::CherryPickFailed`].
+    fn pick(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        runs: Vec<cherry_pick::Run>,
+    ) -> Result<(), Failure> {
+        let root = &repository.root;
+        let mut runs = runs.into_iter();
+        while let Some(run) = runs.next() {
+            let operation = LongOperation::CherryPick {
+                repository: repository.clone(),
+                commits: run.commits.len(),
+            };
+            let args = run.args();
+            let (invocation, stopped_on_conflict) =
+                self.run_stopping_on_conflicts(runner, repository, operation, &as_args(&args))?;
+            if invocation.success {
+                continue;
+            }
+            // git stops on a conflict, or on a commit whose changes the branch has already, which
+            // is left empty, for the user to skip.
+            let stopped = stopped_on_conflict
+                || (!invocation.cancelled && in_progress::read(runner, repository)?.is_some());
+            if !stopped {
+                return Err(failure_of(
+                    runner,
+                    root,
+                    &invocation,
+                    Failure::CherryPickFailed {
+                        folder: root.clone(),
+                    },
+                ));
+            }
+            let left: Vec<_> = runs.collect();
+            if !left.is_empty() {
+                cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(runner, repository)?)
+                    .keep(&left)?;
+            }
+            return Ok(());
+        }
+        Ok(())
+    }
+
     /// Runs `planned`, the merge of `branch` into the current branch of `repository`, through
     /// `runner`, which takes the messages git prepared as they are, and returns whether git stopped
     /// on a conflict, which it says with [`Event::ConflictsLeft`]. Any other failure of git's is
@@ -3321,6 +3440,10 @@ impl Gikli {
             self.settle_conflicts_unresolved(project, repository);
         }
         let operation = in_progress::read(&runner, repository)?;
+        if operation.is_none() {
+            // The cherry-pick they waited for is over without gikli continuing it.
+            cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(&runner, repository)?).take();
+        }
         if operation.is_none() && !in_conflict {
             self.restore_saved_for_merge(project, &runner, repository)?;
         }
@@ -3471,7 +3594,8 @@ impl Gikli {
     /// Takes `action` on the operation half done in `repository`, a Repository of the Project at
     /// `project`, and returns the operation in progress after that. A rebase, revert or
     /// cherry-pick that goes on and stops at a later commit, on a conflict or on one the
-    /// resolution left empty, is still in progress.
+    /// resolution left empty, is still in progress. A cherry-pick from gikli that is over once the
+    /// user continued or skipped picks the commits left after it, as [`Self::cherry_pick`] tells.
     /// git runs as a [`LongOperation`] that reports the hook it waits on and that the user can
     /// cancel, and takes the messages it prepared for the commits it makes as they are. With
     /// nothing half done this returns [`Failure::NoOperationInProgress`], with an action the
@@ -3483,7 +3607,20 @@ impl Gikli {
         repository: &Repository,
         action: OperationAction,
     ) -> Result<Option<OperationInProgress>, Failure> {
-        self.run_operation_action(repository, action)?;
+        let runner = self.runner(&repository.root)?.accepting_prepared_messages();
+        let picking = in_progress::read(&runner, repository)?
+            .is_some_and(|operation| operation.kind == OperationKind::CherryPick);
+        let left = cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(&runner, repository)?);
+        let waiting = if picking { left.take() } else { Vec::new() };
+        let taken = self.run_operation_action(repository, action);
+        if !waiting.is_empty() && action != OperationAction::Abort {
+            if taken.is_ok() && in_progress::read(&runner, repository)?.is_none() {
+                self.pick(&runner, repository, waiting)?;
+            } else {
+                left.keep(&waiting)?;
+            }
+        }
+        taken?;
         self.operation_in_progress(project, repository)
     }
 

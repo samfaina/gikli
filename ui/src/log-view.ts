@@ -1,5 +1,6 @@
 // The log: the commit list with its graph, the search, filter and go-to above it, the branches
-// pane before it, and what the selected commit changed and its details beside it. The core reads
+// pane before it, and what the selected commit changed and its details beside it. Ctrl or Shift
+// and a click select several commits, for an action on all of them such as cherry-pick. The core reads
 // the commits and lays out the graph a page at a time; this draws only the rows in view, and asks
 // for the next page as the user nears the end.
 
@@ -61,6 +62,8 @@ export interface LogViewHost {
   deleteBranches(repository: Repository, ticked: string | null): void;
   /** Undoes `commit`, the last commit of the current branch of `repository`. Rejects with a failure from the core. */
   undoCommit(repository: Repository, commit: string): Promise<void>;
+  /** Cherry-picks `commits` of `repository` onto its current branch, oldest first. Rejects with a failure from the core. */
+  cherryPick(repository: Repository, commits: string[]): Promise<void>;
 }
 
 export interface LogView {
@@ -127,8 +130,10 @@ export function createLogView(host: LogViewHost): LogView {
   let latestRead = 0;
   let columns = 1;
   let drawScheduled = false;
-  /** The hash of the selected commit, if any. */
+  /** The hash of the selected commit, if any: the one whose changes and details show, and where a range selection starts. */
   let selected: string | null = null;
+  /** The hashes of every selected commit, the one above among them. */
+  let selection = new Set<string>();
   /** What the log shows, as the search and the branch filter set it. */
   let filter: LogFilter = { branches: [], text: null };
   /** The branch the user chose in the branches pane to filter the log by, if any. */
@@ -165,6 +170,20 @@ export function createLogView(host: LogViewHost): LogView {
       run: async (hash) => {
         if (repository !== null) {
           await host.undoCommit(repository, hash);
+        }
+      },
+    },
+    {
+      testId: "commit-cherry-pick",
+      label: () => t("logCommitMenuCherryPick"),
+      several: true,
+      // A commit the current branch holds already has nothing to bring.
+      enabled: (hashes) => hashes.every((hash) => rows.some((row) => row.hash === hash && !row.onCurrentBranch)),
+      run: async (hashes) => {
+        if (repository !== null) {
+          // Oldest first: the log lists the newest first.
+          const order = (hash: string): number => rows.findIndex((row) => row.hash === hash);
+          await host.cherryPick(repository, [...hashes].sort((a, b) => order(b) - order(a)));
         }
       },
     },
@@ -247,6 +266,7 @@ export function createLogView(host: LogViewHost): LogView {
   function open(toShow: Repository): void {
     repository = toShow;
     selected = null;
+    selection = new Set();
     panes.show(null, null);
     filter = { branches: [], text: null };
     chosen = null;
@@ -545,6 +565,7 @@ export function createLogView(host: LogViewHost): LogView {
     next = null;
     reading = null;
     selected = null;
+    selection = new Set();
     panes.show(null, null);
     rowsView.replaceChildren();
     view.hidden = true;
@@ -665,13 +686,30 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  /** Selects the commit `hash`, and scrolls it into view. Resolves to whether the log shows it. */
-  async function select(hash: string): Promise<boolean> {
+  /**
+   * Selects the commit `hash`, and scrolls it into view. Resolves to whether the log shows it. `how` keeps the other selected
+   * commits: `toggle` adds it to them, or takes it out when it is among them, and `range` selects every commit from the one
+   * selected before it to it.
+   */
+  async function select(hash: string, how: "only" | "toggle" | "range" = "only"): Promise<boolean> {
     const index = await placeOf(hash);
     if (index < 0) {
       return false;
     }
-    if (selected !== hash) {
+    const from = rows.findIndex((row) => row.hash === selected);
+    if (how === "range" && from >= 0) {
+      selection = new Set(rows.slice(Math.min(from, index), Math.max(from, index) + 1).map((row) => row.hash));
+    } else if (how === "toggle" && selection.has(hash) && selection.size > 1) {
+      selection.delete(hash);
+      // The changes and details shown go to another selected commit.
+      hash = [...selection].at(-1) ?? hash;
+    } else if (how === "toggle") {
+      selection.add(hash);
+    } else {
+      selection = new Set([hash]);
+    }
+    // A range keeps starting from the same commit as the user stretches it.
+    if (how !== "range" && selected !== hash) {
       selected = hash;
       panes.show(repository, hash);
     }
@@ -687,17 +725,17 @@ export function createLogView(host: LogViewHost): LogView {
 
   /**
    * The left and right arrows go to the parent and the child, the up and down arrows along the list,
-   * and the menu key or Shift+F10 opens the commit menu of the selected commit.
+   * and the menu key or Shift+F10 opens the commit menu of the selected commits.
    */
   function onKey(event: KeyboardEvent): void {
     const index = rows.findIndex((row) => row.hash === selected);
     const current = rows[index];
     if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
       event.preventDefault();
-      const row = rowsView.querySelector<HTMLElement>(".log-row.selected");
+      const row = rowsView.querySelector<HTMLElement>(`.log-row[data-hash="${selected}"]`);
       if (current !== undefined && row !== null) {
         const box = row.getBoundingClientRect();
-        menu.open(current.hash, box.left + 16, box.bottom, list);
+        menu.open(selectedHashes(), box.left + 16, box.bottom, list);
       }
       return;
     }
@@ -719,18 +757,22 @@ export function createLogView(host: LogViewHost): LogView {
     }
   }
 
-  /** A click on an arrow of a cut edge goes to the commit at its other end, and one elsewhere on a row selects it. */
+  /**
+   * A click on an arrow of a cut edge goes to the commit at its other end, and one elsewhere on a row selects it: with Ctrl, or
+   * Cmd on macOS, beside the commits selected already, or takes it out of them, and with Shift with every commit up to it.
+   */
   function onClick(event: MouseEvent): void {
     const target = event.target instanceof Element ? event.target : null;
     const arrow = target?.closest<SVGElement>("[data-target]");
     const row = target?.closest<HTMLElement>(".log-row");
-    const hash = arrow?.dataset.target ?? row?.dataset.hash;
-    if (hash !== undefined) {
-      void select(hash);
+    if (arrow?.dataset.target !== undefined) {
+      void select(arrow.dataset.target);
+    } else if (row?.dataset.hash !== undefined) {
+      void select(row.dataset.hash, event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "only");
     }
   }
 
-  /** A right click on a row selects it and opens the commit menu. */
+  /** A right click on a row opens the commit menu of the selected commits, when it is one of them, or else selects it alone first. */
   function onContextMenu(event: MouseEvent): void {
     const target = event.target instanceof Element ? event.target : null;
     const hash = target?.closest<HTMLElement>(".log-row")?.dataset.hash;
@@ -738,8 +780,17 @@ export function createLogView(host: LogViewHost): LogView {
       return;
     }
     event.preventDefault();
+    if (selection.has(hash)) {
+      menu.open(selectedHashes(), event.clientX, event.clientY, list);
+      return;
+    }
     void select(hash);
-    menu.open(hash, event.clientX, event.clientY, list);
+    menu.open([hash], event.clientX, event.clientY, list);
+  }
+
+  /** The hashes of the selected commits, as the log lists them. */
+  function selectedHashes(): string[] {
+    return rows.filter((row) => selection.has(row.hash)).map((row) => row.hash);
   }
 
   function scheduleDraw(): void {
@@ -765,7 +816,7 @@ export function createLogView(host: LogViewHost): LogView {
     list.style.setProperty("--log-graph-width", `${columns * LANE_WIDTH}px`);
     list.style.setProperty("--log-row-height", `${ROW_HEIGHT}px`);
     rowsView.replaceChildren(
-      ...rows.slice(start, end).map((row, index) => rowView(row, start + index, columns, row.hash === selected)),
+      ...rows.slice(start, end).map((row, index) => rowView(row, start + index, columns, selection.has(row.hash))),
     );
     if (next !== null && reading === null && end + ROWS_BEYOND_VIEW >= rows.length) {
       void readPage(next);
