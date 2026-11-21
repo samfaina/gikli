@@ -92,8 +92,10 @@ jobs:
       - name: Build the app
         run: npx tauri build --debug --no-bundle
 
+      # --no-fail-fast: a test binary that fails would otherwise keep the ones after it from
+      # running, and hide what else fails.
       - name: Core tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
       - name: Typecheck the UI
         run: npm run typecheck
