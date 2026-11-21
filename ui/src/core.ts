@@ -426,6 +426,8 @@ export type Failure =
   | { kind: "stashesChanged"; folder: string }
   /** git could not clear the stashes: the operation log shows why. */
   | { kind: "stashesNotCleared"; folder: string }
+  /** git could not apply all of the stash and left no file in conflict. What it applied stays, and the stash is kept. */
+  | { kind: "stashNotApplied"; folder: string }
   /** The text of a search is no regular expression, as `message` explains. */
   | { kind: "searchPatternInvalid"; message: string }
   /** The user has to say who they are: see {@link setCommitIdentity}. */
@@ -501,7 +503,9 @@ export type NotificationKind =
   /** The user closed the conflicts dialog while files were still in conflict: they stay so until resolved or aborted. */
   | { kind: "conflictsUnresolved"; repository: Repository }
   /** gikli rewrote the history with `rewrite` after saving `backup`, and left the branch on `head`, null for no commit. */
-  | { kind: "historyRewritten"; repository: Repository; rewrite: Rewrite; backup: Backup; head: string | null };
+  | { kind: "historyRewritten"; repository: Repository; rewrite: Rewrite; backup: Backup; head: string | null }
+  /** Popping `stash`, or creating a branch from it, left files in conflict, so gikli kept it until the user confirms dropping it. */
+  | { kind: "stashKept"; repository: Repository; stash: Stash };
 
 /** A history rewrite gikli saved a Backup before. */
 export type Rewrite = "undoCommit" | "amend";
@@ -553,7 +557,9 @@ export type NotificationAction =
   /** Gives up the operation in progress that left the conflicts. */
   | { action: "abortOperation" }
   /** Undoes the history rewrite: brings the branch back to the Backup saved before it. */
-  | { action: "restoreBackup" };
+  | { action: "restoreBackup" }
+  /** Drops the stash kept after it conflicted. */
+  | { action: "dropStash" };
 
 /** A long-lived message about a Project, with the actions the user can take on it. */
 export interface Notification {
@@ -574,7 +580,9 @@ export type NotificationOutcome =
   /** HEAD of the Repository moved, as continuing or aborting a rebase moves it. */
   | { outcome: "headMoved"; payload: Repository }
   /** The conflicts dialog opens on the files of the Repository still in conflict. */
-  | { outcome: "resolveConflicts"; payload: Repository };
+  | { outcome: "resolveConflicts"; payload: Repository }
+  /** The stashes of the Repository changed. */
+  | { outcome: "stashesChanged"; payload: Repository };
 
 /** The two forms of the URL of a repository. The form it was typed in stays as it was typed. */
 export interface CloneUrlForms {
@@ -605,7 +613,9 @@ export type LongOperation =
   /** Taking `action` on the `operation` half done. */
   | { kind: "takeOperationAction"; repository: Repository; operation: OperationKind; action: OperationAction }
   /** Resolving files in conflict. */
-  | { kind: "resolveConflicts"; repository: Repository };
+  | { kind: "resolveConflicts"; repository: Repository }
+  /** Applying a stash, or creating a branch from one. */
+  | { kind: "applyStash"; repository: Repository };
 
 /** How far one phase of a long operation has come. */
 export interface Progress {
@@ -1735,6 +1745,53 @@ export function dropStash(repository: Repository, hash: string): Promise<Stashes
 /** Drops every stash, once the user confirmed it, when they are still `seen`, newest first. Rejects with a {@link Failure}. */
 export function clearStashes(repository: Repository, seen: string[]): Promise<Stashes> {
   return invoke("clear_stashes", { repository, seen });
+}
+
+/** How the user brings a stash back. */
+export interface UnstashOptions {
+  /** Whether the stash is dropped once it applied. One that left files in conflict is kept. */
+  pop: boolean;
+  /** Whether what was staged when the stash was made is staged again. */
+  restoreIndex: boolean;
+}
+
+/** What the unstash dialog shows before the user brings a stash back. */
+export interface UnstashPlan {
+  repository: Repository;
+  stash: Stash;
+  /** Whether tracked files have uncommitted changes. The dialog warns of them and does not block. */
+  localChanges: boolean;
+  /** The files the stash holds that git did not track and that are on disk already: git restores none of them. */
+  untrackedInTheWay: string[];
+}
+
+/** What bringing a stash back came to. */
+export interface Unstashed {
+  stashes: Stashes;
+  /** Whether applying the stash left files in conflict; the core then raises `conflictsLeft`. */
+  conflictsLeft: boolean;
+}
+
+/** What the unstash dialog shows for the stash `hash`. Rejects with a {@link Failure}. */
+export function unstashPlan(repository: Repository, hash: string): Promise<UnstashPlan> {
+  return invoke("unstash_plan", { repository, hash });
+}
+
+/**
+ * Applies the stash `hash`, restoring its index and dropping it after as `options` say. A stash
+ * that conflicts raises `conflictsLeft` and is kept. Rejects with a {@link Failure}.
+ */
+export function applyStash(project: string, repository: Repository, hash: string, options: UnstashOptions): Promise<Unstashed> {
+  return invoke("apply_stash", { project, repository, hash, options });
+}
+
+/**
+ * Creates the branch `name` at the commit the stash `hash` was made on, checks it out, applies the
+ * stash with its index and drops it. A stash that conflicts raises `conflictsLeft` and is kept.
+ * Rejects with a {@link Failure}.
+ */
+export function stashBranch(project: string, repository: Repository, hash: string, name: string): Promise<Unstashed> {
+  return invoke("stash_branch", { project, repository, hash, name });
 }
 
 /** Lets go of what the core holds to read the page at `cursor` quickly, once the log no longer needs it. */

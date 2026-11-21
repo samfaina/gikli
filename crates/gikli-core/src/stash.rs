@@ -88,6 +88,42 @@ pub struct StashFileDiff {
     pub content: DiffContent,
 }
 
+/// How the user brings a stash back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnstashOptions {
+    /// Whether the stash is dropped once it applied: a pop. One that left files in conflict is
+    /// kept until the user confirms dropping it.
+    pub pop: bool,
+    /// Whether what was staged when the stash was made is staged again.
+    pub restore_index: bool,
+}
+
+/// What bringing a stash back came to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unstashed {
+    /// The stashes after that.
+    pub stashes: Stashes,
+    /// Whether applying the stash left files in conflict, which conflict resolution then lists.
+    pub conflicts_left: bool,
+}
+
+/// What the unstash dialog shows before the user brings a stash back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnstashPlan {
+    pub repository: Repository,
+    /// The stash to bring back.
+    pub stash: Stash,
+    /// Whether tracked files have uncommitted changes, staged or not. The dialog warns of them,
+    /// and does not block: git applies a stash over changes to other files.
+    pub local_changes: bool,
+    /// The files the stash holds that git did not track and that are on disk already, by path.
+    /// git restores none of them, and fails after applying the rest, so the dialog warns of them.
+    pub untracked_in_the_way: Vec<PathBuf>,
+}
+
 /// What git prints of each stash, a field per NUL. Its name comes from its place in the list, the
 /// order of the reflog of `refs/stash`, as `%gd` names it by date under some date options.
 const LIST_FORMAT: &str = "--format=%H%x00%ct%x00%gs";
@@ -281,6 +317,47 @@ impl StashCommits {
     }
 }
 
+/// What bringing the stash `hash` of `repository` back starts from.
+pub(crate) fn unstash_plan(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<UnstashPlan, Failure> {
+    let stash = available_stash(runner, repository, hash)?;
+    let untracked_in_the_way = StashCommits::of(runner, repository, hash)?
+        .files(runner, repository)?
+        .into_iter()
+        .filter(|file| file.status == ChangeStatus::Untracked)
+        .map(|file| file.path)
+        .filter(|path| repository.root.join(path).symlink_metadata().is_ok())
+        .collect();
+    Ok(UnstashPlan {
+        repository: repository.clone(),
+        stash,
+        local_changes: has_local_changes(runner, repository)?,
+        untracked_in_the_way,
+    })
+}
+
+/// The stash `hash` of `repository`, when the Repository can stash and has it.
+pub(crate) fn available_stash(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<Stash, Failure> {
+    find(available(runner, repository)?, hash)
+}
+
+/// Whether tracked files of `repository` have uncommitted changes, staged or not.
+fn has_local_changes(runner: &GitRunner, repository: &Repository) -> Result<bool, Failure> {
+    let status = log::run_git(
+        runner,
+        repository,
+        &["status", "--porcelain", "-z", "--untracked-files=no"],
+    )?;
+    Ok(!status.stdout.is_empty())
+}
+
 /// Drops the stash `hash` of `repository`, wherever it is in the list now. git drops a stash by its
 /// place in the list, so the place is checked to still hold that stash right before.
 pub(crate) fn drop(runner: &GitRunner, repository: &Repository, hash: &str) -> Result<(), Failure> {
@@ -298,6 +375,19 @@ pub(crate) fn drop(runner: &GitRunner, repository: &Repository, hash: &str) -> R
             folder: repository.root.clone(),
         },
     )
+}
+
+/// Drops the stash `hash` of `repository`, as [`drop`] does, and nothing when it is gone already,
+/// as when it was dropped elsewhere since the user asked.
+pub(crate) fn drop_if_there(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<(), Failure> {
+    match drop(runner, repository, hash) {
+        Err(Failure::StashNotFound { .. }) => Ok(()),
+        dropped => dropped,
+    }
 }
 
 /// Drops every stash of `repository`, when they are still `seen`, the hashes of the stashes the

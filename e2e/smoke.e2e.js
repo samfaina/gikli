@@ -1156,7 +1156,7 @@ describe("gikli", () => {
       });
     });
 
-    it("offers the stash dialog, and lists a stash with its files and their diff in the stashes tab", async () => {
+    it("offers the stash dialog, lists a stash with its files and their diff in the stashes tab, and pops it", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
       // A stash of one new file alone, so the changes the cases after this one rely on stay where they are.
@@ -1183,11 +1183,24 @@ describe("gikli", () => {
         await $(`[data-testid="stashes-file"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000 });
         await $('[data-testid="stashes-preview"] .cm-mergeView').waitForExist({ timeout: 30000 });
 
+        await $('[data-testid="stashes-unstash"]').click();
+        const unstash = $('[data-testid="unstash-dialog"]');
+        await unstash.waitForDisplayed({ timeout: 30000 });
+        await $('[data-testid="unstash-dialog-pop"]').click();
+        await unstash.waitForDisplayed({ timeout: 30000, reverse: true });
+        await row.waitForExist({ timeout: 30000, reverse: true });
+        // git checks the file out again, so core.autocrlf may give it CRLF line endings.
+        assert.match(fs.readFileSync(inRepository(file), "utf8"), /^stashed\r?\n$/, "the pop brought the file back");
+        assert.equal(runGit(repository, gitconfig, "stash", "list"), "", "the pop dropped the stash");
+
         await $('[data-testid="stashes-close"]').click();
         await view.waitForDisplayed({ timeout: 30000, reverse: true });
         await $('[data-testid="changes"]').waitForDisplayed({ timeout: 30000 });
       } finally {
-        runGit(repository, gitconfig, "stash", "drop", "--quiet");
+        if (runGit(repository, gitconfig, "stash", "list") !== "") {
+          runGit(repository, gitconfig, "stash", "drop", "--quiet");
+        }
+        fs.rmSync(inRepository(file), { force: true });
       }
     });
   });

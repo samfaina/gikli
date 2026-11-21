@@ -18,8 +18,8 @@ use gikli_core::{
     NotificationOutcome, OperationAction, OperationInProgress, OperationLogEntry, Project,
     ProjectWindow, Prompt, PullOptions, PullPlan, PullSource, PushAfterCommit, PushPlan, PushTags,
     PushTarget, RefLabel, Repository, RevisionFileDiff, RollbackPlan, RunningOperation, Settings,
-    StagingSide, StashDiffBase, StashFileDiff, StashOptions, Stashes, TextSearch, UpdateMethod,
-    answer_askpass_request,
+    StagingSide, StashDiffBase, StashFileDiff, StashOptions, Stashes, TextSearch, UnstashOptions,
+    UnstashPlan, Unstashed, UpdateMethod, answer_askpass_request,
 };
 use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -1031,6 +1031,37 @@ fn clear_stashes(
 }
 
 #[tauri::command(async)]
+fn unstash_plan(
+    gikli: State<'_, Gikli>,
+    repository: Repository,
+    hash: String,
+) -> Result<UnstashPlan, Failure> {
+    gikli.unstash_plan(&repository, &hash)
+}
+
+#[tauri::command(async)]
+fn apply_stash(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    hash: String,
+    options: UnstashOptions,
+) -> Result<Unstashed, Failure> {
+    gikli.apply_stash(&project, &repository, &hash, options)
+}
+
+#[tauri::command(async)]
+fn stash_branch(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    hash: String,
+    name: String,
+) -> Result<Unstashed, Failure> {
+    gikli.stash_branch(&project, &repository, &hash, &name)
+}
+
+#[tauri::command(async)]
 fn get_file_version(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -1219,6 +1250,9 @@ fn main() {
             set_stash_diff_against,
             drop_stash,
             clear_stashes,
+            unstash_plan,
+            apply_stash,
+            stash_branch,
             set_file_history_row_limit,
             set_warn_on_unusual_commit_state,
             set_clear_commit_message_after_commit,
