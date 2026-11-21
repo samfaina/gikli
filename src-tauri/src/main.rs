@@ -920,6 +920,26 @@ fn check_out_over_local_changes(
 }
 
 #[tauri::command(async)]
+fn merge_into_current(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    branch: RefLabel,
+) -> Result<Option<OperationInProgress>, Failure> {
+    gikli.merge_into_current(&project, &repository, &branch)
+}
+
+#[tauri::command(async)]
+fn merge_over_local_changes(
+    gikli: State<'_, Gikli>,
+    project: PathBuf,
+    repository: Repository,
+    branch: RefLabel,
+) -> Result<Option<OperationInProgress>, Failure> {
+    gikli.merge_over_local_changes(&project, &repository, &branch)
+}
+
+#[tauri::command(async)]
 fn go_to_branch(
     gikli: State<'_, Gikli>,
     repository: Repository,
@@ -1259,6 +1279,8 @@ fn main() {
             check_out_revision,
             check_out_remote_branch,
             check_out_over_local_changes,
+            merge_into_current,
+            merge_over_local_changes,
             go_to_branch,
             go_to,
             filtered_log_reaches,

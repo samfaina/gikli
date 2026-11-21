@@ -286,6 +286,24 @@
         </div>
         <div id="blocked-checkout-message" class="new-branch-message" data-testid="blocked-checkout-message" role="status"></div>
       </section>
+      <section id="blocked-merge-dialog" class="branch-selector new-branch" data-testid="blocked-merge-dialog" role="dialog" aria-labelledby="blocked-merge-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="blocked-merge-title"></h2>
+          <button id="blocked-merge-cancel" type="button" data-testid="blocked-merge-cancel"></button>
+        </div>
+        <div id="blocked-merge-local" class="blocked-checkout-group" data-testid="blocked-merge-local">
+          <p id="blocked-merge-local-explanation"></p>
+          <ul id="blocked-merge-local-files" class="blocked-checkout-files" data-testid="blocked-merge-local-files"></ul>
+        </div>
+        <div id="blocked-merge-untracked" class="blocked-checkout-group" data-testid="blocked-merge-untracked">
+          <p id="blocked-merge-untracked-explanation"></p>
+          <ul id="blocked-merge-untracked-files" class="blocked-checkout-files" data-testid="blocked-merge-untracked-files"></ul>
+        </div>
+        <div id="blocked-merge-actions" class="new-branch-actions">
+          <button id="blocked-merge-save" type="button" data-testid="blocked-merge-save"></button>
+        </div>
+        <div id="blocked-merge-message" class="new-branch-message" data-testid="blocked-merge-message" role="status"></div>
+      </section>
       <section id="local-commits-dialog" class="branch-selector new-branch" data-testid="local-commits-dialog" role="dialog" aria-labelledby="local-commits-title" hidden>
         <div class="branch-selector-header">
           <h2 id="local-commits-title"></h2>

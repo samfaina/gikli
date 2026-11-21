@@ -923,6 +923,62 @@ describe("gikli", () => {
       }
     });
 
+    it("merges a branch into the current one from its menu, saving and restoring the local changes that block it", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      const file = "blocked merge.txt";
+      const write = (text) => fs.writeFileSync(path.join(repository, file), text);
+      const commitOf = (revision) => runGit(repository, gitconfig, "rev-parse", revision).trim();
+      // On branches of their own, so main keeps its commits.
+      runGit(repository, gitconfig, "switch", "--quiet", "--create", "smoke/merge-base");
+      write("one\ntwo\nthree\n");
+      runGit(repository, gitconfig, "add", "--", file);
+      commitStaged(repository, gitconfig, "Base of the blocked merge");
+      runGit(repository, gitconfig, "switch", "--quiet", "--create", "smoke/merge");
+      write("one\ntwo\nthree\nfour\n");
+      runGit(repository, gitconfig, "add", "--", file);
+      commitStaged(repository, gitconfig, "On the branch the merge brings in");
+      runGit(repository, gitconfig, "switch", "--quiet", "smoke/merge-base");
+      write("ONE\ntwo\nthree\n");
+
+      try {
+        await $('[data-testid="status-branch"]').click();
+        const selector = $('[data-testid="branch-selector"]');
+        await selector.waitForDisplayed({ timeout: 30000 });
+        await $('[data-testid="branch-selector-search"]').setValue("smoke/merge");
+        const found = $('[data-testid="branch-group-local"] [data-testid="branch"][data-name="smoke/merge"]');
+        await found.waitForDisplayed({ timeout: 30000 });
+        await found.click({ button: "right" });
+        const merge = $('[data-testid="branch-menu"] [data-testid="branch-menu-merge"]');
+        await merge.waitForDisplayed({ timeout: 30000 });
+        await merge.click();
+        const dialog = $('[data-testid="blocked-merge-dialog"]');
+        await dialog.waitForDisplayed({ timeout: 30000 });
+        const listed = [];
+        for (const item of await $$('[data-testid="blocked-merge-local-files"] [data-testid="blocked-merge-file"]')) {
+          listed.push(await item.getProperty("textContent"));
+        }
+        assert.deepEqual(listed, [file]);
+        assert.notEqual(commitOf("HEAD"), commitOf("smoke/merge"), "nothing merged yet");
+
+        await $('[data-testid="blocked-merge-save"]').click();
+        await dialog.waitForDisplayed({ timeout: 30000, reverse: true });
+        await browser.waitUntil(() => commitOf("HEAD") === commitOf("smoke/merge"), {
+          timeout: 30000,
+          timeoutMsg: "the merge did not fast-forward to smoke/merge",
+        });
+        // The app's git writes line endings as the system configuration says, as on Windows.
+        const restored = fs.readFileSync(path.join(repository, file), "utf8").replaceAll("\r\n", "\n");
+        assert.equal(restored, "ONE\ntwo\nthree\nfour\n");
+      } finally {
+        // The next cases start from main, whatever this one left.
+        await $('[data-testid="blocked-merge-cancel"]').click().catch(() => {});
+        runGit(repository, gitconfig, "restore", "--", file);
+        runGit(repository, gitconfig, "switch", "--quiet", "main");
+        runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/merge", "smoke/merge-base");
+      }
+    });
+
     // A browser drops a click whose button was taken out of the page between the press and the
     // release. The status area reads again whenever the changes watcher sees the Repository change, as just
     // after a checkout, so a click on the branch there could be lost on its way (issue #154).

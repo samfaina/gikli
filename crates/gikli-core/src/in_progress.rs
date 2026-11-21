@@ -91,7 +91,7 @@ pub(crate) fn read(
 }
 
 /// The git directory of the worktree `repository` is, where git keeps what it has half done there.
-fn git_dir(runner: &GitRunner, repository: &Repository) -> Result<PathBuf, Failure> {
+pub(crate) fn git_dir(runner: &GitRunner, repository: &Repository) -> Result<PathBuf, Failure> {
     runner
         .git_dir(&repository.root)
         .map_err(git_failed_to_start)?
