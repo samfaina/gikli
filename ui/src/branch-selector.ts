@@ -99,7 +99,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   let latestRead = 0;
   let searchTimer: number | undefined;
   /** Whether a branch or tag the user picked is being checked out, or a branch merged. */
-  let checkingOut = false;
+  let busy = false;
   /** The branch HEAD is on, as the selector last listed it, or null on a detached HEAD. */
   let currentName: string | null = null;
   const menu = createBranchMenu(view);
@@ -178,7 +178,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   /** Lists the branches the search finds; an answer an earlier read gives late is dropped. */
   async function listBranches(): Promise<void> {
     const shown = repository;
-    if (shown === null || checkingOut) {
+    if (shown === null || busy) {
       return;
     }
     const reading = ++latestRead;
@@ -247,7 +247,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   async function pick(shown: Repository, branch: Pick<Branch, "label">): Promise<void> {
     const { name } = branch.label;
     const project = host.project();
-    if (checkingOut || project === null) {
+    if (busy || project === null) {
       return;
     }
     const picked = checkoutOf(project, shown, branch);
@@ -258,7 +258,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     // The lists are not read again while the checkout runs, so they do not take the place of what it says.
     window.clearTimeout(searchTimer);
     latestRead += 1;
-    checkingOut = true;
+    busy = true;
     const progress = document.createElement("p");
     progress.className = "branch-selector-empty";
     progress.textContent = t("branchSelectorCheckingOut", { target: name });
@@ -269,7 +269,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     } catch (error) {
       failure = { error };
     } finally {
-      checkingOut = false;
+      busy = false;
       // A checkout that failed may still have moved HEAD, as when a hook after it fails.
       host.headMoved(shown);
     }
@@ -297,13 +297,13 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
    */
   async function merge(shown: Repository, branch: RefLabel): Promise<void> {
     const project = host.project();
-    if (checkingOut || project === null) {
+    if (busy || project === null) {
       return;
     }
     // The lists are not read again while the merge runs, so they do not take the place of what it says.
     window.clearTimeout(searchTimer);
     latestRead += 1;
-    checkingOut = true;
+    busy = true;
     const progress = document.createElement("p");
     progress.className = "branch-selector-empty";
     progress.textContent = t("branchSelectorMerging", { branch: branch.name });
@@ -314,7 +314,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     } catch (error) {
       failure = { error };
     } finally {
-      checkingOut = false;
+      busy = false;
       host.headMoved(shown);
     }
     if (repository !== shown) {
@@ -370,6 +370,7 @@ interface BranchMenuItem {
   testId: string;
   /** The text of its item. */
   label: string;
+  /** Acts on the branch the menu is of. */
   run(): void;
 }
 

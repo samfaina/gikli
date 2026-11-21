@@ -444,8 +444,11 @@ export type Failure =
   | { kind: "stashesUnreadable"; folder: string }
   /** No stash has the commit `hash`: it was dropped. */
   | { kind: "stashNotFound"; hash: string }
-  /** gikli could not write `file`, where it keeps the local changes saved around a merge, for `message`; they are back, and nothing merged. */
-  | { kind: "localChangesNotKept"; file: string; message: string }
+  /**
+   * gikli could not write `file`, where it keeps the local changes saved around a merge that stopped half done, for `message`; they
+   * wait in the stash list, for the user to apply once the merge is over.
+   */
+  | { kind: "localChangesNotKeptForMerge"; file: string; message: string }
   /** git could not drop the stash: the operation log shows why. */
   | { kind: "stashNotDropped"; folder: string }
   /** The stashes are no longer the ones the user saw, so none was cleared. */
@@ -632,6 +635,7 @@ export type LongOperation =
   | { kind: "push"; repository: Repository; remote: string; branch: string }
   /** Pulling the branch `branch` of `remote` into the current branch. */
   | { kind: "pull"; repository: Repository; remote: string; branch: string }
+  /** Merging `branch` into the current branch of `repository`, where a hook can take as long as it likes. */
   | { kind: "merge"; repository: Repository; branch: string }
   /** Checking out `target`: a branch, a tag or a commit. */
   | { kind: "checkOut"; repository: Repository; target: string }
@@ -1649,7 +1653,8 @@ export function mergeIntoCurrent(project: string, repository: Repository, branch
 
 /**
  * Merges `branch` as {@link mergeIntoCurrent} does once the local changes that blocked it are saved, and restores them in their
- * Changelists once the merge is over. A merge that stops on a conflict keeps them saved until the user aborts it or commits it.
+ * Changelists once the merge is over. A merge that stops half done keeps them saved until gikli reads that it is over, aborted or
+ * committed.
  * Rejects with a {@link Failure}: `mergeBlocked` again when files git does not track still block it, with the changes back.
  */
 export function mergeOverLocalChanges(project: string, repository: Repository, branch: RefLabel): Promise<OperationInProgress | null> {

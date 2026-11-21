@@ -1,5 +1,5 @@
 //! Merge into current: the user merges a branch into the one HEAD is on from the branch selector.
-//! A merge that stops on a conflict leads to the conflict list, and one that local changes block
+//! A merge that stops on a conflict leads to the conflicts dialog, and one that local changes block
 //! says which, for the user to save them, merge and restore them through Saved local changes.
 
 use std::path::PathBuf;
@@ -99,7 +99,7 @@ fn conflicted(gikli: &Gikli, project: &TestRepository, repository: &Repository) 
 }
 
 #[test]
-fn a_merge_that_stops_on_a_conflict_leads_to_the_conflict_list() {
+fn a_merge_that_stops_on_a_conflict_leads_to_the_conflicts_dialog() {
     let sandbox = Sandbox::new();
     let gikli = sandbox.gikli();
     let (work, root) = with_other_branch(&sandbox, &gikli);
@@ -456,4 +456,176 @@ fn a_branch_that_no_longer_exists_says_so() {
             revision: "gone".to_owned()
         })
     );
+}
+
+/// Asserts that the local changes of `change_notes_and_todo_in_feature` are back in `work`, onto
+/// HEAD as it is, in their Changelists, with no stash left.
+fn assert_local_changes_back(gikli: &Gikli, work: &TestRepository, root: &Repository) {
+    assert_eq!(read(work, "notes.txt"), "one\ntwo\nthree\n");
+    assert_eq!(read(work, "todo.txt"), "first\nsecond\nthird\n");
+    assert_eq!(work.status_by_git(), vec![" M notes.txt", " M todo.txt"]);
+    assert_eq!(stashes_by_git(work), Vec::<String>::new());
+    let changes = gikli.read_changes(root).expect("read changes");
+    assert_eq!(paths_in(&changes, "Feature"), vec!["todo.txt"]);
+}
+
+#[test]
+fn a_merge_a_hook_stops_keeps_the_local_changes_saved_until_it_is_aborted() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    change_notes_and_todo_in_feature(&gikli, &work, &root);
+    sandbox.hook("pre-merge-commit", "exit 1");
+
+    let failure = gikli.merge_over_local_changes(work.root(), &root, &local("other"));
+
+    assert!(failure.is_err(), "the hook refused the merge commit");
+    assert_eq!(
+        gikli
+            .operation_in_progress(work.root(), &root)
+            .expect("read the operation in progress")
+            .map(|operation| operation.kind),
+        Some(OperationKind::Merge),
+        "git leaves the merge to commit"
+    );
+    assert_eq!(
+        stashes_by_git(&work),
+        vec!["On main: Local changes saved by gikli"],
+        "the changes do not come back onto the merge half done"
+    );
+
+    gikli
+        .take_operation_action(work.root(), &root, OperationAction::Abort)
+        .expect("abort the merge");
+
+    assert_local_changes_back(&gikli, &work, &root);
+}
+
+#[test]
+fn a_merge_ended_outside_gikli_brings_the_local_changes_back_once_gikli_reads_it_is_over() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    commit_conflicting_notes(&work);
+    change_notes_and_todo_in_feature(&gikli, &work, &root);
+    gikli
+        .merge_over_local_changes(work.root(), &root, &local("other"))
+        .expect("save and merge onto a conflict");
+    work.git(&["merge", "--abort"]);
+
+    let in_progress = gikli
+        .operation_in_progress(work.root(), &root)
+        .expect("read the operation in progress");
+
+    assert_eq!(in_progress, None);
+    assert_local_changes_back(&gikli, &work, &root);
+}
+
+#[test]
+fn a_merge_committed_from_the_commit_panel_brings_the_local_changes_back() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    commit_conflicting_notes(&work);
+    change_notes_and_todo_in_feature(&gikli, &work, &root);
+    gikli
+        .merge_over_local_changes(work.root(), &root, &local("other"))
+        .expect("save and merge onto a conflict");
+    gikli
+        .accept_side(
+            work.root(),
+            &root,
+            &["notes.txt".to_owned()],
+            ConflictSide::Yours,
+        )
+        .expect("keep my notes");
+    gikli
+        .commit_staged(&root, "Merge other")
+        .expect("commit the merge");
+
+    gikli
+        .operation_in_progress(work.root(), &root)
+        .expect("read the operation in progress");
+
+    assert_eq!(
+        work.git(&["rev-parse", "HEAD^2"]),
+        work.git(&["rev-parse", "other"])
+    );
+    assert_local_changes_back(&gikli, &work, &root);
+}
+
+#[test]
+fn with_merge_ff_false_a_staged_change_blocks_a_merge_that_could_fast_forward() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    work.git(&["switch", "--quiet", "--create", "behind", "other~1"]);
+    work.git(&["config", "merge.ff", "false"]);
+    work.write("todo.txt", "first\nlater\n");
+    work.git(&["add", "todo.txt"]);
+
+    assert_eq!(
+        gikli.merge_into_current(work.root(), &root, &local("other")),
+        Err(Failure::MergeBlocked {
+            folder: root.root.clone(),
+            local_changes: paths(&["todo.txt"]),
+            untracked_files: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn with_merge_ff_only_a_merge_that_cannot_fast_forward_is_not_blocked_by_files() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    work.git(&["config", "merge.ff", "only"]);
+    work.write("todo.txt", "first\nsecond\nthird\n");
+    work.git(&["add", "todo.txt"]);
+
+    assert_eq!(
+        gikli.merge_into_current(work.root(), &root, &local("other")),
+        Err(Failure::MergeFailed {
+            folder: root.root.clone(),
+        })
+    );
+}
+
+#[test]
+fn local_changes_that_conflict_with_the_merge_committed_stay_saved_and_open_conflict_resolution() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    commit_conflicting_notes(&work);
+    change_notes_and_todo_in_feature(&gikli, &work, &root);
+    gikli
+        .merge_over_local_changes(work.root(), &root, &local("other"))
+        .expect("save and merge onto a conflict");
+    gikli
+        .accept_side(
+            work.root(),
+            &root,
+            &["notes.txt".to_owned()],
+            ConflictSide::Theirs,
+        )
+        .expect("take the notes of other");
+    let events = gikli.subscribe();
+
+    gikli
+        .take_operation_action(work.root(), &root, OperationAction::CommitMerge)
+        .expect("commit the merge");
+
+    assert_eq!(
+        work.git(&["rev-parse", "HEAD^2"]),
+        work.git(&["rev-parse", "other"])
+    );
+    assert_eq!(conflicts_left(&events), vec![root.clone()]);
+    assert_eq!(conflicted(&gikli, &work, &root), vec!["notes.txt"]);
+    assert_eq!(
+        stashes_by_git(&work),
+        vec!["On main: Local changes saved by gikli"],
+        "the stash stays until the user drops it"
+    );
+    let changes = gikli.read_changes(&root).expect("read changes");
+    assert_eq!(paths_in(&changes, "Feature"), vec!["todo.txt"]);
 }

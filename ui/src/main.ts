@@ -2296,8 +2296,8 @@ function describeFailure(failure: Failure): string {
       return t("failureMergeBlocked", { folder: failure.folder, files: [...failure.localChanges, ...failure.untrackedFiles].join(", ") });
     case "mergeFailed":
       return t("failureMergeFailed", { folder: failure.folder });
-    case "localChangesNotKept":
-      return t("failureLocalChangesNotKept", { file: failure.file, message: failure.message });
+    case "localChangesNotKeptForMerge":
+      return t("failureLocalChangesNotKeptForMerge", { file: failure.file, message: failure.message });
     case "pullOptionsIncompatible":
       return t("failurePullOptionsIncompatible", { first: failure.first, second: failure.second });
     case "remoteNameTaken":

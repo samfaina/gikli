@@ -35,19 +35,9 @@ pub struct RestoredLocalChanges {
     pub conflicts_left: bool,
 }
 
-/// Saved local changes that wait for a merge that stopped half done to be over, so they come back
-/// when the user aborts it or commits it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AwaitingMerge {
-    /// The full hash of the commit the merge brings in, as git names it `MERGE_HEAD`, which tells
-    /// that merge from a later one.
-    pub merging: String,
-    pub saved: SavedLocalChanges,
-}
-
-/// Where the Saved local changes that wait for a merge in one worktree are kept, in its git
-/// directory beside its Changelists, so they wait there whatever window is open.
+/// Where the Saved local changes that wait for a merge stopped half done in one worktree are kept,
+/// in its git directory beside its Changelists, so they wait there whatever window is open, and
+/// whoever ends the merge.
 pub(crate) struct AwaitingMergeStore {
     file: PathBuf,
 }
@@ -60,29 +50,28 @@ impl AwaitingMergeStore {
         }
     }
 
-    /// Keeps `awaiting`, in place of what waited before.
-    pub fn keep(&self, awaiting: &AwaitingMerge) -> Result<(), Failure> {
-        let json = serde_json::to_vec_pretty(awaiting).map_err(io::Error::other);
+    /// Keeps `saved`, in place of what waited before.
+    pub fn keep(&self, saved: &SavedLocalChanges) -> Result<(), Failure> {
+        let json = serde_json::to_vec_pretty(saved).map_err(io::Error::other);
         json.and_then(|json| write_at_once(&self.file, &json))
-            .map_err(|error| Failure::LocalChangesNotKept {
+            .map_err(|error| Failure::LocalChangesNotKeptForMerge {
                 file: self.file.clone(),
                 message: error.to_string(),
             })
     }
 
-    /// What waits for the merge of `merging`, if anything does. What waits for another merge, or
-    /// cannot be read, does not: its stash stays in the stash list, for the user to apply.
-    pub fn awaiting(&self, merging: &str) -> Option<AwaitingMerge> {
-        let json = fs::read(&self.file).ok()?;
-        let awaiting: AwaitingMerge = serde_json::from_slice(&json).ok()?;
-        (awaiting.merging == merging).then_some(awaiting)
-    }
-
-    /// Forgets what waits, as it came back or there was nothing to wait. Nothing waiting is no
-    /// failure.
-    pub fn forget(&self) {
-        // A file that cannot be removed waits for a merge that is over, which no later merge
-        // takes for its own.
-        let _ = fs::remove_file(&self.file);
+    /// Takes what waits, if anything does, so that one restore alone brings it back, even when
+    /// another one in this window or another reads the merge over at the same time. What cannot be
+    /// read does not wait: its stash stays in the stash list, for the user to apply.
+    pub fn take(&self) -> Option<SavedLocalChanges> {
+        let mut taken = self.file.as_os_str().to_owned();
+        taken.push(format!(".taken-{}", std::process::id()));
+        let taken = PathBuf::from(taken);
+        // Renaming is what one taker alone gets to do.
+        fs::rename(&self.file, &taken).ok()?;
+        let json = fs::read(&taken);
+        // A file that cannot be removed lies where no restore looks.
+        let _ = fs::remove_file(&taken);
+        serde_json::from_slice(&json.ok()?).ok()
     }
 }

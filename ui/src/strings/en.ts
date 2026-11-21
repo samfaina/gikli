@@ -352,8 +352,8 @@ export const en = {
   failurePullFailed: "git could not pull into {folder}. The operation log shows git's output.",
   failureMergeBlocked: "Files in {folder} block the merge: {files}",
   failureMergeFailed: "git could not merge into the current branch of {folder}. The operation log shows git's output.",
-  failureLocalChangesNotKept:
-    "gikli could not write {file}, where it keeps the local changes it saves around a merge: {message}. Your changes are back, and nothing was merged.",
+  failureLocalChangesNotKeptForMerge:
+    "gikli could not write {file}, where it keeps the local changes it saved around the merge: {message}. They wait in the stash list: apply them once the merge is over.",
   failurePullOptionsIncompatible: "{first} and {second} cannot be used together.",
   failureRemoteNameTaken: "Another remote is already called {name}.",
   failureRemoteNameInvalid: "\"{name}\" cannot be the name of a remote.",

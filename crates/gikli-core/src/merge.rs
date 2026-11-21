@@ -66,7 +66,7 @@ fn given_name(
 /// The failure of `planned`, a merge in `repository`, when files block it. None when none does,
 /// and git, when it refused, failed for another reason.
 ///
-/// A merge that fast-forwards checks the commit out, which the same files block as a checkout. Any
+/// A merge that fast-forwards, as `merge.ff` lets it, checks the commit out, which the same files block as a checkout. Any
 /// other merge combines what both sides changed since their merge base, and git starts none while
 /// a change is staged, or while a file it would change has changes on disk. A file deleted on disk
 /// only does not count, as nothing on disk would be lost. A file git does not track blocks either
@@ -77,6 +77,7 @@ pub(crate) fn blocked(
     planned: &Planned,
 ) -> Result<Option<Failure>, Failure> {
     let commit = planned.commit.as_str();
+    let fast_forward = fast_forward(runner, repository)?;
     // The merge base a merge that does not fast-forward combines both sides from.
     let combined_from = match merge_base(runner, repository, commit)? {
         // With no commit yet, the merge checks the commit out.
@@ -84,9 +85,18 @@ pub(crate) fn blocked(
         // Histories that share no commit git merges with none of these.
         None => return Ok(None),
         Some(base) if base == commit => return Ok(None),
-        Some(base) if base == details::resolve(runner, repository, "HEAD")? => None,
+        Some(base)
+            if fast_forward != FastForward::Never
+                && base == details::resolve(runner, repository, "HEAD")? =>
+        {
+            None
+        }
         Some(base) => Some(base),
     };
+    // A merge that may only fast-forward and cannot fails for that, whatever the files hold.
+    if combined_from.is_some() && fast_forward == FastForward::Only {
+        return Ok(None);
+    }
     let (moved, local_changes) = match combined_from {
         None => {
             let (moved, staged) = moved_and_staged(runner, repository, commit)?;
@@ -122,4 +132,28 @@ fn merge_base(
         .run(&repository.root, &["merge-base", "HEAD", commit])
         .map_err(git_failed_to_start)?;
     Ok(base.success.then(|| base.stdout_text().trim().to_owned()))
+}
+
+/// Whether git fast-forwards a merge, as `merge.ff` says.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FastForward {
+    /// When it can, as by default.
+    Allowed,
+    /// Never: every merge makes a merge commit.
+    Never,
+    /// Only: a merge that cannot fast-forward fails.
+    Only,
+}
+
+/// How git fast-forwards a merge in `repository`, as `merge.ff` says.
+fn fast_forward(runner: &GitRunner, repository: &Repository) -> Result<FastForward, Failure> {
+    let config = runner
+        .run(&repository.root, &["config", "--get", "merge.ff"])
+        .map_err(git_failed_to_start)?;
+    let value = config.stdout_text().trim().to_lowercase();
+    Ok(match value.as_str() {
+        "only" => FastForward::Only,
+        "false" | "no" | "off" | "0" => FastForward::Never,
+        _ => FastForward::Allowed,
+    })
 }

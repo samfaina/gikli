@@ -89,7 +89,7 @@ pub use prompts::{Prompt, PromptKind, answer_askpass_request};
 pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
 pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget, UpdateMethod};
 pub use rollback::RollbackPlan;
-use saved_local_changes::{AwaitingMerge, AwaitingMergeStore};
+use saved_local_changes::AwaitingMergeStore;
 pub use saved_local_changes::{RestoredLocalChanges, SavedLocalChanges};
 pub use settings::Settings;
 pub use stash::{
@@ -756,11 +756,12 @@ pub enum Failure {
         folder: PathBuf,
         reason: StashUnavailable,
     },
-    /// gikli could not write `file`, where it keeps the local changes it saved around a merge until
-    /// the merge is over, for `message`, the reason the system gives in the user's language. The
-    /// changes are back and nothing was merged.
+    /// gikli could not write `file`, where it keeps the local changes it saved around a merge that
+    /// stopped half done until the merge is over, for `message`, the reason the system gives in the
+    /// user's language. The changes wait in the stash list, for the user to apply once the merge is
+    /// over.
     #[serde(rename_all = "camelCase")]
-    LocalChangesNotKept {
+    LocalChangesNotKeptForMerge {
         file: PathBuf,
         message: String,
     },
@@ -1277,7 +1278,7 @@ impl Gikli {
         repository: &Repository,
         action: OperationAction,
     ) -> Result<NotificationOutcome, Failure> {
-        self.run_operation_action(&notification.project, repository, action)?;
+        self.run_operation_action(repository, action)?;
         self.notifications.withdraw(notification.id);
         self.operation_in_progress(&notification.project, repository)?;
         Ok(NotificationOutcome::HeadMoved(repository.clone()))
@@ -2738,9 +2739,10 @@ impl Gikli {
     ///
     /// The changes come back in their Changelists, as [`Self::save_local_changes`] and
     /// [`Self::restore_local_changes`] do, once the merge is over, also when it fails. A merge
-    /// that stops on a conflict keeps them until the user aborts it or commits it with
-    /// [`Self::take_operation_action`]. Files git does not track are not saved, so those that
-    /// block the merge still do.
+    /// that stops half done, on a conflict, on a hook or cancelled, keeps them saved in the git
+    /// directory of the worktree, and they come back once gikli reads that the merge is over, as
+    /// [`Self::operation_in_progress`] does after the user aborts it or commits it, from gikli or
+    /// not. Files git does not track are not saved, so those that block the merge still do.
     pub fn merge_over_local_changes(
         &self,
         project: &Path,
@@ -2751,22 +2753,16 @@ impl Gikli {
         let planned = merge::plan(&runner, repository, branch)?;
         let store = AwaitingMergeStore::in_git_dir(&in_progress::git_dir(&runner, repository)?);
         let saved = self.save_local_changes(repository)?;
-        let awaiting = AwaitingMerge {
-            merging: planned.commit.clone(),
-            saved,
-        };
-        // What waits is kept before the merge runs, so a merge that stops finds it there, and
-        // nothing merges when it cannot be kept.
-        if awaiting.saved.stash.is_some()
-            && let Err(failure) = store.keep(&awaiting)
-        {
-            self.restore_local_changes(project, &awaiting.saved)?;
-            return Err(failure);
-        }
         let merged = self.run_merge(&runner, repository, branch, &planned);
-        if !matches!(merged, Ok(true)) {
-            store.forget();
-            self.restore_local_changes(project, &awaiting.saved)?;
+        // A merge half done holds what the changes cannot come back onto: they wait for it to be
+        // over. They are kept only once it stopped, so a read of the operation in progress while
+        // the merge runs does not take them for those of a merge that is over.
+        let half_done = in_progress::read(&runner, repository)?
+            .is_some_and(|operation| operation.kind == OperationKind::Merge);
+        if half_done && saved.stash.is_some() {
+            store.keep(&saved)?;
+        } else {
+            self.restore_local_changes(project, &saved)?;
         }
         merged?;
         self.operation_in_progress(project, repository)
@@ -3320,10 +3316,14 @@ impl Gikli {
         repository: &Repository,
     ) -> Result<Option<OperationInProgress>, Failure> {
         let runner = self.runner(&repository.root)?;
-        if !conflicts::any(&runner, repository)? {
+        let in_conflict = conflicts::any(&runner, repository)?;
+        if !in_conflict {
             self.settle_conflicts_unresolved(project, repository);
         }
         let operation = in_progress::read(&runner, repository)?;
+        if operation.is_none() && !in_conflict {
+            self.restore_saved_for_merge(project, &runner, repository)?;
+        }
         let stopped = NotificationKind::RebaseStopped {
             repository: repository.clone(),
         };
@@ -3343,6 +3343,27 @@ impl Gikli {
             self.notifications.settle(project, &stopped);
         }
         Ok(operation)
+    }
+
+    /// Restores the local changes saved around a merge of `repository`, a Repository of the Project
+    /// at `project`, that stopped half done, as [`Self::merge_over_local_changes`] saved them, once
+    /// the merge is over, if any wait. They come back once: whoever takes them restores them, and a
+    /// stash the user dropped meanwhile brings nothing back. When they cannot come back, the
+    /// failure says why and the stash stays in the stash list.
+    fn restore_saved_for_merge(
+        &self,
+        project: &Path,
+        runner: &GitRunner,
+        repository: &Repository,
+    ) -> Result<(), Failure> {
+        let store = AwaitingMergeStore::in_git_dir(&in_progress::git_dir(runner, repository)?);
+        let Some(saved) = store.take() else {
+            return Ok(());
+        };
+        match self.restore_local_changes(project, &saved) {
+            Ok(_) | Err(Failure::StashNotFound { .. }) => Ok(()),
+            Err(failure) => Err(failure),
+        }
     }
 
     /// The files in conflict in `repository`, a Repository of the Project at `project`, ordered by
@@ -3462,17 +3483,14 @@ impl Gikli {
         repository: &Repository,
         action: OperationAction,
     ) -> Result<Option<OperationInProgress>, Failure> {
-        self.run_operation_action(project, repository, action)?;
+        self.run_operation_action(repository, action)?;
         self.operation_in_progress(project, repository)
     }
 
-    /// Takes `action` on the operation half done in `repository`, a Repository of the Project at
-    /// `project`, as [`Self::take_operation_action`] tells. A merge that is over, aborted or
-    /// committed, brings back the local changes saved around it, as
-    /// [`Self::merge_over_local_changes`] tells.
+    /// Takes `action` on the operation half done in `repository`, as
+    /// [`Self::take_operation_action`] tells.
     fn run_operation_action(
         &self,
-        project: &Path,
         repository: &Repository,
         action: OperationAction,
     ) -> Result<(), Failure> {
@@ -3499,16 +3517,8 @@ impl Gikli {
             action,
         };
         let args = in_progress::action_args(operation.kind, action);
-        let awaiting = match operation.kind {
-            OperationKind::Merge => self.awaiting_merge(&runner, repository)?,
-            _ => None,
-        };
         let invocation = self.run_operation(&runner, long, root, &args)?;
         if invocation.success {
-            if let Some((store, awaiting)) = awaiting {
-                store.forget();
-                self.restore_local_changes(project, &awaiting.saved)?;
-            }
             return Ok(());
         }
         // git went on and stopped at a later commit, which the user resolves or skips next: on a
@@ -3537,20 +3547,6 @@ impl Gikli {
                 action,
             },
         ))
-    }
-
-    /// The local changes saved around the merge half done in `repository`, which wait for it to be
-    /// over, with where they wait, if any do.
-    fn awaiting_merge(
-        &self,
-        runner: &GitRunner,
-        repository: &Repository,
-    ) -> Result<Option<(AwaitingMergeStore, AwaitingMerge)>, Failure> {
-        let Some(merging) = details::commit_if_any(runner, repository, "MERGE_HEAD")? else {
-            return Ok(None);
-        };
-        let store = AwaitingMergeStore::in_git_dir(&in_progress::git_dir(runner, repository)?);
-        Ok(store.awaiting(&merging).map(|awaiting| (store, awaiting)))
     }
 
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer
