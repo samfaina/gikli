@@ -518,7 +518,8 @@ describe("gikli", () => {
      * Opens the context menu of what `selector` finds with a right-click. On Linux it fires the event
      * the click would: after a right-click from WebKitWebDriver, whatever the element, every key it
      * types for the rest of the session loses Shift, so "Moved" reaches the field as "moved" and a
-     * path to clone as "7tmp7...".
+     * path to clone as "7tmp7...". Its right-click also clicks the element: on a branch in the branch
+     * selector it checked the branch out, and the selector closed with the menu in it.
      */
     async function openContextMenu(selector) {
       const target = await $(selector);
@@ -782,6 +783,20 @@ describe("gikli", () => {
      */
     const itOffLinux = process.platform === "linux" ? it.skip : it;
 
+    /**
+     * Closes what a case about branches leaves open when it fails halfway, so the next cases find the
+     * window as they expect: the branch selector, with the menu of a branch in it, and the dialog of a
+     * blocked checkout or merge, which covers the bottom of the window.
+     */
+    async function closeBranchViews() {
+      for (const testId of ["branch-selector-close", "blocked-checkout-cancel", "blocked-merge-cancel"]) {
+        const button = $(`[data-testid="${testId}"]`);
+        if (await button.isDisplayed()) {
+          await button.click();
+        }
+      }
+    }
+
     itOffLinux("finds a branch in the selector and checks it out, creates a branch, and filters the log by a branch in the branches pane", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
       const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
@@ -916,7 +931,7 @@ describe("gikli", () => {
         assert.equal(restored, "ONE\ntwo\nthree\nfour\n");
       } finally {
         // The next cases start from main, whatever this one left.
-        await $('[data-testid="blocked-checkout-cancel"]').click().catch(() => {});
+        await closeBranchViews();
         runGit(repository, gitconfig, "restore", "--", file);
         runGit(repository, gitconfig, "switch", "--quiet", "main");
         runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/blocked", "smoke/blocked-base");
@@ -946,9 +961,7 @@ describe("gikli", () => {
         const selector = $('[data-testid="branch-selector"]');
         await selector.waitForDisplayed({ timeout: 30000 });
         await $('[data-testid="branch-selector-search"]').setValue("smoke/merge");
-        const found = $('[data-testid="branch-group-local"] [data-testid="branch"][data-name="smoke/merge"]');
-        await found.waitForDisplayed({ timeout: 30000 });
-        await found.click({ button: "right" });
+        await openContextMenu('[data-testid="branch-group-local"] [data-testid="branch"][data-name="smoke/merge"]');
         const merge = $('[data-testid="branch-menu"] [data-testid="branch-menu-merge"]');
         await merge.waitForDisplayed({ timeout: 30000 });
         await merge.click();
@@ -972,7 +985,7 @@ describe("gikli", () => {
         assert.equal(restored, "ONE\ntwo\nthree\nfour\n");
       } finally {
         // The next cases start from main, whatever this one left.
-        await $('[data-testid="blocked-merge-cancel"]').click().catch(() => {});
+        await closeBranchViews();
         runGit(repository, gitconfig, "restore", "--", file);
         runGit(repository, gitconfig, "switch", "--quiet", "main");
         runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/merge", "smoke/merge-base");
