@@ -1,14 +1,13 @@
 //! The integration engine's cherry-pick: commits the user selected in the log, brought onto the
 //! current branch in order.
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::git::GitRunner;
-use crate::project::write_at_once;
+use crate::project::{take_once, write_at_once};
 use crate::{Failure, Repository, details, git_failed_to_start, undo_commit};
 
 /// The commits `revisions` of `repository` name, by their full hashes, in the same order, once
@@ -51,7 +50,7 @@ fn on_current_branch(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Run {
     /// Whether git adds `(cherry picked from commit <hash>)` to the message of each commit.
-    pub marked: bool,
+    pub adds_picked_from: bool,
     /// The commits, by their full hashes, in the order to pick them.
     pub commits: Vec<String>,
 }
@@ -60,7 +59,7 @@ impl Run {
     /// The arguments after `git` of the cherry-pick of the run.
     pub fn args(&self) -> Vec<String> {
         let mut args = vec!["cherry-pick".to_owned()];
-        if self.marked {
+        if self.adds_picked_from {
             args.push("-x".to_owned());
         }
         args.push("--end-of-options".to_owned());
@@ -69,23 +68,23 @@ impl Run {
     }
 }
 
-/// `commits` of `repository`, in order, as the runs git picks them in: when `marked`, each commit
+/// `commits` of `repository`, in order, as the runs git picks them in: with `adds_picked_from`, each commit
 /// that a protected branch of a remote holds has where it came from added to its message, and
 /// the others do not, so a run ends where that changes.
 pub(crate) fn runs(
     runner: &GitRunner,
     repository: &Repository,
     commits: &[String],
-    marked: bool,
+    adds_picked_from: bool,
 ) -> Result<Vec<Run>, Failure> {
     let mut runs: Vec<Run> = Vec::new();
     for commit in commits {
-        let from_protected =
-            marked && undo_commit::protected_branch_holding(runner, repository, commit)?.is_some();
+        let adds = adds_picked_from
+            && undo_commit::protected_branch_holding(runner, repository, commit)?.is_some();
         match runs.last_mut() {
-            Some(run) if run.marked == from_protected => run.commits.push(commit.clone()),
+            Some(run) if run.adds_picked_from == adds => run.commits.push(commit.clone()),
             _ => runs.push(Run {
-                marked: from_protected,
+                adds_picked_from: adds,
                 commits: vec![commit.clone()],
             }),
         }
@@ -120,17 +119,7 @@ impl LeftToPick {
     /// Takes what waits, so that one continue alone picks it. Nothing waits when nothing can be
     /// read.
     pub fn take(&self) -> Vec<Run> {
-        let mut taken = self.file.as_os_str().to_owned();
-        taken.push(format!(".taken-{}", std::process::id()));
-        let taken = PathBuf::from(taken);
-        // Renaming is what one taker alone gets to do.
-        if fs::rename(&self.file, &taken).is_err() {
-            return Vec::new();
-        }
-        let json = fs::read(&taken);
-        // A file that cannot be removed lies where no continue looks.
-        let _ = fs::remove_file(&taken);
-        json.ok()
+        take_once(&self.file)
             .and_then(|json| serde_json::from_slice(&json).ok())
             .unwrap_or_default()
     }

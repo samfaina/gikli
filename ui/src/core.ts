@@ -1669,6 +1669,15 @@ export function mergeIntoCurrent(project: string, repository: Repository, branch
  * committed.
  * Rejects with a {@link Failure}: `mergeBlocked` again when files git does not track still block it, with the changes back.
  */
+export function mergeOverLocalChanges(project: string, repository: Repository, branch: RefLabel): Promise<OperationInProgress | null> {
+  return invoke("merge_over_local_changes", { project, repository, branch });
+}
+
+/** The blocked merge `error` tells of, or null when it tells of another failure. */
+export function mergeBlocked(error: unknown): Extract<Failure, { kind: "mergeBlocked" }> | null {
+  return isFailure(error) && error.kind === "mergeBlocked" ? error : null;
+}
+
 /**
  * Cherry-picks `commits` of `repository` onto its current branch, in the order given, oldest first as the log lists them, and
  * returns the operation in progress after that: a cherry-pick that stopped on a conflict, which raises `conflictsLeft`, or on a
@@ -1682,15 +1691,6 @@ export function cherryPick(project: string, repository: Repository, commits: str
 /** Makes a cherry-pick of a commit a protected branch of a remote holds add where it came from to its message, or not. */
 export function setAddCherryPickedFromForProtectedBranches(add: boolean): Promise<Settings> {
   return invoke("set_add_cherry_picked_from_for_protected_branches", { add });
-}
-
-export function mergeOverLocalChanges(project: string, repository: Repository, branch: RefLabel): Promise<OperationInProgress | null> {
-  return invoke("merge_over_local_changes", { project, repository, branch });
-}
-
-/** The blocked merge `error` tells of, or null when it tells of another failure. */
-export function mergeBlocked(error: unknown): Extract<Failure, { kind: "mergeBlocked" }> | null {
-  return isFailure(error) && error.kind === "mergeBlocked" ? error : null;
 }
 
 /**

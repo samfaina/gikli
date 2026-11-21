@@ -9,6 +9,7 @@ import {
   cancelPrompt,
   capabilities,
   checkGit,
+  cherryPick,
   clearOperationLog,
   cloneRepository,
   cloneUrlForms,
@@ -39,6 +40,7 @@ import {
   setGitPath,
   setGoToNextFileAfterLastChange,
   setOperationLogSoftWrap,
+  setAddCherryPickedFromForProtectedBranches,
   setAutoUpdateIfPushRejected,
   setShowPushDialogForCommitAndPush,
   setShowPushDialogOnlyForProtectedBranches,
@@ -54,7 +56,6 @@ import {
   takeOperationAction,
   testGit,
   undoCommit,
-  cherryPick,
   unwatchChanges,
   watchChanges,
   windowForProject,
@@ -147,6 +148,7 @@ const clearCommitMessageInput = element<HTMLInputElement>("clear-commit-message-
 const showPushDialogInput = element<HTMLInputElement>("show-push-dialog-for-commit-and-push");
 const showPushDialogOnlyProtectedInput = element<HTMLInputElement>("show-push-dialog-only-for-protected-branches");
 const autoUpdateIfPushRejectedInput = element<HTMLInputElement>("auto-update-if-push-rejected");
+const addCherryPickedFromInput = element<HTMLInputElement>("add-cherry-picked-from-for-protected-branches");
 const stagingModeInput = element<HTMLInputElement>("staging-mode");
 
 document.title = t("appTitle");
@@ -189,6 +191,7 @@ element<HTMLElement>("clear-commit-message-after-commit-label").textContent = t(
 element<HTMLElement>("show-push-dialog-for-commit-and-push-label").textContent = t("showPushDialogForCommitAndPush");
 element<HTMLElement>("show-push-dialog-only-for-protected-branches-label").textContent = t("showPushDialogOnlyForProtectedBranches");
 element<HTMLElement>("auto-update-if-push-rejected-label").textContent = t("autoUpdateIfPushRejected");
+element<HTMLElement>("add-cherry-picked-from-for-protected-branches-label").textContent = t("addCherryPickedFromForProtectedBranches");
 element<HTMLElement>("staging-mode-label").textContent = t("stagingMode");
 element<HTMLElement>("staging-mode-hint").textContent = t("stagingModeHint");
 
@@ -461,6 +464,10 @@ saveOnChange(
   async (checked) => (await setShowPushDialogOnlyForProtectedBranches(checked)).showPushDialogOnlyForProtectedBranches,
 );
 saveOnChange(autoUpdateIfPushRejectedInput, async (checked) => (await setAutoUpdateIfPushRejected(checked)).autoUpdateIfPushRejected);
+saveOnChange(
+  addCherryPickedFromInput,
+  async (checked) => (await setAddCherryPickedFromForProtectedBranches(checked)).addCherryPickedFromForProtectedBranches,
+);
 saveOnChange(stagingModeInput, async (checked) => {
   const saved = await setStagingMode(checked);
   for (const { refresh } of shownRepositories.values()) {
@@ -508,6 +515,7 @@ settingsButton.addEventListener("click", async () => {
     showPushDialogOnlyProtectedInput.checked = current.showPushDialogOnlyForProtectedBranches;
     showPushDialogOnlyProtectedInput.disabled = !current.showPushDialogForCommitAndPush;
     autoUpdateIfPushRejectedInput.checked = current.autoUpdateIfPushRejected;
+    addCherryPickedFromInput.checked = current.addCherryPickedFromForProtectedBranches;
     stagingModeInput.checked = current.stagingMode;
     gitTestResult.textContent = "";
   }
@@ -1995,7 +2003,9 @@ function describeOperation(operation: LongOperation): string {
     case "merge":
       return t("operationMerge", { root: operation.repository.root, branch: operation.branch });
     case "cherryPick":
-      return t("operationCherryPick", { root: operation.repository.root, count: String(operation.commits) });
+      return operation.commits === 1
+        ? t("operationCherryPickOne", { root: operation.repository.root })
+        : t("operationCherryPick", { root: operation.repository.root, count: String(operation.commits) });
     case "checkOut":
       return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
     case "deleteRemoteBranch":

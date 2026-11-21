@@ -230,43 +230,24 @@ fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
 /// does Two on `other`.
 fn with_two_in_conflict(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repository) {
     let work = sandbox.repository("work");
-    work.write(
-        "notes.txt",
-        "notes
-",
-    );
+    work.write("notes.txt", "notes\n");
     work.commit_all("Base");
     work.git(&["switch", "--quiet", "--create", "other"]);
-    work.write(
-        "one.txt", "One
-",
-    );
+    work.write("one.txt", "One\n");
     work.commit_all("One");
-    work.write(
-        "notes.txt",
-        "theirs
-",
-    );
+    work.write("notes.txt", "theirs\n");
     work.commit_all("Two");
-    work.write(
-        "three.txt",
-        "Three
-",
-    );
+    work.write("three.txt", "Three\n");
     work.commit_all("Three");
     work.git(&["switch", "--quiet", "main"]);
-    work.write(
-        "notes.txt",
-        "ours
-",
-    );
+    work.write("notes.txt", "ours\n");
     work.commit_all("Ours");
     let root = opened(gikli, &work);
     (work, root)
 }
 
 #[test]
-fn a_cherry_pick_that_stops_on_a_conflict_shows_it_in_local_changes_and_is_in_progress() {
+fn a_cherry_pick_that_stops_on_a_conflict_shows_it_in_the_changes_view_and_is_in_progress() {
     let sandbox = Sandbox::new();
     let gikli = sandbox.gikli();
     let (work, root) = with_two_in_conflict(&sandbox, &gikli);
@@ -318,11 +299,7 @@ fn continuing_a_cherry_pick_stopped_on_a_conflict_picks_the_rest_in_order() {
     gikli
         .cherry_pick(work.root(), &root, &selected)
         .expect("the cherry-pick stops on a conflict");
-    work.write(
-        "notes.txt",
-        "both
-",
-    );
+    work.write("notes.txt", "both\n");
     gikli
         .mark_resolved(work.root(), &root, &["notes.txt".to_owned()])
         .expect("mark notes.txt resolved");
@@ -333,11 +310,7 @@ fn continuing_a_cherry_pick_stopped_on_a_conflict_picks_the_rest_in_order() {
 
     assert_eq!(in_progress, None);
     assert_eq!(subjects(&work), vec!["Three", "Two", "One", "Ours", "Base"]);
-    assert_eq!(
-        read(&work, "notes.txt"),
-        "both
-"
-    );
+    assert_eq!(read(&work, "notes.txt"), "both\n");
 }
 
 #[test]

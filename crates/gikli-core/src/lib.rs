@@ -2831,10 +2831,10 @@ impl Gikli {
                 operation: operation.kind,
             });
         }
-        let marked = self
+        let adds_picked_from = self
             .settings()
             .add_cherry_picked_from_for_protected_branches;
-        let runs = cherry_pick::runs(&runner, repository, &commits, marked)?;
+        let runs = cherry_pick::runs(&runner, repository, &commits, adds_picked_from)?;
         self.pick(&runner, repository, runs)?;
         self.operation_in_progress(project, repository)
     }
@@ -2863,26 +2863,27 @@ impl Gikli {
             if invocation.success {
                 continue;
             }
-            // git stops on a conflict, or on a commit whose changes the branch has already, which
-            // is left empty, for the user to skip.
-            let stopped = stopped_on_conflict
-                || (!invocation.cancelled && in_progress::read(runner, repository)?.is_some());
-            if !stopped {
-                return Err(failure_of(
-                    runner,
-                    root,
-                    &invocation,
-                    Failure::CherryPickFailed {
-                        folder: root.clone(),
-                    },
-                ));
-            }
+            // Half done, as when git stopped or was cancelled in the middle, the cherry-pick goes
+            // on from gikli, and the runs after it wait for that.
+            let half_done = in_progress::read(runner, repository)?.is_some();
             let left: Vec<_> = runs.collect();
-            if !left.is_empty() {
+            if half_done && !left.is_empty() {
                 cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(runner, repository)?)
                     .keep(&left)?;
             }
-            return Ok(());
+            // git stops on a conflict, or on a commit whose changes the branch has already, which
+            // is left empty, for the user to skip.
+            if stopped_on_conflict || (half_done && !invocation.cancelled) {
+                return Ok(());
+            }
+            return Err(failure_of(
+                runner,
+                root,
+                &invocation,
+                Failure::CherryPickFailed {
+                    folder: root.clone(),
+                },
+            ));
         }
         Ok(())
     }
@@ -3607,21 +3608,38 @@ impl Gikli {
         repository: &Repository,
         action: OperationAction,
     ) -> Result<Option<OperationInProgress>, Failure> {
+        self.run_operation_action_picking_the_rest(repository, action)?;
+        self.operation_in_progress(project, repository)
+    }
+
+    /// Takes `action` on the operation half done in `repository`, as [`Self::run_operation_action`]
+    /// does, and when it is a cherry-pick from gikli with commits left to pick after it, picks
+    /// them once it is over, unless the user aborted it. While it is still half done, as when the
+    /// action failed or git stopped again, they keep waiting.
+    fn run_operation_action_picking_the_rest(
+        &self,
+        repository: &Repository,
+        action: OperationAction,
+    ) -> Result<(), Failure> {
         let runner = self.runner(&repository.root)?.accepting_prepared_messages();
         let picking = in_progress::read(&runner, repository)?
             .is_some_and(|operation| operation.kind == OperationKind::CherryPick);
-        let left = cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(&runner, repository)?);
-        let waiting = if picking { left.take() } else { Vec::new() };
-        let taken = self.run_operation_action(repository, action);
-        if !waiting.is_empty() && action != OperationAction::Abort {
-            if taken.is_ok() && in_progress::read(&runner, repository)?.is_none() {
-                self.pick(&runner, repository, waiting)?;
-            } else {
-                left.keep(&waiting)?;
-            }
+        if !picking {
+            return self.run_operation_action(repository, action);
         }
-        taken?;
-        self.operation_in_progress(project, repository)
+        let left = cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(&runner, repository)?);
+        // Taken first, so a read of the operation in progress while git goes on keeps them.
+        let waiting = left.take();
+        let taken = self.run_operation_action(repository, action);
+        if waiting.is_empty() {
+            return taken;
+        }
+        if in_progress::read(&runner, repository)?.is_some() {
+            left.keep(&waiting)?;
+        } else if taken.is_ok() && action != OperationAction::Abort {
+            self.pick(&runner, repository, waiting)?;
+        }
+        taken
     }
 
     /// Takes `action` on the operation half done in `repository`, as
