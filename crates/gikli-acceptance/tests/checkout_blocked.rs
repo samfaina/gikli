@@ -36,10 +36,12 @@ fn with_other_branch(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repos
     (work, root)
 }
 
+/// `paths`, relative to the Repository root, as the core names files.
 fn paths(paths: &[&str]) -> Vec<PathBuf> {
     paths.iter().map(PathBuf::from).collect()
 }
 
+/// The branch HEAD of `repository` is on, as plain git names it.
 fn head_by_git(repository: &TestRepository) -> String {
     repository
         .git(&["symbolic-ref", "--short", "HEAD"])
@@ -100,12 +102,14 @@ fn a_checkout_untracked_files_block_lists_the_files_to_move_or_commit() {
     );
 }
 
+/// The checkout of the branch `other`.
 fn other_branch() -> CheckoutTarget {
     CheckoutTarget::Branch {
         name: "other".to_owned(),
     }
 }
 
+/// What the file at `path` of `repository` holds on disk.
 fn read(repository: &TestRepository, path: &str) -> String {
     std::fs::read_to_string(repository.root().join(path)).expect("read the file")
 }
@@ -468,5 +472,119 @@ fn untracked_files_in_a_folder_where_the_branch_has_a_file_block_too() {
             local_changes: Vec::new(),
             untracked_files: paths(&["plan.txt/draft.txt"]),
         }
+    );
+}
+
+#[test]
+fn discarding_while_untracked_files_block_discards_nothing() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    work.write("notes.txt", "one\ntwo\nthree\n");
+    work.write("plan.txt", "my own plan\n");
+
+    let failure = gikli
+        .check_out_over_local_changes(
+            work.root(),
+            &root,
+            &other_branch(),
+            &OverLocalChanges::Discard {
+                files: paths(&["notes.txt"]),
+            },
+        )
+        .expect_err("plan.txt blocks whatever goes");
+
+    assert_eq!(
+        failure,
+        Failure::CheckoutBlocked {
+            folder: root.root.clone(),
+            local_changes: paths(&["notes.txt"]),
+            untracked_files: paths(&["plan.txt"]),
+        }
+    );
+    assert_eq!(
+        read(&work, "notes.txt"),
+        "one\ntwo\nthree\n",
+        "not discarded"
+    );
+}
+
+#[test]
+fn a_checkout_of_a_revision_that_local_changes_block_lists_them() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    work.write("notes.txt", "one\ntwo\nthree\n");
+    let hash = work.git(&["rev-parse", "other"]).trim().to_owned();
+
+    assert_eq!(
+        gikli.check_out_revision(&root, &hash),
+        Err(Failure::CheckoutBlocked {
+            folder: root.root.clone(),
+            local_changes: paths(&["notes.txt"]),
+            untracked_files: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn a_file_taken_out_of_git_that_the_branch_deletes_blocks_as_untracked() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    work.git(&["switch", "--quiet", "other"]);
+    work.git(&["rm", "--quiet", "todo.txt"]);
+    work.commit_all("Drop todo");
+    work.git(&["switch", "--quiet", "main"]);
+    work.git(&["rm", "--quiet", "--cached", "todo.txt"]);
+
+    assert_eq!(
+        gikli.check_out_branch(&root, "other"),
+        Err(Failure::CheckoutBlocked {
+            folder: root.root.clone(),
+            local_changes: Vec::new(),
+            untracked_files: paths(&["todo.txt"]),
+        })
+    );
+}
+
+#[test]
+fn untracked_files_block_a_checkout_in_a_repository_with_no_commits() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let work = sandbox.repository("work");
+    work.git(&["switch", "--quiet", "--orphan", "other"]);
+    work.write("plan.txt", "plan\n");
+    work.commit_all("Plan");
+    work.git(&["switch", "--quiet", "--orphan", "main"]);
+    work.write("plan.txt", "my own plan\n");
+    let root = opened(&gikli, &work);
+
+    assert_eq!(
+        gikli.check_out_branch(&root, "other"),
+        Err(Failure::CheckoutBlocked {
+            folder: root.root.clone(),
+            local_changes: Vec::new(),
+            untracked_files: paths(&["plan.txt"]),
+        })
+    );
+}
+
+/// Only where the file system ignores case, as git then does.
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn an_untracked_file_whose_name_differs_only_in_case_blocks_where_case_is_ignored() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_other_branch(&sandbox, &gikli);
+    work.write("Plan.txt", "my own plan\n");
+
+    assert_eq!(
+        gikli.check_out_branch(&root, "other"),
+        Err(Failure::CheckoutBlocked {
+            folder: root.root.clone(),
+            local_changes: Vec::new(),
+            untracked_files: paths(&["Plan.txt"]),
+        })
     );
 }

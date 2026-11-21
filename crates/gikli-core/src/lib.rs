@@ -2988,15 +2988,14 @@ impl Gikli {
         over: &OverLocalChanges,
     ) -> Result<CurrentBranch, Failure> {
         let runner = self.runner(&repository.root)?;
+        let planned = checkout::plan(&runner, repository, target)?;
         match over {
             OverLocalChanges::Discard { files } => {
-                let planned = checkout::plan(&runner, repository, target)?;
                 let files = checkout::to_discard(&runner, repository, &planned.revision, files)?;
                 self.discard_local_changes(&runner, repository, &files)?;
                 self.run_checkout(&runner, repository, planned)
             }
             OverLocalChanges::SaveAndRestore => {
-                let planned = checkout::plan(&runner, repository, target)?;
                 let saved = self.save_local_changes(repository)?;
                 let checked_out = self.run_checkout(&runner, repository, planned);
                 // The changes come back whether the checkout went or not, onto whatever HEAD is
@@ -3007,8 +3006,9 @@ impl Gikli {
         }
     }
 
-    /// Discards the uncommitted changes to `files` of `repository`, staged or not, as a
-    /// [`LongOperation`], bringing them back to HEAD. A file HEAD does not hold goes.
+    /// Discards the uncommitted changes to `files` of `repository`, staged or not, the Rollback
+    /// of files the user confirmed, as a [`LongOperation`], bringing them back to HEAD. A file HEAD
+    /// does not hold goes.
     fn discard_local_changes(
         &self,
         runner: &GitRunner,
