@@ -518,8 +518,8 @@ describe("gikli", () => {
      * Opens the context menu of what `selector` finds with a right-click. On Linux it fires the event
      * the click would: after a right-click from WebKitWebDriver, whatever the element, every key it
      * types for the rest of the session loses Shift, so "Moved" reaches the field as "moved" and a
-     * path to clone as "7tmp7...". Its right-click also clicks the element: on a branch in the branch
-     * selector it checked the branch out, and the selector closed with the menu in it.
+     * path to clone as "7tmp7...". WebKitWebDriver's right-click also clicks the element: on a branch
+     * in the branch selector it checks the branch out, and the selector closes with the menu in it.
      */
     async function openContextMenu(selector) {
       const target = await $(selector);
@@ -772,6 +772,21 @@ describe("gikli", () => {
     });
 
     /**
+     * Closes what a case about branches leaves open when it fails halfway, so the next cases find the
+     * window as they expect: the branch selector, with the menu of a branch in it, and the dialog of a
+     * blocked checkout or merge, which covers the bottom of the window. A click that fails does not
+     * stop the cleanup of git that follows it.
+     */
+    async function closeBranchSelectorAndBlockedDialogs() {
+      for (const testId of ["branch-selector-close", "blocked-checkout-cancel", "blocked-merge-cancel"]) {
+        const button = $(`[data-testid="${testId}"]`);
+        if (await button.isDisplayed()) {
+          await button.click().catch((error) => console.warn(`closing ${testId} failed: ${error.message}`));
+        }
+      }
+    }
+
+    /**
      * Skipped on Linux (issue #154). On WebKitGTK a click right after a checkout is lost now and
      * then: the branch selector does not open, or a button inside it does nothing. On `main` this
      * case failed in 3 of 20 runs on Linux (latest git) in one measurement, and in 0 of 60 on
@@ -782,20 +797,6 @@ describe("gikli", () => {
      * button), so the cause there is not yet known. Run them again on Linux once it is.
      */
     const itOffLinux = process.platform === "linux" ? it.skip : it;
-
-    /**
-     * Closes what a case about branches leaves open when it fails halfway, so the next cases find the
-     * window as they expect: the branch selector, with the menu of a branch in it, and the dialog of a
-     * blocked checkout or merge, which covers the bottom of the window.
-     */
-    async function closeBranchViews() {
-      for (const testId of ["branch-selector-close", "blocked-checkout-cancel", "blocked-merge-cancel"]) {
-        const button = $(`[data-testid="${testId}"]`);
-        if (await button.isDisplayed()) {
-          await button.click();
-        }
-      }
-    }
 
     itOffLinux("finds a branch in the selector and checks it out, creates a branch, and filters the log by a branch in the branches pane", async () => {
       const repository = process.env.GIKLI_E2E_REPOSITORY;
@@ -931,7 +932,7 @@ describe("gikli", () => {
         assert.equal(restored, "ONE\ntwo\nthree\nfour\n");
       } finally {
         // The next cases start from main, whatever this one left.
-        await closeBranchViews();
+        await closeBranchSelectorAndBlockedDialogs();
         runGit(repository, gitconfig, "restore", "--", file);
         runGit(repository, gitconfig, "switch", "--quiet", "main");
         runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/blocked", "smoke/blocked-base");
@@ -985,7 +986,7 @@ describe("gikli", () => {
         assert.equal(restored, "ONE\ntwo\nthree\nfour\n");
       } finally {
         // The next cases start from main, whatever this one left.
-        await closeBranchViews();
+        await closeBranchSelectorAndBlockedDialogs();
         runGit(repository, gitconfig, "restore", "--", file);
         runGit(repository, gitconfig, "switch", "--quiet", "main");
         runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/merge", "smoke/merge-base");
