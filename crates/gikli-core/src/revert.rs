@@ -17,8 +17,9 @@ use crate::{Failure, Repository, cherry_pick, details, git_failed_to_start};
 pub struct PreparedRevert {
     /// The commit it undoes, by its full hash.
     pub commit: String,
-    /// The automatic message of the inverse commit, as git words it:
-    /// `Revert "<subject>"`, a blank line and `This reverts commit <hash>.`
+    /// The automatic message of the inverse commit, as git words it: `Revert "<subject>"`, or
+    /// `Reapply "<subject it reverted>"` for a revert, a blank line and
+    /// `This reverts commit <hash>.`
     pub message: String,
     /// The files the commit changed, ordered by path, which the commit panel ticks to begin with.
     /// A file it renamed is there at both paths.
@@ -68,10 +69,21 @@ fn message(runner: &GitRunner, repository: &Repository, commit: &str) -> Result<
         });
     }
     let subject = subject.stdout_text();
-    let subject = subject.trim_end();
     Ok(format!(
-        "Revert \"{subject}\"\n\nThis reverts commit {commit}."
+        "{}\n\nThis reverts commit {commit}.",
+        inverse_subject(subject.trim_end())
     ))
+}
+
+/// The subject of the inverse commit of one whose subject is `subject`, as git 2.43 and newer
+/// word it: `Revert "<subject>"`, or `Reapply "<subject it reverted>"` for a revert, though not
+/// for a revert of a revert.
+fn inverse_subject(subject: &str) -> String {
+    const REVERT: &str = "Revert \"";
+    match subject.strip_prefix(REVERT) {
+        Some(reverted) if !reverted.starts_with(REVERT) => format!("Reapply \"{reverted}"),
+        _ => format!("{REVERT}{subject}\""),
+    }
 }
 
 /// The files `commit` changed against its first parent, or against nothing for a root commit,
@@ -102,12 +114,56 @@ fn changed_paths(
             revision: commit.to_owned(),
         });
     }
-    Ok(changed
-        .stdout
+    Ok(nul_separated(&changed.stdout))
+}
+
+/// The files of `repository` whose changes are staged, ordered by path.
+pub(crate) fn staged_paths(
+    runner: &GitRunner,
+    repository: &Repository,
+) -> Result<Vec<String>, Failure> {
+    let staged = runner
+        .run(
+            &repository.root,
+            &[
+                "diff",
+                "--cached",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                "HEAD",
+            ],
+        )
+        .map_err(git_failed_to_start)?;
+    if !staged.success {
+        return Err(Failure::ChangesUnreadable {
+            folder: repository.root.clone(),
+        });
+    }
+    Ok(nul_separated(&staged.stdout))
+}
+
+/// Takes the index of `repository` back to HEAD, keeping every file on disk as it is.
+pub(crate) fn unstage_all(runner: &GitRunner, repository: &Repository) -> Result<(), Failure> {
+    let unstaged = runner
+        .run(&repository.root, &["reset", "--quiet", "--mixed"])
+        .map_err(git_failed_to_start)?;
+    if unstaged.success {
+        Ok(())
+    } else {
+        Err(Failure::RevertFailed {
+            folder: repository.root.clone(),
+        })
+    }
+}
+
+/// The paths in `output`, each ended by a NUL, as git lists them with `-z`.
+fn nul_separated(output: &[u8]) -> Vec<String> {
+    output
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .map(|path| String::from_utf8_lossy(path).into_owned())
-        .collect())
+        .collect()
 }
 
 /// The commits `revisions` of `repository` name, by their full hashes, in the same order, once

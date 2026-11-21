@@ -184,8 +184,7 @@ export function createLogView(host: LogViewHost): LogView {
       run: async (hashes) => {
         if (repository !== null) {
           // Oldest first: the log lists the newest first.
-          const order = (hash: string): number => rows.findIndex((row) => row.hash === hash);
-          await host.cherryPick(repository, [...hashes].sort((a, b) => order(b) - order(a)));
+          await host.cherryPick(repository, newestFirst(hashes).reverse());
         }
       },
     },
@@ -198,9 +197,8 @@ export function createLogView(host: LogViewHost): LogView {
         hashes.every((hash) => rows.some((row) => row.hash === hash && row.onCurrentBranch && row.parents.length <= 1)),
       run: async (hashes) => {
         if (repository !== null) {
-          // Newest first, as the log lists them, so each inverse commit undoes changes nothing after it touched.
-          const order = (hash: string): number => rows.findIndex((row) => row.hash === hash);
-          await host.revertCommits(repository, [...hashes].sort((a, b) => order(a) - order(b)));
+          // Newest first, so each inverse commit undoes changes nothing after it touched.
+          await host.revertCommits(repository, newestFirst(hashes));
         }
       },
     },
@@ -803,6 +801,12 @@ export function createLogView(host: LogViewHost): LogView {
     }
     void select(hash);
     menu.open([hash], event.clientX, event.clientY, list);
+  }
+
+  /** The commits `hashes`, newest first, as the log lists them. */
+  function newestFirst(hashes: string[]): string[] {
+    const order = (hash: string): number => rows.findIndex((row) => row.hash === hash);
+    return [...hashes].sort((a, b) => order(a) - order(b));
   }
 
   /** The hashes of the selected commits, as the log lists them. */

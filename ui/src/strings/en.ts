@@ -357,7 +357,12 @@ export const en = {
   failureCommitsToPickNotKept:
     "gikli could not write {file}, where it keeps the commits left to cherry-pick: {message}. Continuing the cherry-pick does not pick them: pick them again once it is over.",
   failureCherryPickFailed: "git could not cherry-pick onto the current branch of {folder}. The operation log shows git's output.",
-  failureCommitNotOnCurrentBranch: "The current branch does not hold {hash}, so it is not reverted. Nothing was reverted.",
+  failureCommitNotOnCurrentBranch: "The current branch does not hold {hash}, so nothing was reverted.",
+  failureStagedChangesBlockRevert:
+    "Changes are staged in {folder}: {files}. Aborting a revert would lose them, so nothing was reverted. Commit or unstage them first.",
+  failureNextRevertFailed: "The commit went through, but {hash} could not be reverted after it: {reason}",
+  failureNextRevertFailedWithLeft:
+    "The commit went through, but {hash} could not be reverted after it, nor the commits left after it ({left}): {reason}",
   failureCommitsToRevertNotKept:
     "gikli could not write {file}, where it keeps the commits left to revert: {message}. Committing this revert does not revert them: revert them again once it is over.",
   failureRevertFailed: "git could not revert a commit of the current branch of {folder}. The operation log shows git's output.",

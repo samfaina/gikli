@@ -428,6 +428,10 @@ export type Failure =
   | { kind: "commitNotOnCurrentBranch"; commit: string }
   /** The commits left to revert once the revert in progress is over could not be kept in `file`, as `message` says. */
   | { kind: "commitsToRevertNotKept"; file: string; message: string }
+  /** Files at `paths` have changes staged, which aborting a revert would lose, so it does not start. Nothing changed. */
+  | { kind: "stagedChangesBlockRevert"; folder: string; paths: string[] }
+  /** The commit went through, and the revert of `commit`, the next one waiting, could not start after it, as `failure` says; nor did those `left` after it. */
+  | { kind: "nextRevertFailed"; commit: string; left: string[]; failure: Failure }
   /** git could not revert a commit of the current branch: the operation log shows why. */
   | { kind: "revertFailed"; folder: string }
   /** The pull options `first` and `second`, as git names them, contradict each other, so the pull did not start. */
@@ -1709,8 +1713,9 @@ export interface PreparedRevert {
 /**
  * Reverts `commits` of `repository`, each with an inverse commit of its own, in the order given, newest first as the log lists
  * them, and resolves to the first one, brought into the working tree for the commit panel. Each one the user commits or skips
- * brings the next. One that stops on a conflict raises `conflictsLeft`. Rejects with a {@link Failure}:
- * `commitNotOnCurrentBranch` for a commit the current branch does not hold, with nothing reverted.
+ * brings the next, and a commit after which the next cannot start rejects with `nextRevertFailed`, with the commit made. One that
+ * stops on a conflict raises `conflictsLeft`. Rejects with a {@link Failure}: `commitNotOnCurrentBranch` for a commit the current
+ * branch does not hold, and `stagedChangesBlockRevert` over staged changes, with nothing reverted.
  */
 export function revertCommits(repository: Repository, commits: string[]): Promise<PreparedRevert> {
   return invoke("revert_commits", { repository, commits });

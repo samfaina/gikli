@@ -11,7 +11,6 @@ import {
   checkGit,
   cherryPick,
   clearOperationLog,
-  revertCommits,
   cloneRepository,
   cloneUrlForms,
   createChangelist,
@@ -31,6 +30,7 @@ import {
   readChanges,
   removeRepository,
   renameChangelist,
+  revertCommits,
   runningOperations as runningOperationsOfCore,
   setActiveChangelist,
   setChangelistComment,
@@ -2344,6 +2344,15 @@ function describeFailure(failure: Failure): string {
       return t("failureCommitNotOnCurrentBranch", { hash: failure.commit.slice(0, SHORT_HASH_LENGTH) });
     case "commitsToRevertNotKept":
       return t("failureCommitsToRevertNotKept", { file: failure.file, message: failure.message });
+    case "stagedChangesBlockRevert":
+      return t("failureStagedChangesBlockRevert", { folder: failure.folder, files: failure.paths.join(", ") });
+    case "nextRevertFailed": {
+      const hash = failure.commit.slice(0, SHORT_HASH_LENGTH);
+      const reason = describeFailure(failure.failure);
+      return failure.left.length === 0
+        ? t("failureNextRevertFailed", { hash, reason })
+        : t("failureNextRevertFailedWithLeft", { hash, reason, left: failure.left.map((left) => left.slice(0, SHORT_HASH_LENGTH)).join(", ") });
+    }
     case "revertFailed":
       return t("failureRevertFailed", { folder: failure.folder });
     case "localChangesNotKeptForMerge":

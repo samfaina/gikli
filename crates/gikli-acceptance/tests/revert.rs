@@ -193,11 +193,7 @@ fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
 /// conflict with it.
 fn with_one_in_conflict(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repository) {
     let (work, root) = with_two_commits(sandbox, gikli);
-    work.write(
-        "notes.txt",
-        "notes of three
-",
-    );
+    work.write("notes.txt", "notes of three\n");
     work.commit_all("Three");
     (work, root)
 }
@@ -266,11 +262,7 @@ fn aborting_a_stopped_revert_brings_back_what_was_there_and_gives_up_the_rest() 
         work.status_by_git().is_empty(),
         "the files are as they were"
     );
-    assert_eq!(
-        read(&work, "notes.txt"),
-        "notes of three
-"
-    );
+    assert_eq!(read(&work, "notes.txt"), "notes of three\n");
     assert_eq!(
         gikli.prepared_revert(&root).expect("read the revert"),
         None,
@@ -303,11 +295,7 @@ fn a_revert_stopped_on_a_conflict_is_committed_once_resolved_and_the_next_one_fo
 
     assert_eq!(subjects(&work)[0], "Revert \"One\"");
     assert!(!work.root().join("one.txt").exists());
-    assert_eq!(
-        read(&work, "notes.txt"),
-        "notes of three
-"
-    );
+    assert_eq!(read(&work, "notes.txt"), "notes of three\n");
     let next = gikli
         .prepared_revert(&root)
         .expect("read the revert")
@@ -423,5 +411,213 @@ fn a_revert_committed_outside_gikli_gives_up_the_commits_after_it() {
         gikli.prepared_revert(&root).expect("read the revert"),
         None,
         "One is not reverted after it"
+    );
+}
+
+/// A repository on `main` with Base, which holds `notes.txt`, then One, which adds `one.txt`,
+/// then Two, which adds `two-a.txt` and `two-b.txt`, opened as a Project.
+fn with_two_files_in_two(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repository) {
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "notes\n");
+    work.commit_all("Base");
+    work.write("one.txt", "one\n");
+    work.commit_all("One");
+    work.write("two-a.txt", "two a\n");
+    work.write("two-b.txt", "two b\n");
+    work.commit_all("Two");
+    let root = opened(gikli, &work);
+    (work, root)
+}
+
+#[test]
+fn a_file_left_out_of_an_inverse_commit_survives_aborting_the_next_revert() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_files_in_two(&sandbox, &gikli);
+    let two = commit_of(&work, "HEAD");
+    let one = commit_of(&work, "HEAD~1");
+    let first = gikli
+        .revert_commits(&root, &[two, one])
+        .expect("revert Two and One");
+    gikli
+        .commit_files(&root, &["two-a.txt".to_owned()], &first.message)
+        .expect("commit the revert of Two without two-b.txt");
+
+    gikli
+        .take_operation_action(work.root(), &root, OperationAction::Abort)
+        .expect("abort the revert of One");
+
+    assert!(work.root().join("one.txt").exists(), "One is not reverted");
+    assert!(
+        !work.root().join("two-b.txt").exists(),
+        "two-b.txt keeps the change the user left out of the inverse commit"
+    );
+}
+
+#[test]
+fn a_revert_does_not_start_over_staged_changes_that_aborting_it_would_lose() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_commits(&sandbox, &gikli);
+    let one = commit_of(&work, "HEAD~1");
+    let two = commit_of(&work, "HEAD");
+    work.write("two.txt", "two, staged\n");
+    work.git(&["add", "two.txt"]);
+
+    let failure = gikli
+        .revert_commits(&root, std::slice::from_ref(&one))
+        .expect_err("two.txt is staged");
+
+    assert_eq!(
+        failure,
+        Failure::StagedChangesBlockRevert {
+            folder: root.root.clone(),
+            paths: vec!["two.txt".to_owned()],
+        }
+    );
+    assert_eq!(commit_of(&work, "HEAD"), two, "nothing is reverted");
+    assert_eq!(gikli.prepared_revert(&root).expect("read the revert"), None);
+    assert_eq!(read(&work, "two.txt"), "two, staged\n");
+}
+
+#[test]
+fn a_commit_that_goes_through_says_when_the_next_revert_could_not_follow() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_commits(&sandbox, &gikli);
+    let two = commit_of(&work, "HEAD");
+    let one = commit_of(&work, "HEAD~1");
+    // git reverts nothing over a change on disk to a file the revert changes.
+    work.write("one.txt", "one, edited\n");
+    let first = gikli
+        .revert_commits(&root, &[two, one.clone()])
+        .expect("revert Two and One");
+
+    let failure = gikli
+        .commit_files(&root, &first.paths, &first.message)
+        .expect_err("One cannot be reverted over one.txt");
+
+    let Failure::NextRevertFailed { commit, left, .. } = failure else {
+        panic!("not the failure of the next revert: {failure:?}");
+    };
+    assert_eq!(commit, one);
+    assert!(left.is_empty());
+    assert_eq!(
+        subjects(&work)[0],
+        "Revert \"Two\"",
+        "the commit went through"
+    );
+    assert_eq!(read(&work, "one.txt"), "one, edited\n");
+    assert_eq!(gikli.prepared_revert(&root).expect("read the revert"), None);
+}
+
+#[test]
+fn reverting_a_revert_reapplies_the_commit_it_reverted() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_commits(&sandbox, &gikli);
+    let one = commit_of(&work, "HEAD~1");
+    let prepared = gikli
+        .revert_commits(&root, std::slice::from_ref(&one))
+        .expect("revert One");
+    gikli
+        .commit_files(&root, &prepared.paths, &prepared.message)
+        .expect("commit the revert of One");
+    let reverted = commit_of(&work, "HEAD");
+
+    let again = gikli
+        .revert_commits(&root, std::slice::from_ref(&reverted))
+        .expect("revert the revert of One");
+
+    assert_eq!(
+        again.message,
+        format!("Reapply \"One\"\n\nThis reverts commit {reverted}.")
+    );
+}
+
+#[test]
+fn the_files_of_a_reverted_rename_are_ticked_at_both_paths() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_commits(&sandbox, &gikli);
+    work.git(&["mv", "notes.txt", "renamed.txt"]);
+    work.git(&["commit", "--quiet", "--message", "Rename"]);
+    let rename = commit_of(&work, "HEAD");
+
+    let prepared = gikli
+        .revert_commits(&root, std::slice::from_ref(&rename))
+        .expect("revert Rename");
+
+    assert_eq!(
+        prepared.paths,
+        vec!["notes.txt".to_owned(), "renamed.txt".to_owned()]
+    );
+    gikli
+        .commit_files(&root, &prepared.paths, &prepared.message)
+        .expect("commit the revert of Rename");
+    assert!(work.root().join("notes.txt").exists());
+    assert!(!work.root().join("renamed.txt").exists());
+    assert!(work.status_by_git().is_empty());
+}
+
+#[test]
+fn continuing_a_revert_commits_it_with_the_automatic_message_and_the_next_one_follows() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_commits(&sandbox, &gikli);
+    let two = commit_of(&work, "HEAD");
+    let one = commit_of(&work, "HEAD~1");
+    gikli
+        .revert_commits(&root, &[two.clone(), one.clone()])
+        .expect("revert Two and One");
+
+    gikli
+        .take_operation_action(work.root(), &root, OperationAction::Continue)
+        .expect("continue the revert of Two");
+
+    assert_eq!(
+        work.git(&["log", "-1", "--format=%B"]).trim_end(),
+        revert_message("Two", &two)
+    );
+    assert_eq!(
+        gikli
+            .prepared_revert(&root)
+            .expect("read the revert")
+            .map(|prepared| prepared.commit),
+        Some(one)
+    );
+}
+
+#[test]
+fn in_staging_mode_a_revert_commits_what_is_staged_and_the_next_one_follows() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_files_in_two(&sandbox, &gikli);
+    gikli.set_staging_mode(true).expect("turn Staging mode on");
+    let two = commit_of(&work, "HEAD");
+    let one = commit_of(&work, "HEAD~1");
+    let first = gikli
+        .revert_commits(&root, &[two, one.clone()])
+        .expect("revert Two and One");
+    gikli
+        .unstage_files(&root, &["two-b.txt".to_owned()])
+        .expect("leave two-b.txt out");
+
+    gikli
+        .commit_staged(&root, &first.message)
+        .expect("commit the revert of Two");
+
+    assert_eq!(
+        work.git(&["show", "--format=", "--name-only", "HEAD"])
+            .trim_end(),
+        "two-a.txt"
+    );
+    assert!(!work.root().join("two-b.txt").exists());
+    assert_eq!(
+        gikli
+            .prepared_revert(&root)
+            .expect("read the revert")
+            .map(|prepared| prepared.commit),
+        Some(one)
     );
 }

@@ -341,14 +341,23 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       if (project === null) {
         return;
       }
-      if (shownChanges?.staging != null) {
-        await (amend.checked
-          ? amendWithStaged(project, host.repository, message.value)
-          : commitStaged(host.repository, message.value));
-      } else {
-        await (amend.checked
-          ? amendLastCommit(project, host.repository, [...ticked], message.value)
-          : commitFiles(host.repository, [...ticked], message.value));
+      /** What kept the next revert from following a commit that went through, if anything did. */
+      let nextRevertFailed: unknown = null;
+      try {
+        if (shownChanges?.staging != null) {
+          await (amend.checked
+            ? amendWithStaged(project, host.repository, message.value)
+            : commitStaged(host.repository, message.value));
+        } else {
+          await (amend.checked
+            ? amendLastCommit(project, host.repository, [...ticked], message.value)
+            : commitFiles(host.repository, [...ticked], message.value));
+        }
+      } catch (error) {
+        if (!isFailure(error) || error.kind !== "nextRevertFailed") {
+          throw error;
+        }
+        nextRevertFailed = error;
       }
       // The next commit is a new one unless the user says otherwise.
       amend.checked = false;
@@ -366,6 +375,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       host.committed();
       if (pushAfter) {
         await pushAfterCommitted();
+      }
+      if (nextRevertFailed !== null) {
+        result.prepend(host.errorView(nextRevertFailed));
       }
     } catch (error) {
       if (isFailure(error) && error.kind === "commitIdentityMissing") {
@@ -441,11 +453,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
         return;
       }
       revertShown = prepared.commit;
-      const listed = new Set(
-        [...shownChanges.changelists.flatMap((list) => list.group.changes), ...shownChanges.unversionedFiles.changes].map(
-          (change) => change.path,
-        ),
-      );
+      const listed = listedPaths(shownChanges);
       ticked = new Set(prepared.paths.filter((path) => listed.has(path)));
       amend.checked = false;
       message.value = prepared.message;
@@ -467,9 +475,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     drawn: (changeSet) => {
       const active = changeSet.changelists.find((list) => list.active);
       const activePaths = new Set((active?.group.changes ?? []).map((change) => change.path));
-      const listed = new Set(
-        [...changeSet.changelists.flatMap((list) => list.group.changes), ...changeSet.unversionedFiles.changes].map((change) => change.path),
-      );
+      const listed = listedPaths(changeSet);
       if (active !== undefined && active.id !== activeId) {
         activeId = active.id;
         ticked = new Set(activePaths);
@@ -485,6 +491,13 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       void followRevert();
     },
   };
+}
+
+/** The paths of the files the panel can tick in `changeSet`: those of the Changelists and the Unversioned Files. */
+function listedPaths(changeSet: ChangeSet): Set<string> {
+  return new Set(
+    [...changeSet.changelists.flatMap((list) => list.group.changes), ...changeSet.unversionedFiles.changes].map((change) => change.path),
+  );
 }
 
 /** Says where a commit would go and lets the user go on with it or leave it. */
