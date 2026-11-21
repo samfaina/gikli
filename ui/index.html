@@ -267,6 +267,25 @@
         </div>
         <div id="pull-message" class="new-branch-message" data-testid="pull-message" role="status"></div>
       </section>
+      <section id="blocked-checkout-dialog" class="branch-selector new-branch" data-testid="blocked-checkout-dialog" role="dialog" aria-labelledby="blocked-checkout-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="blocked-checkout-title"></h2>
+          <button id="blocked-checkout-cancel" type="button" data-testid="blocked-checkout-cancel"></button>
+        </div>
+        <div id="blocked-checkout-local" class="blocked-checkout-group" data-testid="blocked-checkout-local">
+          <p id="blocked-checkout-local-explanation"></p>
+          <ul id="blocked-checkout-local-files" class="blocked-checkout-files" data-testid="blocked-checkout-local-files"></ul>
+        </div>
+        <div id="blocked-checkout-untracked" class="blocked-checkout-group" data-testid="blocked-checkout-untracked">
+          <p id="blocked-checkout-untracked-explanation"></p>
+          <ul id="blocked-checkout-untracked-files" class="blocked-checkout-files" data-testid="blocked-checkout-untracked-files"></ul>
+        </div>
+        <div id="blocked-checkout-actions" class="new-branch-actions">
+          <button id="blocked-checkout-save" type="button" data-testid="blocked-checkout-save"></button>
+          <button id="blocked-checkout-discard" type="button" data-testid="blocked-checkout-discard"></button>
+        </div>
+        <div id="blocked-checkout-message" class="new-branch-message" data-testid="blocked-checkout-message" role="status"></div>
+      </section>
       <section id="rejected-push-dialog" class="branch-selector new-branch" data-testid="rejected-push-dialog" role="dialog" aria-labelledby="rejected-push-title" hidden>
         <div class="branch-selector-header">
           <h2 id="rejected-push-title"></h2>

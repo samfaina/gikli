@@ -869,6 +869,51 @@ describe("gikli", () => {
       runGit(repository, gitconfig, "branch", "--delete", "--force", "feature/smoke", "smoke-new");
     });
 
+    it("lists the files that block a checkout, and checks out over them once they are saved", async () => {
+      const repository = process.env.GIKLI_E2E_REPOSITORY;
+      const gitconfig = sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX);
+      const file = "blocked checkout.txt";
+      const write = (text) => fs.writeFileSync(path.join(repository, file), text);
+      const onBranch = () => runGit(repository, gitconfig, "symbolic-ref", "--short", "HEAD").trim();
+      // On branches of their own, so main keeps its commits.
+      runGit(repository, gitconfig, "switch", "--quiet", "--create", "smoke/blocked-base");
+      write("one\ntwo\nthree\n");
+      runGit(repository, gitconfig, "add", "--", file);
+      commitStaged(repository, gitconfig, "Base of the blocked checkout");
+      runGit(repository, gitconfig, "switch", "--quiet", "--create", "smoke/blocked");
+      write("one\ntwo\nthree\nfour\n");
+      runGit(repository, gitconfig, "add", "--", file);
+      commitStaged(repository, gitconfig, "On the branch the checkout is blocked from");
+      runGit(repository, gitconfig, "switch", "--quiet", "smoke/blocked-base");
+      write("ONE\ntwo\nthree\n");
+
+      await $('[data-testid="status-branch"]').click();
+      const selector = $('[data-testid="branch-selector"]');
+      await selector.waitForDisplayed({ timeout: 30000 });
+      await $('[data-testid="branch-selector-search"]').setValue("smoke/blocked");
+      const found = $('[data-testid="branch-group-local"] [data-testid="branch"][data-name="smoke/blocked"]');
+      await found.waitForDisplayed({ timeout: 30000 });
+      await found.click();
+      const dialog = $('[data-testid="blocked-checkout-dialog"]');
+      await dialog.waitForDisplayed({ timeout: 30000 });
+      const listed = await $$('[data-testid="blocked-checkout-local-files"] [data-testid="blocked-checkout-file"]');
+      assert.deepEqual(await Promise.all(listed.map((item) => item.getProperty("textContent"))), [file]);
+      assert.equal(onBranch(), "smoke/blocked-base", "nothing changed yet");
+
+      await $('[data-testid="blocked-checkout-save"]').click();
+      await dialog.waitForDisplayed({ timeout: 30000, reverse: true });
+      await browser.waitUntil(async () => (await $('[data-testid="status-branch"]').getText()) === "smoke/blocked", {
+        timeout: 30000,
+        timeoutMsg: "the status area did not show smoke/blocked",
+      });
+      assert.equal(onBranch(), "smoke/blocked");
+      assert.equal(fs.readFileSync(path.join(repository, file), "utf8"), "ONE\ntwo\nthree\nfour\n");
+
+      runGit(repository, gitconfig, "restore", "--", file);
+      runGit(repository, gitconfig, "switch", "--quiet", "main");
+      runGit(repository, gitconfig, "branch", "--delete", "--force", "smoke/blocked", "smoke/blocked-base");
+    });
+
     // A browser drops a click whose button was taken out of the page between the press and the
     // release. The status area reads again whenever the changes watcher sees the Repository change, as just
     // after a checkout, so a click on the branch there could be lost on its way (issue #154).

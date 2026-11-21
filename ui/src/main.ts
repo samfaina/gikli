@@ -97,6 +97,7 @@ import { createPullDialog } from "./pull-dialog";
 import { createRejectedPushDialog } from "./rejected-push-dialog";
 import { createLogView } from "./log-view";
 import { SHORT_HASH_LENGTH } from "./log-details";
+import { createBlockedCheckoutDialog } from "./blocked-checkout-dialog";
 import { createBranchSelector } from "./branch-selector";
 import { createNewBranchDialog } from "./new-branch-dialog";
 import { createRenameBranchDialog } from "./rename-branch-dialog";
@@ -233,6 +234,7 @@ const logView = createLogView({
   showFileHistory: (repository, path) => fileHistoryView.open(repository, path),
   newBranch: (repository, base, baseName) => newBranchDialog.open(repository, base, baseName),
   headMoved: (repository) => headMoved(repository),
+  checkoutBlocked: (repository, target, blocked) => blockedCheckoutDialog.open(repository, target, blocked),
   renameBranch: (repository, name) => renameBranchDialog.open(repository, name),
   deleteBranches: (repository, ticked) => deleteBranchesDialog.open(repository, ticked),
   undoCommit: async (repository, commit) => {
@@ -254,12 +256,20 @@ const branchSelector = createBranchSelector({
   showBranch: (repository, branch) => logView.showBranch(repository, branch.label),
   newBranch: (repository) => newBranchDialog.open(repository, { kind: "head" }, "HEAD"),
   headMoved: (repository) => headMoved(repository),
+  checkoutBlocked: (repository, target, blocked) => blockedCheckoutDialog.open(repository, target, blocked),
   operations: operationsHost,
 });
 
 const newBranchDialog = createNewBranchDialog({
   errorView,
   branchesMoved: (repository) => headMoved(repository),
+  checkoutBlocked: (repository, target, blocked) => blockedCheckoutDialog.open(repository, target, blocked),
+});
+
+const blockedCheckoutDialog = createBlockedCheckoutDialog({
+  errorView,
+  project: () => shownFolder,
+  headMoved: (repository) => headMoved(repository),
 });
 
 const pullDialog = createPullDialog({
@@ -2230,6 +2240,8 @@ function describeFailure(failure: Failure): string {
       return t("failureBranchNotCreated", { folder: failure.folder, name: failure.name });
     case "checkoutFailed":
       return t("failureCheckoutFailed", { folder: failure.folder });
+    case "checkoutBlocked":
+      return t("failureCheckoutBlocked", { folder: failure.folder, files: [...failure.localChanges, ...failure.untrackedFiles].join(", ") });
     case "branchNotRenamed":
       return t("failureBranchNotRenamed", { folder: failure.folder, name: failure.name });
     case "upstreamNotUnset":

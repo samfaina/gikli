@@ -7,6 +7,7 @@ mod backups;
 mod branches;
 mod capability;
 mod changelists;
+mod checkout;
 mod clone_url;
 mod commit;
 mod conflicts;
@@ -59,6 +60,7 @@ pub use backups::{Backup, Rewrite};
 pub use branches::{Branch, BranchNode, Branches};
 pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
+pub use checkout::{CheckoutTarget, OverLocalChanges};
 pub use clone_url::CloneUrlForms;
 pub use commit::CommitWarning;
 pub use conflicts::{ConflictSide, ConflictedFile, SideChange};
@@ -563,6 +565,18 @@ pub enum Failure {
     #[serde(rename_all = "camelCase")]
     CheckoutFailed {
         folder: PathBuf,
+    },
+    /// Files of the Repository at `folder` keep git from checking out a branch, a tag or a commit,
+    /// and nothing changed. `local_changes` are files with uncommitted changes the checkout would
+    /// overwrite, which the user can discard or save and restore around the checkout with
+    /// [`Gikli::check_out_over_local_changes`]. `untracked_files` are files git does not track
+    /// that the checkout would overwrite or remove, which the user moves or commits. Both by path,
+    /// relative to the Repository root.
+    #[serde(rename_all = "camelCase")]
+    CheckoutBlocked {
+        folder: PathBuf,
+        local_changes: Vec<PathBuf>,
+        untracked_files: Vec<PathBuf>,
     },
     /// git could not read the branches of the Repository at `folder`, or how far they are from
     /// their upstreams. The operation log holds git's output.
@@ -2817,15 +2831,17 @@ impl Gikli {
         check_out: bool,
     ) -> Result<CurrentBranch, Failure> {
         let runner = self.runner(&repository.root)?;
+        if check_out {
+            let target = CheckoutTarget::NewBranch {
+                name: name.to_owned(),
+                base: base.clone(),
+            };
+            return self.check_out(&runner, repository, &target);
+        }
         new_branch::check_name(&runner, repository, name)?;
         let start = new_branch::start_point(&runner, repository, base)?;
-        if !check_out {
-            new_branch::create(&runner, repository, name, &start)?;
-            return sync::current_branch(&runner, repository);
-        }
-        let args = ["switch", "--create", name, &start];
-        let fallback = new_branch::not_created(repository, name);
-        self.check_out(&runner, repository, name, &args, fallback)
+        new_branch::create(&runner, repository, name, &start)?;
+        sync::current_branch(&runner, repository)
     }
 
     /// Renames the local branch `name` of `repository` to `new_name`, which takes it as a new
@@ -2907,26 +2923,17 @@ impl Gikli {
     /// Checks out the local branch `name` of `repository`, which HEAD then is on, and returns what
     /// HEAD is on after that. The checkout runs as a [`LongOperation`] that reports the hook it
     /// waits on and that the user can cancel. A branch that no longer exists returns
-    /// [`Failure::RevisionNotFound`] with its name.
+    /// [`Failure::RevisionNotFound`] with its name. Files that block it return
+    /// [`Failure::CheckoutBlocked`], with nothing changed.
     pub fn check_out_branch(
         &self,
         repository: &Repository,
         name: &str,
     ) -> Result<CurrentBranch, Failure> {
-        let runner = self.runner(&repository.root)?;
-        if !new_branch::has_local_branch(&runner, repository, name)? {
-            return Err(Failure::RevisionNotFound {
-                revision: name.to_owned(),
-            });
-        }
-        let args = ["switch", "--no-guess", name];
-        self.check_out(
-            &runner,
-            repository,
-            name,
-            &args,
-            checkout_failed(repository),
-        )
+        let target = CheckoutTarget::Branch {
+            name: name.to_owned(),
+        };
+        self.check_out(&self.runner(&repository.root)?, repository, &target)
     }
 
     /// Checks out the tag `name` of `repository`, which leaves a detached HEAD on the commit it
@@ -2939,11 +2946,10 @@ impl Gikli {
         repository: &Repository,
         name: &str,
     ) -> Result<CurrentBranch, Failure> {
-        let tag = RefLabel {
+        let target = CheckoutTarget::Tag {
             name: name.to_owned(),
-            kind: RefKind::Tag,
         };
-        self.check_out_detached(repository, name, &tag.full_name())
+        self.check_out(&self.runner(&repository.root)?, repository, &target)
     }
 
     /// Checks out the commit `revision` names in `repository`, as the commit menu of the log does,
@@ -2955,48 +2961,122 @@ impl Gikli {
         repository: &Repository,
         revision: &str,
     ) -> Result<CurrentBranch, Failure> {
-        self.check_out_detached(repository, revision, revision)
+        let target = CheckoutTarget::Revision {
+            revision: revision.to_owned(),
+        };
+        self.check_out(&self.runner(&repository.root)?, repository, &target)
     }
 
-    /// Checks out the commit `revision` names in `repository`, which the user knows as `target`,
-    /// on a detached HEAD.
-    fn check_out_detached(
+    /// Checks out `target` of `repository`, a Repository of the Project at `project`, once the
+    /// local changes that blocked it, as [`Failure::CheckoutBlocked`] told, have gone as `over`
+    /// says, and returns what HEAD is on after that.
+    ///
+    /// Discarding goes only when the files the user confirmed are still the ones whose local
+    /// changes block the checkout: otherwise nothing goes and this returns
+    /// [`Failure::CheckoutBlocked`] with the files that block it now.
+    ///
+    /// Saving puts the local changes aside as Saved local changes, checks out, and restores them in
+    /// their Changelists, as [`Self::save_local_changes`] and [`Self::restore_local_changes`] do,
+    /// also when the checkout fails. A restore that conflicts keeps the saved changes and says so
+    /// with [`Event::ConflictsLeft`], so conflict resolution opens. Files git does not track are
+    /// not saved, so those that block the checkout still do.
+    pub fn check_out_over_local_changes(
         &self,
+        project: &Path,
         repository: &Repository,
-        target: &str,
-        revision: &str,
+        target: &CheckoutTarget,
+        over: &OverLocalChanges,
     ) -> Result<CurrentBranch, Failure> {
         let runner = self.runner(&repository.root)?;
-        let hash = details::resolve_known_as(&runner, repository, revision, target)?;
-        let args = ["switch", "--detach", &hash];
-        self.check_out(
-            &runner,
-            repository,
-            target,
-            &args,
-            checkout_failed(repository),
-        )
+        match over {
+            OverLocalChanges::Discard { files } => {
+                let planned = checkout::plan(&runner, repository, target)?;
+                let files = checkout::to_discard(&runner, repository, &planned.revision, files)?;
+                self.discard_local_changes(&runner, repository, &files)?;
+                self.run_checkout(&runner, repository, planned)
+            }
+            OverLocalChanges::SaveAndRestore => {
+                let planned = checkout::plan(&runner, repository, target)?;
+                let saved = self.save_local_changes(repository)?;
+                let checked_out = self.run_checkout(&runner, repository, planned);
+                // The changes come back whether the checkout went or not, onto whatever HEAD is
+                // on by then. Changes that cannot come back are what the user needs to hear of.
+                self.restore_local_changes(project, &saved)?;
+                checked_out
+            }
+        }
     }
 
-    /// Runs git with `args`, a checkout of `target` in `repository`, as a [`LongOperation`], and
-    /// returns what HEAD is on after it. When it fails, this returns the failure that git's output
-    /// explains, or `fallback` when nothing does.
+    /// Discards the uncommitted changes to `files` of `repository`, staged or not, as a
+    /// [`LongOperation`], bringing them back to HEAD. A file HEAD does not hold goes.
+    fn discard_local_changes(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        files: &[PathBuf],
+    ) -> Result<(), Failure> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut args: Vec<String> = [
+            "--literal-pathspecs",
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+        ]
+        .map(str::to_owned)
+        .into();
+        args.extend(files.iter().map(|file| file.to_string_lossy().into_owned()));
+        let operation = LongOperation::RollbackFiles {
+            repository: repository.clone(),
+        };
+        let root = &repository.root;
+        let invocation = self.run_operation(runner, operation, root, &as_args(&args))?;
+        if !invocation.success {
+            let failed = Failure::FilesNotRolledBack {
+                folder: root.clone(),
+            };
+            return Err(failure_of(runner, root, &invocation, failed));
+        }
+        Ok(())
+    }
+
+    /// Checks out `target` of `repository`, as [`checkout::plan`] plans it.
     fn check_out(
         &self,
         runner: &GitRunner,
         repository: &Repository,
-        target: &str,
-        args: &[&str],
-        fallback: Failure,
+        target: &CheckoutTarget,
+    ) -> Result<CurrentBranch, Failure> {
+        let planned = checkout::plan(runner, repository, target)?;
+        self.run_checkout(runner, repository, planned)
+    }
+
+    /// Runs `planned`, a checkout in `repository`, as a [`LongOperation`], and returns what HEAD
+    /// is on after it. When it fails, this returns the failure that git's output explains, then
+    /// [`Failure::CheckoutBlocked`] when files block it, or the planned fallback when nothing does.
+    fn run_checkout(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        planned: checkout::Planned,
     ) -> Result<CurrentBranch, Failure> {
         let operation = LongOperation::CheckOut {
             repository: repository.clone(),
-            target: target.to_owned(),
+            target: planned.label,
         };
         let root = &repository.root;
-        let invocation = self.run_operation(runner, operation, root, args)?;
+        let invocation = self.run_operation(runner, operation, root, &as_args(&planned.args))?;
         if !invocation.success {
-            return Err(failure_of(runner, root, &invocation, fallback));
+            // What blocks it cannot be told when the Repository cannot be read, which says why
+            // in the operation log: the checkout failure stays the one to tell.
+            let otherwise = checkout::blocked(runner, repository, &planned.revision)
+                .ok()
+                .flatten()
+                .unwrap_or(planned.fallback);
+            return Err(failure_of(runner, root, &invocation, otherwise));
         }
         sync::current_branch(runner, repository)
     }
@@ -4056,13 +4136,6 @@ fn failure_of_contacting_remotes(
 ) -> Failure {
     let contacted = explainer::Contacted::Remotes(remotes);
     failure_of_contacting(runner, folder, invocation, &contacted, otherwise)
-}
-
-/// The failure of git that could not check out a branch, a tag or a commit in `repository`.
-fn checkout_failed(repository: &Repository) -> Failure {
-    Failure::CheckoutFailed {
-        folder: repository.root.clone(),
-    }
 }
 
 /// What the notification about the files of `repository` left in conflict says.

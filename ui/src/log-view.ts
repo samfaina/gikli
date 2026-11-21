@@ -3,11 +3,14 @@
 // the commits and lays out the graph a page at a time; this draws only the rows in view, and asks
 // for the next page as the user nears the end.
 
+import type { BlockedCheckout } from "./blocked-checkout-dialog";
 import { branchGroup, branchList, sameLabel, type BranchActions, type BranchGroups } from "./branch-tree";
 import { createCommitMenu } from "./commit-menu";
 import {
   branches as readBranches,
   checkOutRevision,
+  checkoutBlocked,
+  type CheckoutTarget,
   endLogRead,
   fetchAll,
   fetchBranch,
@@ -50,6 +53,8 @@ export interface LogViewHost {
   newBranch(repository: Repository, base: NewBranchBase, baseName: string): void;
   /** HEAD of `repository` moved to another branch or commit. */
   headMoved(repository: Repository): void;
+  /** Files block the checkout of `target` in `repository`, as `blocked` lists them, for the user to choose how to go on. */
+  checkoutBlocked(repository: Repository, target: CheckoutTarget, blocked: BlockedCheckout): void;
   /** Opens the rename dialog on the local branch `name` of `repository`. */
   renameBranch(repository: Repository, name: string): void;
   /** Opens the delete dialog on the local branches of `repository`, with `ticked` ticked if it is one. */
@@ -284,6 +289,12 @@ export function createLogView(host: LogViewHost): LogView {
     }
     try {
       await checkOutRevision(shown, hash);
+    } catch (error) {
+      const blocked = checkoutBlocked(error);
+      if (blocked === null) {
+        throw error;
+      }
+      host.checkoutBlocked(shown, { kind: "revision", revision: hash }, blocked);
     } finally {
       // A checkout that failed may still have moved HEAD, as when a hook after it fails.
       host.headMoved(shown);

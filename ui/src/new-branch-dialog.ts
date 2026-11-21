@@ -2,7 +2,8 @@
 // whether to check it out. The core cleans the name as it is typed, suggests the prefixes of
 // existing branches, and checks and creates the branch; this only draws the dialog.
 
-import { cleanBranchName, createBranch, newBranchPrefixes, type NewBranchBase, type Repository } from "./core";
+import type { BlockedCheckout } from "./blocked-checkout-dialog";
+import { checkoutBlocked, cleanBranchName, createBranch, newBranchPrefixes, type CheckoutTarget, type NewBranchBase, type Repository } from "./core";
 import { element, folderName } from "./dom";
 import { t } from "./strings";
 
@@ -12,6 +13,8 @@ export interface NewBranchDialogHost {
   errorView(error: unknown): HTMLElement;
   /** A branch was created in `repository`, and HEAD may have moved to it. */
   branchesMoved(repository: Repository): void;
+  /** Files block the checkout of `target` in `repository`, as `blocked` lists them, for the user to choose how to go on. */
+  checkoutBlocked(repository: Repository, target: CheckoutTarget, blocked: BlockedCheckout): void;
 }
 
 export interface NewBranchDialog {
@@ -138,9 +141,10 @@ export function createNewBranchDialog(host: NewBranchDialogHost): NewBranchDialo
     }
     createButton.disabled = true;
     message.textContent = t("newBranchCreating");
+    let name = nameInput.value;
     try {
       // Cleaned here too, as a name pasted and created at once may not have been yet.
-      const name = await cleanBranchName(nameInput.value);
+      name = await cleanBranchName(name);
       if (shown === current) {
         nameInput.value = name;
       }
@@ -150,7 +154,12 @@ export function createNewBranchDialog(host: NewBranchDialogHost): NewBranchDialo
         close();
       }
     } catch (error) {
-      if (shown === current) {
+      const blocked = checkoutBlocked(error);
+      if (blocked !== null && shown === current) {
+        // Not created: the branch is created once the files no longer block checking it out.
+        close();
+        host.checkoutBlocked(current.repository, { kind: "newBranch", name, base: current.base }, blocked);
+      } else if (shown === current) {
         message.replaceChildren(host.errorView(error));
         createButton.disabled = false;
         nameInput.focus();
