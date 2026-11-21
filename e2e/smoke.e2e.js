@@ -668,7 +668,11 @@ describe("gikli", () => {
 
       await $(`[data-testid="change"][data-path="${file}"]`).waitForDisplayed({ timeout: 30000, reverse: true });
       assert.equal(runGit(repository, gitconfig, "log", "-1", "--format=%s|%an"), "Commit from the panel|Smoke\n");
-      assert.equal(await $('[data-testid="commit-message"]').getValue(), "");
+      // The watcher can show the changes after the commit before the panel reads the setting that clears the message.
+      await browser.waitUntil(async () => (await $('[data-testid="commit-message"]').getValue()) === "", {
+        timeout: 30000,
+        timeoutMsg: "the message was not cleared after the commit",
+      });
     });
 
     it("keeps the message after a commit when the option to clear it is off", async () => {
