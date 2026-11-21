@@ -406,6 +406,14 @@ export type Failure =
   | { kind: "detachedHeadNotPulled" }
   /** git could not pull: the operation log shows why. */
   | { kind: "pullFailed"; folder: string }
+  /**
+   * Files block the merge into the current branch, and nothing changed. `localChanges` are files with uncommitted changes it would
+   * overwrite, which the user can save and restore around the merge with {@link mergeOverLocalChanges}; `untrackedFiles` are files git
+   * does not track that it would overwrite, which the user moves or commits. Both by path, relative to the Repository root.
+   */
+  | { kind: "mergeBlocked"; folder: string; localChanges: string[]; untrackedFiles: string[] }
+  /** git could not merge a branch into the current branch: the operation log shows why. */
+  | { kind: "mergeFailed"; folder: string }
   /** The pull options `first` and `second`, as git names them, contradict each other, so the pull did not start. */
   | { kind: "pullOptionsIncompatible"; first: string; second: string }
   /** Another remote is already called `name`. */
@@ -436,6 +444,8 @@ export type Failure =
   | { kind: "stashesUnreadable"; folder: string }
   /** No stash has the commit `hash`: it was dropped. */
   | { kind: "stashNotFound"; hash: string }
+  /** gikli could not write `file`, where it keeps the local changes saved around a merge, for `message`; they are back, and nothing merged. */
+  | { kind: "localChangesNotKept"; file: string; message: string }
   /** git could not drop the stash: the operation log shows why. */
   | { kind: "stashNotDropped"; folder: string }
   /** The stashes are no longer the ones the user saw, so none was cleared. */
@@ -622,6 +632,7 @@ export type LongOperation =
   | { kind: "push"; repository: Repository; remote: string; branch: string }
   /** Pulling the branch `branch` of `remote` into the current branch. */
   | { kind: "pull"; repository: Repository; remote: string; branch: string }
+  | { kind: "merge"; repository: Repository; branch: string }
   /** Checking out `target`: a branch, a tag or a commit. */
   | { kind: "checkOut"; repository: Repository; target: string }
   /** Deleting the branch `branch` of `remote`, which a deleted branch followed. */
@@ -1625,6 +1636,29 @@ export interface PullOptions {
  */
 export function pullPlan(repository: Repository): Promise<PullPlan> {
   return invoke("pull_plan", { repository });
+}
+
+/**
+ * Merges `branch` into the current branch of `repository`, a Repository of the Project at `project`, as a long operation, and returns
+ * the operation in progress after that: a merge that stopped on a conflict, which raises `conflictsLeft`. Rejects with a
+ * {@link Failure}: `mergeBlocked` when files block it, with nothing changed.
+ */
+export function mergeIntoCurrent(project: string, repository: Repository, branch: RefLabel): Promise<OperationInProgress | null> {
+  return invoke("merge_into_current", { project, repository, branch });
+}
+
+/**
+ * Merges `branch` as {@link mergeIntoCurrent} does once the local changes that blocked it are saved, and restores them in their
+ * Changelists once the merge is over. A merge that stops on a conflict keeps them saved until the user aborts it or commits it.
+ * Rejects with a {@link Failure}: `mergeBlocked` again when files git does not track still block it, with the changes back.
+ */
+export function mergeOverLocalChanges(project: string, repository: Repository, branch: RefLabel): Promise<OperationInProgress | null> {
+  return invoke("merge_over_local_changes", { project, repository, branch });
+}
+
+/** The blocked merge `error` tells of, or null when it tells of another failure. */
+export function mergeBlocked(error: unknown): Extract<Failure, { kind: "mergeBlocked" }> | null {
+  return isFailure(error) && error.kind === "mergeBlocked" ? error : null;
 }
 
 /**

@@ -322,7 +322,7 @@ impl Blocking {
 /// The files that differ between HEAD of `repository` and `revision`, and those staged, by path.
 /// With no commit yet, HEAD holds nothing: every file of `revision` is new, and every file in the
 /// index is staged.
-fn moved_and_staged(
+pub(crate) fn moved_and_staged(
     runner: &GitRunner,
     repository: &Repository,
     revision: &str,
@@ -376,7 +376,7 @@ pub(crate) fn follow(
 /// along when the commit checked out has it as HEAD has it, or holds what the index holds; any
 /// other changed file it refuses to touch. A file deleted on disk only does not count, as nothing
 /// on disk would be lost.
-fn local_changes_in_the_way(
+pub(crate) fn local_changes_in_the_way(
     runner: &GitRunner,
     repository: &Repository,
     revision: &str,
@@ -400,7 +400,7 @@ fn local_changes_in_the_way(
 /// and the commit does not have. Where git ignores case, so does the comparison, as a file that
 /// differs only in case is the same file there. Ignored files do not count, as git writes over
 /// them, and neither do the `local_changes` that block it, as which they are.
-fn untracked_in_the_way(
+pub(crate) fn untracked_in_the_way(
     runner: &GitRunner,
     repository: &Repository,
     moved: &BTreeSet<PathBuf>,
@@ -441,7 +441,7 @@ fn ignores_case(runner: &GitRunner, repository: &Repository) -> Result<bool, Fai
 }
 
 /// The paths git names when it compares `revisions` as `command` says, ignoring renames, by path.
-fn changed_paths(
+pub(crate) fn changed_paths(
     runner: &GitRunner,
     repository: &Repository,
     command: &[&str],

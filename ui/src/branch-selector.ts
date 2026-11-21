@@ -1,10 +1,12 @@
 // The branch selector: opened from the current branch in the status area, it shows what HEAD is
 // on with the operation half done there, and every branch and tag in the groups Recent, Local,
 // Remote and Tags, with a search across them. Picking a local branch, a remote branch or a tag
-// checks it out, and a new branch starts from HEAD. The core lists, groups and searches them, and
-// checks them out; this draws them and keeps the options.
+// checks it out, and a new branch starts from HEAD. The menu of a branch checks it out too, or
+// merges it into the current branch. The core lists, groups and searches them, checks them out
+// and merges them; this draws them and keeps the options.
 
 import type { BlockedCheckout } from "./blocked-checkout-dialog";
+import type { BlockedMerge } from "./blocked-merge-dialog";
 import type { LostLocalCommits } from "./local-commits-dialog";
 import { branchGroup, branchList, flatBranchList, upstreamMark, type BranchActions } from "./branch-tree";
 import {
@@ -14,6 +16,8 @@ import {
   checkOutTag,
   checkoutBlocked,
   localCommitsWouldBeLost,
+  mergeBlocked,
+  mergeIntoCurrent,
   type CheckoutTarget,
   setGroupBranchesByDirectory,
   setShowRecentBranches,
@@ -25,6 +29,7 @@ import {
   type CurrentBranch,
   type OperationAction,
   type OperationInProgress,
+  type RefLabel,
   type Repository,
   type Settings,
 } from "./core";
@@ -45,6 +50,8 @@ export interface BranchSelectorHost {
   headMoved(repository: Repository): void;
   /** Files block the checkout of `target` in `repository`, as `blocked` lists them, for the user to choose how to go on. */
   checkoutBlocked(repository: Repository, target: CheckoutTarget, blocked: BlockedCheckout): void;
+  /** Files block the merge of `branch` into the current branch of `repository`, as `blocked` lists them, for the user to choose how to go on. */
+  mergeBlocked(repository: Repository, branch: RefLabel, blocked: BlockedMerge): void;
   /** Checking out a remote branch of `repository` would lose the local commits `lost` tells of, for the user to choose what happens to them. */
   localCommitsWouldBeLost(repository: Repository, lost: LostLocalCommits): void;
   /** What shows the operation half done in the Repository, and takes the actions on it. */
@@ -91,8 +98,11 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   /** Tells the answer to the latest read from one that a later search overtook. */
   let latestRead = 0;
   let searchTimer: number | undefined;
-  /** Whether a branch or tag the user picked is being checked out. */
+  /** Whether a branch or tag the user picked is being checked out, or a branch merged. */
   let checkingOut = false;
+  /** The branch HEAD is on, as the selector last listed it, or null on a detached HEAD. */
+  let currentName: string | null = null;
+  const menu = createBranchMenu(view);
 
   element<HTMLElement>("branch-selector-show-recent-label").textContent = t("branchSelectorShowRecent");
   element<HTMLElement>("branch-selector-show-tags-label").textContent = t("branchSelectorShowTags");
@@ -185,7 +195,28 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     }
   }
 
+  groups.addEventListener("contextmenu", (event) => {
+    const shown = repository;
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-testid="branch"]') : null;
+    const { name, kind } = button?.dataset ?? {};
+    if (shown === null || button === null || name === undefined || !isRefKind(kind)) {
+      return;
+    }
+    event.preventDefault();
+    const label: RefLabel = { name, kind };
+    const items: BranchMenuItem[] = [{ testId: "branch-menu-check-out", label: t("branchSelectorMenuCheckOut"), run: () => void pick(shown, { label }) }];
+    // A branch merges into the current one, which is not itself.
+    if (kind === "remote" || (kind === "local" && name !== currentName)) {
+      items.push({ testId: "branch-menu-merge", label: t("branchSelectorMenuMerge"), run: () => void merge(shown, label) });
+    }
+    // From the keyboard the menu opens on no point, so it opens at the branch.
+    const from = button.getBoundingClientRect();
+    const atPoint = event.clientX !== 0 || event.clientY !== 0;
+    menu.open(items, atPoint ? event.clientX : from.left, atPoint ? event.clientY : from.bottom, button);
+  });
+
   function draw(shown: Repository, listed: Branches, operation: OperationInProgress | null, search: string): void {
+    currentName = listed.current.kind === "branch" ? listed.current.name : null;
     current.replaceChildren(...describeCurrent(listed.current));
     if (operation !== null) {
       current.append(operationInProgressView(operation, (action) => takeOperationAction(shown, action)));
@@ -213,7 +244,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
    * Checks out a local branch, a remote branch or a tag the user picked, and closes the selector once HEAD is on it; a failure shows
    * in the selector.
    */
-  async function pick(shown: Repository, branch: Branch): Promise<void> {
+  async function pick(shown: Repository, branch: Pick<Branch, "label">): Promise<void> {
     const { name } = branch.label;
     const project = host.project();
     if (checkingOut || project === null) {
@@ -260,6 +291,46 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     }
   }
 
+  /**
+   * Merges `branch` into the current branch of `shown`, and closes the selector once it is merged or stopped on a conflict, which opens
+   * the conflicts dialog; files that block it open the blocked merge dialog, and another failure shows in the selector.
+   */
+  async function merge(shown: Repository, branch: RefLabel): Promise<void> {
+    const project = host.project();
+    if (checkingOut || project === null) {
+      return;
+    }
+    // The lists are not read again while the merge runs, so they do not take the place of what it says.
+    window.clearTimeout(searchTimer);
+    latestRead += 1;
+    checkingOut = true;
+    const progress = document.createElement("p");
+    progress.className = "branch-selector-empty";
+    progress.textContent = t("branchSelectorMerging", { branch: branch.name });
+    groups.replaceChildren(progress);
+    let failure: { error: unknown } | null = null;
+    try {
+      await mergeIntoCurrent(project, shown, branch);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      checkingOut = false;
+      host.headMoved(shown);
+    }
+    if (repository !== shown) {
+      return;
+    }
+    const blocked = failure === null ? null : mergeBlocked(failure.error);
+    if (failure === null) {
+      close();
+    } else if (blocked !== null) {
+      close();
+      host.mergeBlocked(shown, branch, blocked);
+    } else {
+      groups.replaceChildren(host.errorView(failure.error));
+    }
+  }
+
   /** Takes `action` on the operation half done in `shown`, and reads the branches again, as HEAD may have moved. */
   async function takeOperationAction(shown: Repository, action: OperationAction): Promise<void> {
     await host.operations.take(shown, action);
@@ -275,7 +346,11 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
  * The checkout picking `branch` of `repository`, a Repository of the Project at `project`, runs: of a local branch, a remote branch
  * or a tag, with the target it takes HEAD to. Null for HEAD itself.
  */
-function checkoutOf(project: string, repository: Repository, branch: Branch): { target: CheckoutTarget; run: () => Promise<CurrentBranch> } | null {
+function checkoutOf(
+  project: string,
+  repository: Repository,
+  branch: Pick<Branch, "label">,
+): { target: CheckoutTarget; run: () => Promise<CurrentBranch> } | null {
   const { name, kind } = branch.label;
   switch (kind) {
     case "local":
@@ -287,6 +362,78 @@ function checkoutOf(project: string, repository: Repository, branch: Branch): { 
     case "head":
       return null;
   }
+}
+
+/** An item of the menu of a branch. */
+interface BranchMenuItem {
+  /** The `data-testid` of its item. */
+  testId: string;
+  /** The text of its item. */
+  label: string;
+  run(): void;
+}
+
+/** The menu of a branch in the selector, added to `container`. */
+function createBranchMenu(container: HTMLElement): { open(items: BranchMenuItem[], x: number, y: number, from: HTMLElement): void } {
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  menu.dataset.testid = "branch-menu";
+  menu.setAttribute("role", "menu");
+  menu.hidden = true;
+  container.append(menu);
+  let returnFocus: HTMLElement | null = null;
+
+  const close = (): void => {
+    menu.hidden = true;
+  };
+  // So that clicking an item does not take the focus from it, which would close the menu first.
+  menu.addEventListener("mousedown", (event) => event.preventDefault());
+  menu.addEventListener("focusout", (event) => {
+    if (!(event.relatedTarget instanceof Node && menu.contains(event.relatedTarget))) {
+      close();
+    }
+  });
+  menu.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      // The selector stays open: Escape closes only the menu.
+      event.stopPropagation();
+      close();
+      returnFocus?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const items = [...menu.children] as HTMLElement[];
+      const from = items.indexOf(document.activeElement as HTMLElement);
+      items[(from + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    }
+  });
+
+  function open(items: BranchMenuItem[], x: number, y: number, from: HTMLElement): void {
+    returnFocus = from;
+    const buttons = items.map((entry) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.dataset.testid = entry.testId;
+      item.setAttribute("role", "menuitem");
+      item.textContent = entry.label;
+      item.addEventListener("click", () => {
+        close();
+        entry.run();
+      });
+      return item;
+    });
+    menu.replaceChildren(...buttons);
+    menu.hidden = false;
+    menu.style.left = `${Math.min(x, window.innerWidth - menu.offsetWidth)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - menu.offsetHeight)}px`;
+    buttons[0]?.focus();
+  }
+
+  return { open };
+}
+
+/** Whether `kind`, as a branch button of the selector names it, is the kind of a reference. */
+function isRefKind(kind: string | undefined): kind is RefLabel["kind"] {
+  return kind === "local" || kind === "remote" || kind === "tag" || kind === "head";
 }
 
 function nodesList(nodes: BranchNode[], actions: BranchActions): HTMLElement | null {

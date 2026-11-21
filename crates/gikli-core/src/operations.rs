@@ -66,6 +66,12 @@ pub enum LongOperation {
         repository: Repository,
         target: String,
     },
+    /// Merging `branch` into the current branch of `repository`, where a hook can take as long as
+    /// it likes.
+    Merge {
+        repository: Repository,
+        branch: String,
+    },
     /// Taking `action` on the `operation` half done in `repository`, where a hook can take as long
     /// as it likes.
     TakeOperationAction {

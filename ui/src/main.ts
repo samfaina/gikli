@@ -98,6 +98,7 @@ import { createRejectedPushDialog } from "./rejected-push-dialog";
 import { createLogView } from "./log-view";
 import { SHORT_HASH_LENGTH } from "./log-details";
 import { createBlockedCheckoutDialog } from "./blocked-checkout-dialog";
+import { createBlockedMergeDialog } from "./blocked-merge-dialog";
 import { createLocalCommitsDialog } from "./local-commits-dialog";
 import { createBranchSelector } from "./branch-selector";
 import { createNewBranchDialog } from "./new-branch-dialog";
@@ -258,6 +259,7 @@ const branchSelector = createBranchSelector({
   newBranch: (repository) => newBranchDialog.open(repository, { kind: "head" }, "HEAD"),
   headMoved: (repository) => headMoved(repository),
   checkoutBlocked: (repository, target, blocked) => blockedCheckoutDialog.open(repository, target, blocked),
+  mergeBlocked: (repository, branch, blocked) => blockedMergeDialog.open(repository, branch, blocked),
   localCommitsWouldBeLost: (repository, lost) => localCommitsDialog.open(repository, lost),
   operations: operationsHost,
 });
@@ -276,6 +278,12 @@ const newBranchDialog = createNewBranchDialog({
 });
 
 const blockedCheckoutDialog = createBlockedCheckoutDialog({
+  errorView,
+  project: () => shownFolder,
+  headMoved: (repository) => headMoved(repository),
+});
+
+const blockedMergeDialog = createBlockedMergeDialog({
   errorView,
   project: () => shownFolder,
   headMoved: (repository) => headMoved(repository),
@@ -1970,6 +1978,8 @@ function describeOperation(operation: LongOperation): string {
       return t("operationPush", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
     case "pull":
       return t("operationPull", { root: operation.repository.root, remote: operation.remote, branch: operation.branch });
+    case "merge":
+      return t("operationMerge", { root: operation.repository.root, branch: operation.branch });
     case "checkOut":
       return t("operationCheckOut", { root: operation.repository.root, target: operation.target });
     case "deleteRemoteBranch":
@@ -2282,6 +2292,12 @@ function describeFailure(failure: Failure): string {
       return t("failureDetachedHeadNotPulled");
     case "pullFailed":
       return t("failurePullFailed", { folder: failure.folder });
+    case "mergeBlocked":
+      return t("failureMergeBlocked", { folder: failure.folder, files: [...failure.localChanges, ...failure.untrackedFiles].join(", ") });
+    case "mergeFailed":
+      return t("failureMergeFailed", { folder: failure.folder });
+    case "localChangesNotKept":
+      return t("failureLocalChangesNotKept", { file: failure.file, message: failure.message });
     case "pullOptionsIncompatible":
       return t("failurePullOptionsIncompatible", { first: failure.first, second: failure.second });
     case "remoteNameTaken":

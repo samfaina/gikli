@@ -22,6 +22,7 @@ mod host;
 mod in_progress;
 mod listed_commit;
 mod log;
+mod merge;
 mod new_branch;
 mod notifications;
 mod operation_log;
@@ -88,6 +89,7 @@ pub use prompts::{Prompt, PromptKind, answer_askpass_request};
 pub use pull::{PullOptions, PullPlan, PullRemote, PullSource};
 pub use push::{PushAfterCommit, PushPlan, PushTags, PushTarget, UpdateMethod};
 pub use rollback::RollbackPlan;
+use saved_local_changes::{AwaitingMerge, AwaitingMergeStore};
 pub use saved_local_changes::{RestoredLocalChanges, SavedLocalChanges};
 pub use settings::Settings;
 pub use stash::{
@@ -514,6 +516,24 @@ pub enum Failure {
     PullFailed {
         folder: PathBuf,
     },
+    /// Files of the Repository at `folder` keep git from merging a branch into the current branch,
+    /// and nothing changed. `local_changes` are files with uncommitted changes the merge would
+    /// overwrite, which the user can save and restore around the merge with
+    /// [`Gikli::merge_over_local_changes`]. `untracked_files` are files git does not track that
+    /// the merge would overwrite, which the user moves or commits. Both by path, relative to the
+    /// Repository root.
+    #[serde(rename_all = "camelCase")]
+    MergeBlocked {
+        folder: PathBuf,
+        local_changes: Vec<PathBuf>,
+        untracked_files: Vec<PathBuf>,
+    },
+    /// git could not merge a branch into the current branch of the Repository at `folder`. The
+    /// operation log holds git's output.
+    #[serde(rename_all = "camelCase")]
+    MergeFailed {
+        folder: PathBuf,
+    },
     /// The pull options `first` and `second`, as git names them, contradict each other, so the
     /// pull did not start.
     PullOptionsIncompatible {
@@ -735,6 +755,14 @@ pub enum Failure {
     LocalChangesNotSavable {
         folder: PathBuf,
         reason: StashUnavailable,
+    },
+    /// gikli could not write `file`, where it keeps the local changes it saved around a merge until
+    /// the merge is over, for `message`, the reason the system gives in the user's language. The
+    /// changes are back and nothing was merged.
+    #[serde(rename_all = "camelCase")]
+    LocalChangesNotKept {
+        file: PathBuf,
+        message: String,
     },
     /// The Repository has no stash whose commit is `hash`: it was dropped, or `hash` is no stash.
     StashNotFound {
@@ -1249,7 +1277,7 @@ impl Gikli {
         repository: &Repository,
         action: OperationAction,
     ) -> Result<NotificationOutcome, Failure> {
-        self.run_operation_action(repository, action)?;
+        self.run_operation_action(&notification.project, repository, action)?;
         self.notifications.withdraw(notification.id);
         self.operation_in_progress(&notification.project, repository)?;
         Ok(NotificationOutcome::HeadMoved(repository.clone()))
@@ -2684,6 +2712,98 @@ impl Gikli {
         self.operation_in_progress(project, repository)
     }
 
+    /// Merges `branch` into the current branch of `repository`, a Repository of the Project at
+    /// `project`, as Merge into current does from the branch selector, and returns the operation in
+    /// progress after that. git writes the message of the merge commit as it would on its own. A
+    /// merge that stops on a conflict says so with [`Event::ConflictsLeft`], so the conflicts
+    /// dialog opens, and is in progress. The merge runs as a [`LongOperation`] that reports the
+    /// hook it waits on and that the user can cancel. A branch that no longer exists returns
+    /// [`Failure::RevisionNotFound`] with its name.
+    pub fn merge_into_current(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        branch: &RefLabel,
+    ) -> Result<Option<OperationInProgress>, Failure> {
+        let runner = self.runner(&repository.root)?.accepting_prepared_messages();
+        let planned = merge::plan(&runner, repository, branch)?;
+        self.run_merge(&runner, repository, branch, &planned)?;
+        self.operation_in_progress(project, repository)
+    }
+
+    /// Merges `branch` into the current branch of `repository`, a Repository of the Project at
+    /// `project`, once the local changes that blocked it, as [`Failure::MergeBlocked`] told, are put
+    /// aside as Saved local changes, and returns the operation in progress after that, as
+    /// [`Self::merge_into_current`] does.
+    ///
+    /// The changes come back in their Changelists, as [`Self::save_local_changes`] and
+    /// [`Self::restore_local_changes`] do, once the merge is over, also when it fails. A merge
+    /// that stops on a conflict keeps them until the user aborts it or commits it with
+    /// [`Self::take_operation_action`]. Files git does not track are not saved, so those that
+    /// block the merge still do.
+    pub fn merge_over_local_changes(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        branch: &RefLabel,
+    ) -> Result<Option<OperationInProgress>, Failure> {
+        let runner = self.runner(&repository.root)?.accepting_prepared_messages();
+        let planned = merge::plan(&runner, repository, branch)?;
+        let store = AwaitingMergeStore::in_git_dir(&in_progress::git_dir(&runner, repository)?);
+        let saved = self.save_local_changes(repository)?;
+        let awaiting = AwaitingMerge {
+            merging: planned.commit.clone(),
+            saved,
+        };
+        // What waits is kept before the merge runs, so a merge that stops finds it there, and
+        // nothing merges when it cannot be kept.
+        if awaiting.saved.stash.is_some()
+            && let Err(failure) = store.keep(&awaiting)
+        {
+            self.restore_local_changes(project, &awaiting.saved)?;
+            return Err(failure);
+        }
+        let merged = self.run_merge(&runner, repository, branch, &planned);
+        if !matches!(merged, Ok(true)) {
+            store.forget();
+            self.restore_local_changes(project, &awaiting.saved)?;
+        }
+        merged?;
+        self.operation_in_progress(project, repository)
+    }
+
+    /// Runs `planned`, the merge of `branch` into the current branch of `repository`, through
+    /// `runner`, which takes the messages git prepared as they are, and returns whether git stopped
+    /// on a conflict, which it says with [`Event::ConflictsLeft`]. Any other failure of git's is
+    /// the one git's output explains, or [`Failure::MergeFailed`].
+    fn run_merge(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        branch: &RefLabel,
+        planned: &merge::Planned,
+    ) -> Result<bool, Failure> {
+        let root = &repository.root;
+        let operation = LongOperation::Merge {
+            repository: repository.clone(),
+            branch: branch.name.clone(),
+        };
+        let (invocation, stopped_on_conflict) =
+            self.run_stopping_on_conflicts(runner, repository, operation, &as_args(&planned.args))?;
+        if !invocation.success && !stopped_on_conflict {
+            // What blocks it cannot be told when the Repository cannot be read, which says why in
+            // the operation log: the merge failure stays the one to tell.
+            let otherwise = merge::blocked(runner, repository, planned)
+                .ok()
+                .flatten()
+                .unwrap_or(Failure::MergeFailed {
+                    folder: root.clone(),
+                });
+            return Err(failure_of(runner, root, &invocation, otherwise));
+        }
+        Ok(stopped_on_conflict)
+    }
+
     /// Pulls `source` into the current branch of `repository` with `options`, through `runner`,
     /// which takes the messages git prepared as they are, and returns whether git stopped on a
     /// conflict, which it says with [`Event::ConflictsLeft`]. Any other failure of git's is
@@ -3342,14 +3462,17 @@ impl Gikli {
         repository: &Repository,
         action: OperationAction,
     ) -> Result<Option<OperationInProgress>, Failure> {
-        self.run_operation_action(repository, action)?;
+        self.run_operation_action(project, repository, action)?;
         self.operation_in_progress(project, repository)
     }
 
-    /// Takes `action` on the operation half done in `repository`, as
-    /// [`Self::take_operation_action`] tells.
+    /// Takes `action` on the operation half done in `repository`, a Repository of the Project at
+    /// `project`, as [`Self::take_operation_action`] tells. A merge that is over, aborted or
+    /// committed, brings back the local changes saved around it, as
+    /// [`Self::merge_over_local_changes`] tells.
     fn run_operation_action(
         &self,
+        project: &Path,
         repository: &Repository,
         action: OperationAction,
     ) -> Result<(), Failure> {
@@ -3376,8 +3499,16 @@ impl Gikli {
             action,
         };
         let args = in_progress::action_args(operation.kind, action);
+        let awaiting = match operation.kind {
+            OperationKind::Merge => self.awaiting_merge(&runner, repository)?,
+            _ => None,
+        };
         let invocation = self.run_operation(&runner, long, root, &args)?;
         if invocation.success {
+            if let Some((store, awaiting)) = awaiting {
+                store.forget();
+                self.restore_local_changes(project, &awaiting.saved)?;
+            }
             return Ok(());
         }
         // git went on and stopped at a later commit, which the user resolves or skips next: on a
@@ -3406,6 +3537,20 @@ impl Gikli {
                 action,
             },
         ))
+    }
+
+    /// The local changes saved around the merge half done in `repository`, which wait for it to be
+    /// over, with where they wait, if any do.
+    fn awaiting_merge(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+    ) -> Result<Option<(AwaitingMergeStore, AwaitingMerge)>, Failure> {
+        let Some(merging) = details::commit_if_any(runner, repository, "MERGE_HEAD")? else {
+            return Ok(None);
+        };
+        let store = AwaitingMergeStore::in_git_dir(&in_progress::git_dir(runner, repository)?);
+        Ok(store.awaiting(&merging).map(|awaiting| (store, awaiting)))
     }
 
     /// Lets go of what gikli holds to read the page after `cursor` quickly, once the log no longer
