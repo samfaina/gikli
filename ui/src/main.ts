@@ -82,6 +82,7 @@ import {
   type Repository,
   type RunningOperation,
   type StagingSide,
+  type StashUnavailable,
 } from "./core";
 import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
@@ -2062,6 +2063,11 @@ function describeExplainedMessage(message: ExplainedMessage): string {
   }
 }
 
+/** What the user reads when the local changes of a Repository cannot be saved in a stash. */
+const LOCAL_CHANGES_NOT_SAVABLE_LABELS: Record<StashUnavailable, StringKey> = {
+  noCommits: "failureLocalChangesNotSavableNoCommits",
+};
+
 const NEXT_STEPS: Record<NextStep, StringKey> = {
   fixHook: "nextStepFixHook",
   trustFolder: "nextStepTrustFolder",
@@ -2266,6 +2272,8 @@ function describeFailure(failure: Failure): string {
       return t("failureFileVersionNotRestored", { path: failure.path });
     case "stashUnavailable":
       return t(STASH_UNAVAILABLE_LABELS[failure.reason]);
+    case "localChangesNotSavable":
+      return t(LOCAL_CHANGES_NOT_SAVABLE_LABELS[failure.reason], { folder: failure.folder });
     case "nothingToStash":
       return t("failureNothingToStash", { folder: failure.folder });
     case "notStashed":

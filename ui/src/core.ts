@@ -412,6 +412,11 @@ export type Failure =
   | { kind: "fileVersionNotRestored"; path: string }
   /** The Repository cannot stash, for `reason`, so its stash actions are unavailable. */
   | { kind: "stashUnavailable"; folder: string; reason: StashUnavailable }
+  /**
+   * The local changes cannot be saved for `reason`, as they are saved in a stash, so an operation
+   * that saves them first is unavailable.
+   */
+  | { kind: "localChangesNotSavable"; folder: string; reason: StashUnavailable }
   /** The Repository has no uncommitted change a stash would take. */
   | { kind: "nothingToStash"; folder: string }
   /** git could not stash: the operation log shows why. */

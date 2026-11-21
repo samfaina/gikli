@@ -1,8 +1,8 @@
 //! The Changelist store: the Changelists of a Repository, kept as versioned JSON in its git
 //! directory (ADR-0005), and how they follow what happens in git.
 
-use std::collections::BTreeSet;
 use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::hash::{BuildHasher, Hasher};
 use std::io;
@@ -208,6 +208,45 @@ impl Changelists {
             self.active.clone_from(&self.changelists[to].id);
         }
         Ok(())
+    }
+
+    /// The identifier of the Changelist each of `changes` belongs to, by path. A moved file also
+    /// gives its Changelist to the path it was at, as the move may come back as the deletion of
+    /// that path and a new file at the other.
+    pub fn changelist_of_path(&self, changes: &[Change]) -> BTreeMap<String, String> {
+        let mut of_path: BTreeMap<String, String> = self
+            .changelists
+            .iter()
+            .flat_map(|list| {
+                list.files
+                    .iter()
+                    .map(|file| (file.clone(), list.id.clone()))
+            })
+            .collect();
+        for change in changes {
+            let (ChangeStatus::Renamed, Some(original)) = (change.status, &change.original_path)
+            else {
+                continue;
+            };
+            if let Some(id) = of_path.get(change.path.to_string_lossy().as_ref()).cloned() {
+                of_path.insert(original.to_string_lossy().into_owned(), id);
+            }
+        }
+        of_path
+    }
+
+    /// Puts each changed file back in the Changelist `changelist_of_path` says it belonged to, by
+    /// path. A file that is not changed now, or whose Changelist is gone, stays where it is.
+    pub fn put_back(&mut self, changelist_of_path: &BTreeMap<String, String>) {
+        for (path, id) in changelist_of_path {
+            let from = self.place_holding(Path::new(path));
+            let to = self.changelists.iter().position(|list| list.id == *id);
+            let (Some(from), Some(to)) = (from, to) else {
+                continue;
+            };
+            let file = self.changelists[from].files.take(path.as_str());
+            self.changelists[to].files.extend(file);
+        }
     }
 
     /// The place in [`Self::lists`] of the Changelist the changed file at `path` belongs to.
