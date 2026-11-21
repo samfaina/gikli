@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::{GitRunner, path_from_bytes};
 use crate::{
-    Failure, NewBranchBase, RefKind, RefLabel, Repository, details, git_failed_to_start, log,
-    new_branch,
+    Failure, NewBranchBase, RefKind, RefLabel, Repository, details, failure_of,
+    git_failed_to_start, log, new_branch, sync,
 };
 
 /// What a checkout takes HEAD to.
@@ -25,6 +25,25 @@ pub enum CheckoutTarget {
     Revision { revision: String },
     /// A new branch called `name`, created at `base` and checked out.
     NewBranch { name: String, base: NewBranchBase },
+    /// The remote branch `name`, such as `origin/main`, which the local branch of the same name
+    /// on its remote then follows, and HEAD is on. `local_commits` is what happens to the commits
+    /// of that local branch the remote branch does not have, as the user chose, if they did.
+    #[serde(rename_all = "camelCase")]
+    RemoteBranch {
+        name: String,
+        local_commits: Option<LocalCommits>,
+    },
+}
+
+/// What happens to the commits of a local branch that a checkout of the remote branch it follows
+/// would lose, as the user chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalCommits {
+    /// The local branch moves to the remote branch, and its commits go, once a Backup holds them.
+    Drop,
+    /// The commits go on top of the remote branch, as `git rebase` puts them.
+    Rebase,
 }
 
 /// What happens to the local changes that block a checkout, as the user chose.
@@ -49,6 +68,17 @@ pub(crate) struct Planned {
     pub args: Vec<String>,
     /// The failure to tell when git fails and nothing explains why.
     pub fallback: Failure,
+    /// The local branch whose commits the checkout drops, which a Backup saves first, if any.
+    pub drops: Option<Dropped>,
+    /// The local branch whose commits the checkout rebases onto `revision`, a remote branch it
+    /// then follows, if any. The checkout is then a rebase, which needs every local change gone.
+    pub rebases: Option<String>,
+}
+
+/// The local branch `branch` a checkout moves away from `commit`, dropping commits.
+pub(crate) struct Dropped {
+    pub branch: String,
+    pub commit: String,
 }
 
 /// The checkout of `target` in `repository`, once the target is known to be there. A branch, a
@@ -70,6 +100,8 @@ pub(crate) fn plan(
             args: to_strings(&["switch", "--detach", &hash]),
             revision: hash,
             fallback: failed.clone(),
+            drops: None,
+            rebases: None,
         })
     };
     match target {
@@ -86,6 +118,8 @@ pub(crate) fn plan(
                 revision: format!("refs/heads/{name}"),
                 args: to_strings(&["switch", "--no-guess", name]),
                 fallback: failed,
+                drops: None,
+                rebases: None,
             })
         }
         CheckoutTarget::Tag { name } => {
@@ -97,6 +131,64 @@ pub(crate) fn plan(
             detached(name, &tag.full_name())
         }
         CheckoutTarget::Revision { revision } => detached(revision, revision),
+        CheckoutTarget::RemoteBranch {
+            name,
+            local_commits,
+        } => {
+            let remote_branch = RefLabel {
+                name: name.clone(),
+                kind: RefKind::Remote,
+            };
+            let revision = remote_branch.full_name();
+            details::resolve_known_as(runner, repository, &revision, name)?;
+            let local = local_name(runner, repository, &remote_branch)?;
+            let mut drops = None;
+            // A local branch of that name moves to the remote branch, once nothing would be lost
+            // or the user chose what happens to its commits.
+            let create = if new_branch::has_local_branch(runner, repository, &local)? {
+                let commits = commits_lost(runner, repository, &local, &revision)?;
+                match local_commits {
+                    _ if commits == 0 => {}
+                    None => {
+                        return Err(Failure::LocalCommitsWouldBeLost {
+                            branch: local,
+                            remote_branch: name.clone(),
+                            commits,
+                        });
+                    }
+                    Some(LocalCommits::Drop) => {
+                        let branch = format!("refs/heads/{local}");
+                        drops = Some(Dropped {
+                            commit: details::resolve(runner, repository, &branch)?,
+                            branch: local.clone(),
+                        });
+                    }
+                    Some(LocalCommits::Rebase) => {
+                        // By its name, as git rebases a branch it is given by its whole reference
+                        // on a detached HEAD.
+                        return Ok(Planned {
+                            label: name.clone(),
+                            args: to_strings(&["rebase", "--end-of-options", &revision, &local]),
+                            revision,
+                            fallback: failed,
+                            drops: None,
+                            rebases: Some(local),
+                        });
+                    }
+                }
+                "--force-create"
+            } else {
+                "--create"
+            };
+            Ok(Planned {
+                label: name.clone(),
+                args: to_strings(&["switch", create, &local, "--track", &revision]),
+                revision,
+                fallback: failed,
+                drops,
+                rebases: None,
+            })
+        }
         CheckoutTarget::NewBranch { name, base } => {
             new_branch::check_name(runner, repository, name)?;
             let start = new_branch::start_point(runner, repository, base)?;
@@ -105,23 +197,62 @@ pub(crate) fn plan(
                 args: to_strings(&["switch", "--create", name, &start]),
                 revision: start,
                 fallback: new_branch::not_created(repository, name),
+                drops: None,
+                rebases: None,
             })
         }
     }
 }
 
-/// The files whose local changes to discard before checking out `revision` in `repository`, of
-/// `confirmed`, the files the user confirmed: all of them when they are still the ones whose local
-/// changes block the checkout, and none when no local change does any longer. Otherwise this
+/// The name of the local branch that follows `remote_branch` of `repository`: that of the branch of
+/// its remote, as the fetch configuration of the remote maps it. A remote branch no remote fetches
+/// into returns [`Failure::NoRemoteToFetchFrom`], as git sets no upstream there.
+fn local_name(
+    runner: &GitRunner,
+    repository: &Repository,
+    remote_branch: &RefLabel,
+) -> Result<String, Failure> {
+    let source = sync::branch_source(runner, repository, remote_branch)?;
+    source
+        .reference
+        .strip_prefix("refs/heads/")
+        .map(str::to_owned)
+        .ok_or_else(|| Failure::NoRemoteToFetchFrom {
+            folder: repository.root.clone(),
+        })
+}
+
+/// The number of commits of the local branch `local` of `repository` that `revision` does not
+/// have, which moving the branch there would lose.
+fn commits_lost(
+    runner: &GitRunner,
+    repository: &Repository,
+    local: &str,
+    revision: &str,
+) -> Result<usize, Failure> {
+    let branch = format!("refs/heads/{local}");
+    let args = ["rev-list", "--count", &branch, "--not", revision, "--"];
+    let counted = log::run_git(runner, repository, &args)?;
+    // A count that cannot be read loses nothing: the branch stays where it is.
+    counted
+        .stdout_text()
+        .trim()
+        .parse()
+        .map_err(|_| sync::branches_unreadable(repository))
+}
+
+/// The files whose local changes to discard before running `planned`, a checkout in `repository`,
+/// of `confirmed`, the files the user confirmed: all of them when they are still the ones whose
+/// local changes block the checkout, and none when no local change does any longer. Otherwise this
 /// returns [`Failure::CheckoutBlocked`] with the files that block it now, as the user confirmed
 /// another list, or files git does not track block it, which discarding leaves in the way.
 pub(crate) fn to_discard(
     runner: &GitRunner,
     repository: &Repository,
-    revision: &str,
+    planned: &Planned,
     confirmed: &[PathBuf],
 ) -> Result<Vec<PathBuf>, Failure> {
-    let blocking = Blocking::of(runner, repository, revision)?;
+    let blocking = Blocking::of(runner, repository, planned)?;
     let confirmed: BTreeSet<&PathBuf> = confirmed.iter().collect();
     if !blocking.untracked_files.is_empty() {
         Err(blocking.into_failure(repository))
@@ -134,14 +265,14 @@ pub(crate) fn to_discard(
     }
 }
 
-/// The failure of a checkout of `revision` in `repository` that git refused, when files block it.
-/// None when none does, and git failed for another reason.
+/// The failure of `planned`, a checkout in `repository`, when files block it. None when none does,
+/// and git, when it refused, failed for another reason.
 pub(crate) fn blocked(
     runner: &GitRunner,
     repository: &Repository,
-    revision: &str,
+    planned: &Planned,
 ) -> Result<Option<Failure>, Failure> {
-    let blocking = Blocking::of(runner, repository, revision)?;
+    let blocking = Blocking::of(runner, repository, planned)?;
     let blocks = !blocking.local_changes.is_empty() || !blocking.untracked_files.is_empty();
     Ok(blocks.then(|| blocking.into_failure(repository)))
 }
@@ -153,31 +284,25 @@ struct Blocking {
 }
 
 impl Blocking {
-    /// The files that block a checkout of `revision` in `repository`. With no commit yet, HEAD
-    /// holds nothing: every file of `revision` is new, and every file in the index is staged.
-    fn of(runner: &GitRunner, repository: &Repository, revision: &str) -> Result<Self, Failure> {
-        let (moved, staged) = if details::exists(runner, repository, "HEAD")? {
-            (
-                changed_paths(
-                    runner,
-                    repository,
-                    &["diff-tree", "-r"],
-                    &["HEAD", revision],
-                )?,
-                changed_paths(runner, repository, &["diff-index", "--cached"], &["HEAD"])?,
-            )
-        } else {
-            (
-                listed_paths(
-                    runner,
-                    repository,
-                    &["ls-tree", "-r", "--name-only", revision],
-                )?,
-                listed_paths(runner, repository, &["ls-files", "--cached"])?,
-            )
+    /// The files that block `planned`, a checkout in `repository`.
+    fn of(runner: &GitRunner, repository: &Repository, planned: &Planned) -> Result<Self, Failure> {
+        let revision = &planned.revision;
+        let (moved, staged) = moved_and_staged(runner, repository, revision)?;
+        let local_changes = match &planned.rebases {
+            None => local_changes_in_the_way(runner, repository, revision, &moved, &staged)?,
+            // git rebases nothing while any tracked file has uncommitted changes.
+            Some(_) => {
+                let mut changed = staged;
+                changed.extend(changed_paths(runner, repository, &["diff"], &[])?);
+                changed.into_iter().collect()
+            }
         };
-        let local_changes =
-            local_changes_in_the_way(runner, repository, revision, &moved, &staged)?;
+        let mut moved = moved;
+        if let Some(branch) = &planned.rebases {
+            // The rebase checks out the branch before it moves onto the remote branch.
+            let branch = format!("refs/heads/{branch}");
+            moved.extend(moved_and_staged(runner, repository, &branch)?.0);
+        }
         let untracked_files = untracked_in_the_way(runner, repository, &moved, &local_changes)?;
         Ok(Self {
             local_changes,
@@ -193,6 +318,58 @@ impl Blocking {
             untracked_files: self.untracked_files,
         }
     }
+}
+
+/// The files that differ between HEAD of `repository` and `revision`, and those staged, by path.
+/// With no commit yet, HEAD holds nothing: every file of `revision` is new, and every file in the
+/// index is staged.
+fn moved_and_staged(
+    runner: &GitRunner,
+    repository: &Repository,
+    revision: &str,
+) -> Result<(BTreeSet<PathBuf>, BTreeSet<PathBuf>), Failure> {
+    if details::exists(runner, repository, "HEAD")? {
+        Ok((
+            changed_paths(
+                runner,
+                repository,
+                &["diff-tree", "-r"],
+                &["HEAD", revision],
+            )?,
+            changed_paths(runner, repository, &["diff-index", "--cached"], &["HEAD"])?,
+        ))
+    } else {
+        Ok((
+            listed_paths(
+                runner,
+                repository,
+                &["ls-tree", "-r", "--name-only", revision],
+            )?,
+            listed_paths(runner, repository, &["ls-files", "--cached"])?,
+        ))
+    }
+}
+
+/// Sets the remote branch `remote_branch`, by its whole reference, as the upstream of the local
+/// branch `branch` of `repository`.
+pub(crate) fn follow(
+    runner: &GitRunner,
+    repository: &Repository,
+    branch: &str,
+    remote_branch: &str,
+) -> Result<(), Failure> {
+    let upstream = format!("--set-upstream-to={remote_branch}");
+    let root = &repository.root;
+    let set = runner
+        .run(root, &["branch", &upstream, branch])
+        .map_err(git_failed_to_start)?;
+    if !set.success {
+        let failed = Failure::CheckoutFailed {
+            folder: root.clone(),
+        };
+        return Err(failure_of(runner, root, &set, failed));
+    }
+    Ok(())
 }
 
 /// The files with uncommitted changes that a checkout of `revision` would overwrite, by path, of

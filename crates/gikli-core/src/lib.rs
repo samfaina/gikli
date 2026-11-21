@@ -60,7 +60,7 @@ pub use backups::{Backup, Rewrite};
 pub use branches::{Branch, BranchNode, Branches};
 pub use capability::{Capability, CapabilityState};
 pub use changelists::MoveTarget;
-pub use checkout::{CheckoutTarget, OverLocalChanges};
+pub use checkout::{CheckoutTarget, LocalCommits, OverLocalChanges};
 pub use clone_url::CloneUrlForms;
 pub use commit::CommitWarning;
 pub use conflicts::{ConflictSide, ConflictedFile, SideChange};
@@ -577,6 +577,16 @@ pub enum Failure {
         folder: PathBuf,
         local_changes: Vec<PathBuf>,
         untracked_files: Vec<PathBuf>,
+    },
+    /// Checking out the remote branch `remote_branch` would move the local branch `branch` of the
+    /// same name to it, and lose `commits`, the number of its commits the remote branch does not
+    /// have. Nothing changed. The user drops them, with a Backup, or rebases them onto the remote
+    /// branch, with [`Gikli::check_out_remote_branch`].
+    #[serde(rename_all = "camelCase")]
+    LocalCommitsWouldBeLost {
+        branch: String,
+        remote_branch: String,
+        commits: usize,
     },
     /// git could not read the branches of the Repository at `folder`, or how far they are from
     /// their upstreams. The operation log holds git's output.
@@ -2836,7 +2846,7 @@ impl Gikli {
                 name: name.to_owned(),
                 base: base.clone(),
             };
-            return self.check_out(&runner, repository, &target);
+            return self.check_out(&runner, None, repository, &target);
         }
         new_branch::check_name(&runner, repository, name)?;
         let start = new_branch::start_point(&runner, repository, base)?;
@@ -2933,7 +2943,7 @@ impl Gikli {
         let target = CheckoutTarget::Branch {
             name: name.to_owned(),
         };
-        self.check_out(&self.runner(&repository.root)?, repository, &target)
+        self.check_out(&self.runner(&repository.root)?, None, repository, &target)
     }
 
     /// Checks out the tag `name` of `repository`, which leaves a detached HEAD on the commit it
@@ -2949,7 +2959,7 @@ impl Gikli {
         let target = CheckoutTarget::Tag {
             name: name.to_owned(),
         };
-        self.check_out(&self.runner(&repository.root)?, repository, &target)
+        self.check_out(&self.runner(&repository.root)?, None, repository, &target)
     }
 
     /// Checks out the commit `revision` names in `repository`, as the commit menu of the log does,
@@ -2964,7 +2974,35 @@ impl Gikli {
         let target = CheckoutTarget::Revision {
             revision: revision.to_owned(),
         };
-        self.check_out(&self.runner(&repository.root)?, repository, &target)
+        self.check_out(&self.runner(&repository.root)?, None, repository, &target)
+    }
+
+    /// Checks out the remote branch `name` of `repository`, a Repository of the Project at
+    /// `project`, such as `origin/main`, as a local branch that follows it, and returns what HEAD is
+    /// on after that. The local branch is the branch of the remote, as its fetch configuration
+    /// maps it. The checkout runs as in [`Self::check_out_branch`]. A remote branch that no longer
+    /// exists returns [`Failure::RevisionNotFound`] with its name.
+    ///
+    /// A local branch of that name moves to the remote branch when none of its commits would be
+    /// lost. Otherwise, with no `local_commits` chosen, nothing changes and this returns
+    /// [`Failure::LocalCommitsWouldBeLost`]. [`LocalCommits::Drop`] saves a Backup of the local
+    /// branch first and raises a notification about the Project that offers to undo it.
+    /// [`LocalCommits::Rebase`] rebases its commits onto the remote branch, which every local change
+    /// blocks, as [`Failure::CheckoutBlocked`] tells. A rebase that stops on a conflict says so with
+    /// [`Event::ConflictsLeft`] and is in progress.
+    pub fn check_out_remote_branch(
+        &self,
+        project: &Path,
+        repository: &Repository,
+        name: &str,
+        local_commits: Option<LocalCommits>,
+    ) -> Result<CurrentBranch, Failure> {
+        let target = CheckoutTarget::RemoteBranch {
+            name: name.to_owned(),
+            local_commits,
+        };
+        let runner = self.runner(&repository.root)?;
+        self.check_out(&runner, Some(project), repository, &target)
     }
 
     /// Checks out `target` of `repository`, a Repository of the Project at `project`, once the
@@ -2991,16 +3029,25 @@ impl Gikli {
         let planned = checkout::plan(&runner, repository, target)?;
         match over {
             OverLocalChanges::Discard { files } => {
-                let files = checkout::to_discard(&runner, repository, &planned.revision, files)?;
+                let files = checkout::to_discard(&runner, repository, &planned, files)?;
                 self.discard_local_changes(&runner, repository, &files)?;
-                self.run_checkout(&runner, repository, planned)
+                self.run_checkout(&runner, Some(project), repository, planned)
             }
             OverLocalChanges::SaveAndRestore => {
+                let rebases = planned.rebases.is_some();
                 let saved = self.save_local_changes(repository)?;
-                let checked_out = self.run_checkout(&runner, repository, planned);
-                // The changes come back whether the checkout went or not, onto whatever HEAD is
-                // on by then. Changes that cannot come back are what the user needs to hear of.
-                self.restore_local_changes(project, &saved)?;
+                let checked_out = self.run_checkout(&runner, Some(project), repository, planned);
+                // A rebase that stopped holds files in conflict, which the changes cannot come
+                // back onto: they wait in the stash list for the user to restore once it is over.
+                let stopped = rebases
+                    && in_progress::read(&runner, repository)?
+                        .is_some_and(|operation| operation.kind == OperationKind::Rebase);
+                // Otherwise the changes come back whether the checkout went or not, onto whatever
+                // HEAD is on by then. Changes that cannot come back are what the user needs to
+                // hear of.
+                if !stopped {
+                    self.restore_local_changes(project, &saved)?;
+                }
                 checked_out
             }
         }
@@ -3047,11 +3094,12 @@ impl Gikli {
     fn check_out(
         &self,
         runner: &GitRunner,
+        project: Option<&Path>,
         repository: &Repository,
         target: &CheckoutTarget,
     ) -> Result<CurrentBranch, Failure> {
         let planned = checkout::plan(runner, repository, target)?;
-        self.run_checkout(runner, repository, planned)
+        self.run_checkout(runner, project, repository, planned)
     }
 
     /// Runs `planned`, a checkout in `repository`, as a [`LongOperation`], and returns what HEAD
@@ -3060,24 +3108,83 @@ impl Gikli {
     fn run_checkout(
         &self,
         runner: &GitRunner,
+        project: Option<&Path>,
         repository: &Repository,
         planned: checkout::Planned,
     ) -> Result<CurrentBranch, Failure> {
+        if planned.rebases.is_some() {
+            return self.run_rebasing_checkout(runner, repository, planned);
+        }
         let operation = LongOperation::CheckOut {
             repository: repository.clone(),
-            target: planned.label,
+            target: planned.label.clone(),
         };
         let root = &repository.root;
+        let backup = match &planned.drops {
+            Some(dropped) => Some(backups::save(
+                runner,
+                repository,
+                Some(&dropped.branch),
+                &dropped.commit,
+            )?),
+            None => None,
+        };
         let invocation = self.run_operation(runner, operation, root, &as_args(&planned.args))?;
         if !invocation.success {
+            if let Some(backup) = &backup {
+                // Nothing was dropped, so there is nothing to undo.
+                backups::forget(runner, repository, backup);
+            }
             // What blocks it cannot be told when the Repository cannot be read, which says why
             // in the operation log: the checkout failure stays the one to tell.
-            let otherwise = checkout::blocked(runner, repository, &planned.revision)
+            let otherwise = checkout::blocked(runner, repository, &planned)
                 .ok()
                 .flatten()
                 .unwrap_or(planned.fallback);
             return Err(failure_of(runner, root, &invocation, otherwise));
         }
+        if let (Some(backup), Some(project)) = (backup, project) {
+            let rewrite = Rewrite::DropLocalCommits;
+            self.raise_history_rewritten(runner, project, repository, rewrite, backup)?;
+        }
+        sync::current_branch(runner, repository)
+    }
+
+    /// Runs `planned`, a checkout in `repository` that rebases a local branch onto the remote
+    /// branch it then follows, as a [`LongOperation`], and returns what HEAD is on after it. Files
+    /// that block it return [`Failure::CheckoutBlocked`] before git runs, as git rebases nothing
+    /// while a tracked file has uncommitted changes. A rebase that stops on a conflict says so with
+    /// [`Event::ConflictsLeft`], so the conflicts dialog opens, and is in progress, with the branch
+    /// following the remote branch already.
+    fn run_rebasing_checkout(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        planned: checkout::Planned,
+    ) -> Result<CurrentBranch, Failure> {
+        let Some(branch) = &planned.rebases else {
+            return Err(planned.fallback);
+        };
+        if let Some(blocked) = checkout::blocked(runner, repository, &planned)? {
+            return Err(blocked);
+        }
+        let runner = &runner.accepting_prepared_messages();
+        let operation = LongOperation::CheckOut {
+            repository: repository.clone(),
+            target: planned.label.clone(),
+        };
+        let args = as_args(&planned.args);
+        let (invocation, stopped_on_conflict) =
+            self.run_stopping_on_conflicts(runner, repository, operation, &args)?;
+        if !invocation.success && !stopped_on_conflict {
+            return Err(failure_of(
+                runner,
+                &repository.root,
+                &invocation,
+                planned.fallback,
+            ));
+        }
+        checkout::follow(runner, repository, branch, &planned.revision)?;
         sync::current_branch(runner, repository)
     }
 

@@ -36,6 +36,9 @@ pub enum Rewrite {
     UndoCommit,
     /// Amend replaced the last commit with another.
     Amend,
+    /// Checking out a remote branch moved the local branch of the same name to it, and dropped the
+    /// commits the remote branch did not have.
+    DropLocalCommits,
 }
 
 /// Saves `commit`, which `branch` is on, or a detached HEAD when there is no branch, as a Backup of

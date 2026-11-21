@@ -286,6 +286,18 @@
         </div>
         <div id="blocked-checkout-message" class="new-branch-message" data-testid="blocked-checkout-message" role="status"></div>
       </section>
+      <section id="local-commits-dialog" class="branch-selector new-branch" data-testid="local-commits-dialog" role="dialog" aria-labelledby="local-commits-title" hidden>
+        <div class="branch-selector-header">
+          <h2 id="local-commits-title"></h2>
+          <button id="local-commits-cancel" type="button" data-testid="local-commits-cancel"></button>
+        </div>
+        <p id="local-commits-explanation" class="rejected-push-explanation"></p>
+        <div class="new-branch-actions">
+          <button id="local-commits-drop" type="button" data-testid="local-commits-drop"></button>
+          <button id="local-commits-rebase" type="button" data-testid="local-commits-rebase"></button>
+        </div>
+        <div id="local-commits-message" class="new-branch-message" data-testid="local-commits-message" role="status"></div>
+      </section>
       <section id="rejected-push-dialog" class="branch-selector new-branch" data-testid="rejected-push-dialog" role="dialog" aria-labelledby="rejected-push-title" hidden>
         <div class="branch-selector-header">
           <h2 id="rejected-push-title"></h2>

@@ -98,6 +98,7 @@ import { createRejectedPushDialog } from "./rejected-push-dialog";
 import { createLogView } from "./log-view";
 import { SHORT_HASH_LENGTH } from "./log-details";
 import { createBlockedCheckoutDialog } from "./blocked-checkout-dialog";
+import { createLocalCommitsDialog } from "./local-commits-dialog";
 import { createBranchSelector } from "./branch-selector";
 import { createNewBranchDialog } from "./new-branch-dialog";
 import { createRenameBranchDialog } from "./rename-branch-dialog";
@@ -253,11 +254,19 @@ const logView = createLogView({
 
 const branchSelector = createBranchSelector({
   errorView,
-  showBranch: (repository, branch) => logView.showBranch(repository, branch.label),
+  project: () => shownFolder,
   newBranch: (repository) => newBranchDialog.open(repository, { kind: "head" }, "HEAD"),
   headMoved: (repository) => headMoved(repository),
   checkoutBlocked: (repository, target, blocked) => blockedCheckoutDialog.open(repository, target, blocked),
+  localCommitsWouldBeLost: (repository, lost) => localCommitsDialog.open(repository, lost),
   operations: operationsHost,
+});
+
+const localCommitsDialog = createLocalCommitsDialog({
+  errorView,
+  project: () => shownFolder,
+  headMoved: (repository) => headMoved(repository),
+  checkoutBlocked: (repository, target, blocked) => blockedCheckoutDialog.open(repository, target, blocked),
 });
 
 const newBranchDialog = createNewBranchDialog({
@@ -825,6 +834,7 @@ function showProject(project: Project): void {
     newBranchDialog.close();
     pullDialog.close();
     rejectedPushDialog.close();
+    localCommitsDialog.close();
     renameBranchDialog.close();
     deleteBranchesDialog.close();
     unmergedCommitsView.close();
@@ -1751,8 +1761,8 @@ function describeNotification(notification: Notification): string {
       return t("notificationConflictsUnresolved", { root: notification.kind.repository.root });
     case "historyRewritten": {
       const { repository, rewrite, backup } = notification.kind;
-      const key = rewrite === "undoCommit" ? "notificationCommitUndone" : "notificationCommitAmended";
-      return t(key, {
+      const key = { undoCommit: "notificationCommitUndone", amend: "notificationCommitAmended", dropLocalCommits: "notificationLocalCommitsDropped" } as const;
+      return t(key[rewrite], {
         hash: backup.commit.slice(0, SHORT_HASH_LENGTH),
         branch: backup.branch ?? "HEAD",
         root: repository.root,
@@ -2242,6 +2252,8 @@ function describeFailure(failure: Failure): string {
       return t("failureCheckoutFailed", { folder: failure.folder });
     case "checkoutBlocked":
       return t("failureCheckoutBlocked", { folder: failure.folder, files: [...failure.localChanges, ...failure.untrackedFiles].join(", ") });
+    case "localCommitsWouldBeLost":
+      return t("failureLocalCommitsWouldBeLost", { branch: failure.branch, remoteBranch: failure.remoteBranch, commits: String(failure.commits) });
     case "branchNotRenamed":
       return t("failureBranchNotRenamed", { folder: failure.folder, name: failure.name });
     case "upstreamNotUnset":
