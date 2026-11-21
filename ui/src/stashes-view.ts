@@ -1,8 +1,7 @@
 // The stashes tab: the stashes of a Repository, newest first, the files the selected one holds, and
 // the diff of the selected file against the local version or the parent commit. From there the user
 // brings a stash back through the unstash dialog, and drops one stash or clears them all, after
-// confirming. The core reads and changes all of it; this
-// draws it.
+// confirming. The core reads and changes all of it; this draws it.
 
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { MergeView } from "@codemirror/merge";

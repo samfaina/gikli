@@ -63,7 +63,7 @@ fn applying_a_stash_brings_its_changes_back_and_keeps_it() {
         .apply_stash(work.root(), &root, &hash, APPLY)
         .expect("apply the stash");
 
-    assert!(!unstashed.conflicts);
+    assert!(!unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries[0].hash, hash);
     assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
     assert_eq!(work.status_by_git(), vec![" M notes.txt"]);
@@ -89,7 +89,7 @@ fn popping_a_stash_brings_its_changes_back_and_drops_it() {
         .apply_stash(work.root(), &root, &hash, POP)
         .expect("pop the stash");
 
-    assert!(!unstashed.conflicts);
+    assert!(!unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries, Vec::new());
     assert_eq!(stashes_by_git(&work), Vec::<String>::new());
     assert_eq!(work.status_by_git(), vec![" M notes.txt"]);
@@ -218,7 +218,7 @@ fn a_pop_that_conflicts_opens_conflict_resolution_and_keeps_the_stash() {
         .apply_stash(work.root(), &root, &hash, POP)
         .expect("pop the stash onto a conflict");
 
-    assert!(unstashed.conflicts);
+    assert!(unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries[0].hash, hash);
     assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
@@ -277,7 +277,7 @@ fn applying_a_stash_that_conflicts_keeps_it_without_asking_to_drop_it() {
         .apply_stash(work.root(), &root, &hash, APPLY)
         .expect("apply the stash onto a conflict");
 
-    assert!(unstashed.conflicts);
+    assert!(unstashed.conflicts_left);
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
     assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
     assert_eq!(kept_stash_notifications(&gikli, &root), Vec::new());
@@ -312,7 +312,7 @@ fn applying_onto_uncommitted_changes_warns_and_does_not_block() {
         .expect("pop the stash onto the changed tree");
 
     assert!(plan.local_changes);
-    assert!(!unstashed.conflicts);
+    assert!(!unstashed.conflicts_left);
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M other.txt"]);
     assert_eq!(stashes_by_git(&work), Vec::<String>::new());
 }
@@ -373,7 +373,7 @@ fn a_branch_from_a_stash_starts_where_it_was_made_with_its_changes_and_drops_it(
         .stash_branch(work.root(), &root, &hash, "from-stash")
         .expect("create a branch from the stash");
 
-    assert!(!unstashed.conflicts);
+    assert!(!unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries, Vec::new());
     assert_eq!(stashes_by_git(&work), Vec::<String>::new());
     assert_eq!(work.git(&["branch", "--show-current"]), "from-stash\n");
@@ -471,4 +471,93 @@ fn a_repository_with_no_commits_brings_no_stash_back() {
             .err(),
         unavailable
     );
+}
+
+/// A repository whose one commit holds `notes.txt`, with a stash `With draft` of a change to it and
+/// of `draft.txt`, which git did not track, and the hash of that stash.
+fn with_an_untracked_stash(
+    sandbox: &Sandbox,
+    gikli: &Gikli,
+) -> (TestRepository, Repository, String) {
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "one\ntwo\n");
+    work.commit_all("Add notes");
+    let root = opened(gikli, &work);
+    work.write("notes.txt", "one\ntwo\nthree\n");
+    work.write("draft.txt", "draft\n");
+    let stashes = gikli
+        .stash(
+            &root,
+            &StashOptions {
+                message: "With draft".to_owned(),
+                keep_index: false,
+                include_untracked: true,
+            },
+        )
+        .expect("stash every change");
+    let hash = stashes.entries[0].hash.clone();
+    (work, root, hash)
+}
+
+#[test]
+fn popping_a_stash_brings_back_the_files_git_did_not_track() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root, hash) = with_an_untracked_stash(&sandbox, &gikli);
+
+    let plan = gikli.unstash_plan(&root, &hash).expect("plan the unstash");
+    gikli
+        .apply_stash(work.root(), &root, &hash, POP)
+        .expect("pop the stash");
+
+    assert_eq!(plan.untracked_in_the_way, Vec::<std::path::PathBuf>::new());
+    assert_eq!(work.status_by_git(), vec![" M notes.txt", "?? draft.txt"]);
+    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+}
+
+#[test]
+fn a_file_the_stash_did_not_track_already_on_disk_is_warned_of_and_keeps_the_stash() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root, hash) = with_an_untracked_stash(&sandbox, &gikli);
+    work.write("draft.txt", "another draft\n");
+
+    let plan = gikli.unstash_plan(&root, &hash).expect("plan the unstash");
+    let popped = gikli.apply_stash(work.root(), &root, &hash, POP);
+
+    assert_eq!(
+        plan.untracked_in_the_way,
+        vec![std::path::PathBuf::from("draft.txt")]
+    );
+    assert!(!plan.local_changes);
+    assert_eq!(
+        popped,
+        Err(Failure::StashNotApplied {
+            folder: root.root.clone()
+        })
+    );
+    assert_eq!(stashes_by_git(&work), vec!["On main: With draft"]);
+    assert_eq!(
+        std::fs::read_to_string(work.root().join("draft.txt")).expect("read the draft"),
+        "another draft\n"
+    );
+}
+
+#[test]
+fn a_branch_from_a_stash_git_cannot_apply_whole_stays_and_keeps_the_stash() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root, hash) = with_an_untracked_stash(&sandbox, &gikli);
+    work.write("draft.txt", "another draft\n");
+
+    let branched = gikli.stash_branch(work.root(), &root, &hash, "from-stash");
+
+    assert_eq!(
+        branched,
+        Err(Failure::StashNotApplied {
+            folder: root.root.clone()
+        })
+    );
+    assert_eq!(work.git(&["branch", "--show-current"]), "from-stash\n");
+    assert_eq!(stashes_by_git(&work), vec!["On main: With draft"]);
 }

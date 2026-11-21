@@ -1189,8 +1189,8 @@ describe("gikli", () => {
         await $('[data-testid="unstash-dialog-pop"]').click();
         await unstash.waitForDisplayed({ timeout: 30000, reverse: true });
         await row.waitForExist({ timeout: 30000, reverse: true });
-        assert.equal(fs.readFileSync(inRepository(file), "utf8"), "stashed
-", "the pop brought the file back");
+        // git checks the file out again, so core.autocrlf may give it CRLF line endings.
+        assert.match(fs.readFileSync(inRepository(file), "utf8"), /^stashed\r?\n$/, "the pop brought the file back");
         assert.equal(runGit(repository, gitconfig, "stash", "list"), "", "the pop dropped the stash");
 
         await $('[data-testid="stashes-close"]').click();

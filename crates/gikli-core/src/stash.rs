@@ -106,7 +106,7 @@ pub struct Unstashed {
     /// The stashes after that.
     pub stashes: Stashes,
     /// Whether applying the stash left files in conflict, which conflict resolution then lists.
-    pub conflicts: bool,
+    pub conflicts_left: bool,
 }
 
 /// What the unstash dialog shows before the user brings a stash back.
@@ -119,6 +119,9 @@ pub struct UnstashPlan {
     /// Whether tracked files have uncommitted changes, staged or not. The dialog warns of them,
     /// and does not block: git applies a stash over changes to other files.
     pub local_changes: bool,
+    /// The files the stash holds that git did not track and that are on disk already, by path.
+    /// git restores none of them, and fails after applying the rest, so the dialog warns of them.
+    pub untracked_in_the_way: Vec<PathBuf>,
 }
 
 /// What git prints of each stash, a field per NUL. Its name comes from its place in the list, the
@@ -320,16 +323,24 @@ pub(crate) fn unstash_plan(
     repository: &Repository,
     hash: &str,
 ) -> Result<UnstashPlan, Failure> {
-    let stash = to_unstash(runner, repository, hash)?;
+    let stash = available_stash(runner, repository, hash)?;
+    let untracked_in_the_way = StashCommits::of(runner, repository, hash)?
+        .files(runner, repository)?
+        .into_iter()
+        .filter(|file| file.status == ChangeStatus::Untracked)
+        .map(|file| file.path)
+        .filter(|path| repository.root.join(path).symlink_metadata().is_ok())
+        .collect();
     Ok(UnstashPlan {
         repository: repository.clone(),
         stash,
         local_changes: has_local_changes(runner, repository)?,
+        untracked_in_the_way,
     })
 }
 
-/// The stash `hash` of `repository`, to bring back, when the Repository can stash and has it.
-pub(crate) fn to_unstash(
+/// The stash `hash` of `repository`, when the Repository can stash and has it.
+pub(crate) fn available_stash(
     runner: &GitRunner,
     repository: &Repository,
     hash: &str,
@@ -364,6 +375,19 @@ pub(crate) fn drop(runner: &GitRunner, repository: &Repository, hash: &str) -> R
             folder: repository.root.clone(),
         },
     )
+}
+
+/// Drops the stash `hash` of `repository`, as [`drop`] does, and nothing when it is gone already,
+/// as when it was dropped elsewhere since the user asked.
+pub(crate) fn drop_if_there(
+    runner: &GitRunner,
+    repository: &Repository,
+    hash: &str,
+) -> Result<(), Failure> {
+    match drop(runner, repository, hash) {
+        Err(Failure::StashNotFound { .. }) => Ok(()),
+        dropped => dropped,
+    }
 }
 
 /// Drops every stash of `repository`, when they are still `seen`, the hashes of the stashes the

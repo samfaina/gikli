@@ -426,7 +426,7 @@ export type Failure =
   | { kind: "stashesChanged"; folder: string }
   /** git could not clear the stashes: the operation log shows why. */
   | { kind: "stashesNotCleared"; folder: string }
-  /** git could not apply the stash and left no file in conflict, as when it would overwrite local changes. The stash is kept. */
+  /** git could not apply all of the stash and left no file in conflict. What it applied stays, and the stash is kept. */
   | { kind: "stashNotApplied"; folder: string }
   /** The text of a search is no regular expression, as `message` explains. */
   | { kind: "searchPatternInvalid"; message: string }
@@ -1761,13 +1761,15 @@ export interface UnstashPlan {
   stash: Stash;
   /** Whether tracked files have uncommitted changes. The dialog warns of them and does not block. */
   localChanges: boolean;
+  /** The files the stash holds that git did not track and that are on disk already: git restores none of them. */
+  untrackedInTheWay: string[];
 }
 
 /** What bringing a stash back came to. */
 export interface Unstashed {
   stashes: Stashes;
   /** Whether applying the stash left files in conflict; the core then raises `conflictsLeft`. */
-  conflicts: boolean;
+  conflictsLeft: boolean;
 }
 
 /** What the unstash dialog shows for the stash `hash`. Rejects with a {@link Failure}. */

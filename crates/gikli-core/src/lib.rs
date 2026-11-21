@@ -731,9 +731,10 @@ pub enum Failure {
     StashesChanged {
         folder: PathBuf,
     },
-    /// git could not apply the stash to the Repository at `folder`, as when local changes to the
-    /// files it changes would be overwritten, and left no file in conflict. The stash is kept. The
-    /// operation log holds git's output.
+    /// git could not apply all of the stash to the Repository at `folder`, and left no file in
+    /// conflict: it would have overwritten local changes, or files the stash holds that git did
+    /// not track are on disk already. What git applied stays, and so does a branch it created
+    /// from the stash. The stash is kept. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     StashNotApplied {
         folder: PathBuf,
@@ -1108,10 +1109,7 @@ impl Gikli {
     /// notification. One dropped since, as from the stashes tab, is gone already.
     fn drop_kept_stash(&self, notification: &Notification) -> Result<NotificationOutcome, Failure> {
         let (repository, stash) = notification.kept_stash()?;
-        match stash::drop(&self.runner(&repository.root)?, repository, &stash.hash) {
-            Ok(()) | Err(Failure::StashNotFound { .. }) => {}
-            Err(failure) => return Err(failure),
-        }
+        stash::drop_if_there(&self.runner(&repository.root)?, repository, &stash.hash)?;
         self.notifications.withdraw(notification.id);
         Ok(NotificationOutcome::StashesChanged(repository.clone()))
     }
@@ -2663,21 +2661,16 @@ impl Gikli {
         options: PullOptions,
     ) -> Result<bool, Failure> {
         let root = &repository.root;
-        if conflicts::any(runner, repository)? {
-            return Err(Failure::ConflictsNotResolved);
-        }
         let operation = LongOperation::Pull {
             repository: repository.clone(),
             remote: source.remote.clone(),
             branch: source.branch.clone(),
         };
         let args = pull::pull_args(source, options);
-        let invocation = self.run_operation(runner, operation, root, &as_args(&args))?;
         // A merge or a rebase that stops on a conflict waits for the user to resolve it, and so
-        // does a squash, with no operation to go on with. Files were in no conflict before, as
-        // git pulls nothing into a working tree that has some.
-        let stopped_on_conflict =
-            !invocation.success && !invocation.cancelled && conflicts::any(runner, repository)?;
+        // does a squash, with no operation to go on with.
+        let (invocation, stopped_on_conflict) =
+            self.run_stopping_on_conflicts(runner, repository, operation, &as_args(&args))?;
         if !invocation.success && !stopped_on_conflict {
             return Err(failure_of_contacting_remotes(
                 runner,
@@ -2688,11 +2681,6 @@ impl Gikli {
                     folder: root.clone(),
                 },
             ));
-        }
-        if stopped_on_conflict {
-            self.events.send(Event::ConflictsLeft {
-                repository: repository.clone(),
-            });
         }
         Ok(stopped_on_conflict)
     }
@@ -3414,8 +3402,8 @@ impl Gikli {
     }
 
     /// What the unstash dialog shows for the stash whose commit is `hash` in `repository`: the
-    /// stash, and whether tracked files have uncommitted changes, which it warns of without
-    /// blocking.
+    /// stash, whether tracked files have uncommitted changes, and the files the stash holds that
+    /// git did not track and that are on disk already. It warns of them without blocking.
     pub fn unstash_plan(
         &self,
         repository: &Repository,
@@ -3429,8 +3417,8 @@ impl Gikli {
     /// say to pop it. Returns the stashes after that, and whether applying left files in conflict.
     /// A stash that left files in conflict says so with [`Event::ConflictsLeft`], so conflict
     /// resolution opens, and is kept even when popped. Uncommitted changes do not stop it: git
-    /// refuses, with [`Failure::StashNotApplied`], only when it would overwrite them. A stash that
-    /// is gone returns [`Failure::StashNotFound`].
+    /// fails, with [`Failure::StashNotApplied`], only on what it would overwrite. A stash that is
+    /// gone returns [`Failure::StashNotFound`].
     pub fn apply_stash(
         &self,
         project: &Path,
@@ -3439,20 +3427,12 @@ impl Gikli {
         options: UnstashOptions,
     ) -> Result<Unstashed, Failure> {
         let runner = self.runner(&repository.root)?;
-        stash::to_unstash(&runner, repository, hash)?;
         let mut args = vec!["stash", "apply", "--quiet"];
         if options.restore_index {
             args.push("--index");
         }
         args.push(hash);
-        let conflicts = self.unstash(&runner, repository, &args)?;
-        if options.pop {
-            self.drop_unless_conflicted(&runner, project, repository, hash, conflicts)?;
-        }
-        Ok(Unstashed {
-            stashes: stash::list(&runner, repository)?,
-            conflicts,
-        })
+        self.bring_back(&runner, project, repository, hash, &args, options.pop)
     }
 
     /// Creates the branch `name` of `repository`, a Repository of the Project at `project`, at the
@@ -3468,64 +3448,33 @@ impl Gikli {
         name: &str,
     ) -> Result<Unstashed, Failure> {
         let runner = self.runner(&repository.root)?;
-        stash::to_unstash(&runner, repository, hash)?;
         new_branch::check_name(&runner, repository, name)?;
         // Given the stash's commit and not its place in the list, git drops nothing itself.
-        let conflicts = self.unstash(&runner, repository, &["stash", "branch", name, hash])?;
-        self.drop_unless_conflicted(&runner, project, repository, hash, conflicts)?;
-        Ok(Unstashed {
-            stashes: stash::list(&runner, repository)?,
-            conflicts,
-        })
+        let args = ["stash", "branch", name, hash];
+        self.bring_back(&runner, project, repository, hash, &args, true)
     }
 
-    /// Drops the stash `hash` of `repository`, which was just applied, unless applying it left
-    /// files in conflict, as `conflicts` says. Then it is kept, and a notification about the
-    /// Project at `project` offers to drop it, once the user confirms it.
-    fn drop_unless_conflicted(
+    /// Brings the stash `hash` back into `repository` with `args`, the arguments after `git` that
+    /// apply it, and drops it after when `drops` says so. A stash that left files in conflict is
+    /// kept, and a notification about the Project at `project` offers to drop it, once the user
+    /// confirms it. One dropped elsewhere since it applied is gone already.
+    fn bring_back(
         &self,
         runner: &GitRunner,
         project: &Path,
         repository: &Repository,
         hash: &str,
-        conflicts: bool,
-    ) -> Result<(), Failure> {
-        if !conflicts {
-            return stash::drop(runner, repository, hash);
-        }
-        let stash = stash::to_unstash(runner, repository, hash)?;
-        self.notifications.raise(
-            project,
-            NotificationKind::StashKept {
-                repository: repository.clone(),
-                stash,
-            },
-            vec![NotificationAction::DropStash],
-        );
-        Ok(())
-    }
-
-    /// Runs `args`, the arguments after `git` that apply a stash to `repository`, as a
-    /// [`LongOperation`], and returns whether applying it left files in conflict, which it says
-    /// with [`Event::ConflictsLeft`]. Files already in conflict return
-    /// [`Failure::ConflictsNotResolved`] before git runs, as git applies no stash over them.
-    fn unstash(
-        &self,
-        runner: &GitRunner,
-        repository: &Repository,
         args: &[&str],
-    ) -> Result<bool, Failure> {
-        let root = &repository.root;
-        if conflicts::any(runner, repository)? {
-            return Err(Failure::ConflictsNotResolved);
-        }
+        drops: bool,
+    ) -> Result<Unstashed, Failure> {
+        let stash = stash::available_stash(runner, repository, hash)?;
         let operation = LongOperation::ApplyStash {
             repository: repository.clone(),
         };
-        let invocation = self.run_operation(runner, operation, root, args)?;
-        let stopped_on_conflict =
-            !invocation.success && !invocation.cancelled && conflicts::any(runner, repository)?;
-        if !invocation.success && !stopped_on_conflict {
+        let root = &repository.root;
+        let (invocation, conflicts_left) =
+            self.run_stopping_on_conflicts(runner, repository, operation, args)?;
+        if !invocation.success && !conflicts_left {
             return Err(failure_of(
                 runner,
                 root,
@@ -3535,12 +3484,47 @@ impl Gikli {
                 },
             ));
         }
+        if drops && conflicts_left {
+            self.notifications.raise(
+                project,
+                NotificationKind::StashKept {
+                    repository: repository.clone(),
+                    stash,
+                },
+                vec![NotificationAction::DropStash],
+            );
+        } else if drops {
+            stash::drop_if_there(runner, repository, hash)?;
+        }
+        Ok(Unstashed {
+            stashes: stash::list(runner, repository)?,
+            conflicts_left,
+        })
+    }
+
+    /// Runs `operation`, git with `args` in `repository`, and returns how it ran and whether it
+    /// stopped on a conflict, which it says with [`Event::ConflictsLeft`], so the conflicts dialog
+    /// opens. Files already in conflict return [`Failure::ConflictsNotResolved`] before git runs,
+    /// as git goes on with none of these over them, so a conflict after it is one it left.
+    fn run_stopping_on_conflicts(
+        &self,
+        runner: &GitRunner,
+        repository: &Repository,
+        operation: LongOperation,
+        args: &[&str],
+    ) -> Result<(Invocation, bool), Failure> {
+        if conflicts::any(runner, repository)? {
+            return Err(Failure::ConflictsNotResolved);
+        }
+        let invocation = self.run_operation(runner, operation, &repository.root, args)?;
+        let stopped_on_conflict =
+            !invocation.success && !invocation.cancelled && conflicts::any(runner, repository)?;
         if stopped_on_conflict {
             self.events.send(Event::ConflictsLeft {
                 repository: repository.clone(),
             });
         }
-        Ok(stopped_on_conflict)
+        Ok((invocation, stopped_on_conflict))
     }
 
     /// The files the stash whose commit is `hash` holds in `repository`, by path: each change to a

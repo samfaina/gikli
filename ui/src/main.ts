@@ -1662,6 +1662,9 @@ function notificationView(notification: Notification): HTMLElement {
     button.dataset.action = action.action;
     button.textContent = describeAction(action);
     button.addEventListener("click", async () => {
+      if (!(await confirmAction(notification, action))) {
+        return;
+      }
       buttons.forEach((other) => (other.disabled = true));
       try {
         const outcome = await actOnNotification(notification.id, action);
@@ -1704,6 +1707,15 @@ function notificationView(notification: Notification): HTMLElement {
   actions.append(...buttons, dismiss);
   view.append(message, actions);
   return view;
+}
+
+/** Whether the user confirms `action` of `notification`, for an action that loses work; any other goes on at once. */
+async function confirmAction(notification: Notification, action: NotificationAction): Promise<boolean> {
+  if (action.action !== "dropStash" || notification.kind.kind !== "stashKept") {
+    return true;
+  }
+  const { stash } = notification.kind;
+  return confirm(t("dropStashConfirm", { name: stash.name, message: stash.message }), { title: t("dropStash"), kind: "warning" });
 }
 
 function describeNotification(notification: Notification): string {

@@ -85,10 +85,18 @@ export function createUnstashDialog(host: UnstashDialogHost): UnstashDialog {
     popButton.focus();
     void unstashPlan(repository, stash.hash).then(
       (plan) => {
-        if (thisOpen === latestOpen && plan.localChanges) {
-          warning.textContent = t("unstashDialogLocalChanges");
-          warning.hidden = false;
+        if (thisOpen !== latestOpen) {
+          return;
         }
+        const warnings = [];
+        if (plan.localChanges) {
+          warnings.push(t("unstashDialogLocalChanges"));
+        }
+        if (plan.untrackedInTheWay.length > 0) {
+          warnings.push(t("unstashDialogUntrackedInTheWay", { files: plan.untrackedInTheWay.join(", ") }));
+        }
+        warning.textContent = warnings.join(" ");
+        warning.hidden = warnings.length === 0;
       },
       (error: unknown) => {
         if (thisOpen === latestOpen) {
