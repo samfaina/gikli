@@ -142,12 +142,16 @@ fn saved_at(reference: &str) -> Option<u64> {
 }
 
 /// Brings the branch `backup` saved back to the commit it holds, from `head`, the commit the
-/// rewrite left it on, or no commit. What the rewrite changed in the files stays as it is,
-/// uncommitted. When the branch is no longer on `head`, nothing changes and this returns
-/// [`Failure::BranchMovedSinceRewrite`], as what was done since would go.
+/// `rewrite` left it on, or no commit. What the rewrite changed in the files stays as it is,
+/// uncommitted, as it is the work of an undone or amended commit. Dropped local commits are no
+/// work of the user's since: their files come back with them, and the user's local changes stay,
+/// as `git reset --keep` keeps them, or nothing changes when one is in the way. When the branch is
+/// no longer on `head`, nothing changes and this returns [`Failure::BranchMovedSinceRewrite`], as
+/// what was done since would go.
 pub(crate) fn restore(
     runner: &GitRunner,
     repository: &Repository,
+    rewrite: Rewrite,
     backup: &Backup,
     head: Option<&str>,
 ) -> Result<(), Failure> {
@@ -166,11 +170,13 @@ pub(crate) fn restore(
     }
     let root = &repository.root;
     let restored = if on_head {
-        // Moves the branch with HEAD, and keeps the index and the files as they are.
-        runner.run(
-            root,
-            &["reset", "--soft", "--end-of-options", &backup.commit],
-        )
+        // Moves the branch with HEAD. `--soft` keeps the index and the files as they are, and
+        // `--keep` brings back the files of the commits, keeping the local changes.
+        let mode = match rewrite {
+            Rewrite::UndoCommit | Rewrite::Amend => "--soft",
+            Rewrite::DropLocalCommits => "--keep",
+        };
+        runner.run(root, &["reset", mode, "--end-of-options", &backup.commit])
     } else {
         let message = "gikli: restore backup";
         let old_value = head.unwrap_or_default();

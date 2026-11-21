@@ -1230,10 +1230,12 @@ impl Gikli {
     fn restore_backup(&self, notification: &Notification) -> Result<NotificationOutcome, Failure> {
         let Rewritten {
             repository,
+            rewrite,
             backup,
             head,
         } = notification.history_rewrite()?;
-        backups::restore(&self.runner(&repository.root)?, repository, backup, head)?;
+        let runner = self.runner(&repository.root)?;
+        backups::restore(&runner, repository, rewrite, backup, head)?;
         self.notifications.dismiss(notification.id);
         Ok(NotificationOutcome::HeadMoved(repository.clone()))
     }
@@ -3034,7 +3036,7 @@ impl Gikli {
                 self.run_checkout(&runner, Some(project), repository, planned)
             }
             OverLocalChanges::SaveAndRestore => {
-                let rebases = planned.rebases.is_some();
+                let rebases = matches!(planned.how, checkout::How::Rebase { .. });
                 let saved = self.save_local_changes(repository)?;
                 let checked_out = self.run_checkout(&runner, Some(project), repository, planned);
                 // A rebase that stopped holds files in conflict, which the changes cannot come
@@ -3112,23 +3114,21 @@ impl Gikli {
         repository: &Repository,
         planned: checkout::Planned,
     ) -> Result<CurrentBranch, Failure> {
-        if planned.rebases.is_some() {
-            return self.run_rebasing_checkout(runner, repository, planned);
-        }
+        let backup = match &planned.how {
+            checkout::How::Rebase { branch } => {
+                let branch = branch.clone();
+                return self.run_rebasing_checkout(runner, repository, &branch, planned);
+            }
+            checkout::How::SwitchDropping { branch, commit } => {
+                Some(backups::save(runner, repository, Some(branch), commit)?)
+            }
+            checkout::How::Switch => None,
+        };
         let operation = LongOperation::CheckOut {
             repository: repository.clone(),
             target: planned.label.clone(),
         };
         let root = &repository.root;
-        let backup = match &planned.drops {
-            Some(dropped) => Some(backups::save(
-                runner,
-                repository,
-                Some(&dropped.branch),
-                &dropped.commit,
-            )?),
-            None => None,
-        };
         let invocation = self.run_operation(runner, operation, root, &as_args(&planned.args))?;
         if !invocation.success {
             if let Some(backup) = &backup {
@@ -3150,8 +3150,8 @@ impl Gikli {
         sync::current_branch(runner, repository)
     }
 
-    /// Runs `planned`, a checkout in `repository` that rebases a local branch onto the remote
-    /// branch it then follows, as a [`LongOperation`], and returns what HEAD is on after it. Files
+    /// Runs `planned`, a checkout in `repository` that rebases the local branch `branch` onto the
+    /// remote branch it then follows, as a [`LongOperation`], and returns what HEAD is on after it. Files
     /// that block it return [`Failure::CheckoutBlocked`] before git runs, as git rebases nothing
     /// while a tracked file has uncommitted changes. A rebase that stops on a conflict says so with
     /// [`Event::ConflictsLeft`], so the conflicts dialog opens, and is in progress, with the branch
@@ -3160,11 +3160,9 @@ impl Gikli {
         &self,
         runner: &GitRunner,
         repository: &Repository,
+        branch: &str,
         planned: checkout::Planned,
     ) -> Result<CurrentBranch, Failure> {
-        let Some(branch) = &planned.rebases else {
-            return Err(planned.fallback);
-        };
         if let Some(blocked) = checkout::blocked(runner, repository, &planned)? {
             return Err(blocked);
         }

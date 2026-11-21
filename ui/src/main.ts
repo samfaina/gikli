@@ -2253,7 +2253,11 @@ function describeFailure(failure: Failure): string {
     case "checkoutBlocked":
       return t("failureCheckoutBlocked", { folder: failure.folder, files: [...failure.localChanges, ...failure.untrackedFiles].join(", ") });
     case "localCommitsWouldBeLost":
-      return t("failureLocalCommitsWouldBeLost", { branch: failure.branch, remoteBranch: failure.remoteBranch, commits: String(failure.commits) });
+      return t(failure.commits === 1 ? "failureLocalCommitWouldBeLost" : "failureLocalCommitsWouldBeLost", {
+        branch: failure.branch,
+        remoteBranch: failure.remoteBranch,
+        commits: String(failure.commits),
+      });
     case "branchNotRenamed":
       return t("failureBranchNotRenamed", { folder: failure.folder, name: failure.name });
     case "upstreamNotUnset":

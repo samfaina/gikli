@@ -43,7 +43,6 @@ export function createLocalCommitsDialog(host: LocalCommitsDialogHost): LocalCom
   let busy = false;
 
   dropButton.textContent = t("localCommitsDrop");
-  rebaseButton.textContent = t("localCommitsRebase");
   cancelButton.textContent = t("localCommitsCancel");
   dropButton.addEventListener("click", () => void checkOut("drop"));
   rebaseButton.addEventListener("click", () => void checkOut("rebase"));
@@ -59,7 +58,8 @@ export function createLocalCommitsDialog(host: LocalCommitsDialogHost): LocalCom
     shown = { repository, lost };
     title.textContent = t("localCommitsTitle", { remoteBranch: lost.remoteBranch });
     title.title = repository.root;
-    explanation.textContent = t("localCommitsExplanation", {
+    rebaseButton.textContent = t("localCommitsRebase", { remoteBranch: lost.remoteBranch });
+    explanation.textContent = t(lost.commits === 1 ? "localCommitsExplanationOne" : "localCommitsExplanation", {
       branch: lost.branch,
       remoteBranch: lost.remoteBranch,
       commits: String(lost.commits),

@@ -1,8 +1,8 @@
 // The branch selector: opened from the current branch in the status area, it shows what HEAD is
 // on with the operation half done there, and every branch and tag in the groups Recent, Local,
-// Remote and Tags, with a search across them. Picking a local branch, a remote branch or a tag checks
-// it out, and a new branch starts from HEAD. The core lists, groups and searches them, and checks them out; this
-// draws them and keeps the options.
+// Remote and Tags, with a search across them. Picking a local branch, a remote branch or a tag
+// checks it out, and a new branch starts from HEAD. The core lists, groups and searches them, and
+// checks them out; this draws them and keeps the options.
 
 import type { BlockedCheckout } from "./blocked-checkout-dialog";
 import type { LostLocalCommits } from "./local-commits-dialog";
@@ -219,10 +219,11 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     if (checkingOut || project === null) {
       return;
     }
-    const target = checkoutTarget(branch);
-    if (target === null) {
+    const picked = checkoutOf(project, shown, branch);
+    if (picked === null) {
       return;
     }
+    const { target, run } = picked;
     // The lists are not read again while the checkout runs, so they do not take the place of what it says.
     window.clearTimeout(searchTimer);
     latestRead += 1;
@@ -233,7 +234,7 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
     groups.replaceChildren(progress);
     let failure: { error: unknown } | null = null;
     try {
-      await checkOut(project, shown, target);
+      await run();
     } catch (error) {
       failure = { error };
     } finally {
@@ -270,33 +271,21 @@ export function createBranchSelector(host: BranchSelectorHost): BranchSelector {
   return { toggle, close };
 }
 
-/** What picking `branch` checks out: a local branch, a remote branch or a tag. Null for HEAD itself. */
-function checkoutTarget(branch: Branch): CheckoutTarget | null {
+/**
+ * The checkout picking `branch` of `repository`, a Repository of the Project at `project`, runs: of a local branch, a remote branch
+ * or a tag, with the target it takes HEAD to. Null for HEAD itself.
+ */
+function checkoutOf(project: string, repository: Repository, branch: Branch): { target: CheckoutTarget; run: () => Promise<CurrentBranch> } | null {
   const { name, kind } = branch.label;
   switch (kind) {
     case "local":
-      return { kind: "branch", name };
+      return { target: { kind: "branch", name }, run: () => checkOutBranch(repository, name) };
     case "remote":
-      return { kind: "remoteBranch", name, localCommits: null };
+      return { target: { kind: "remoteBranch", name, localCommits: null }, run: () => checkOutRemoteBranch(project, repository, name, null) };
     case "tag":
-      return { kind: "tag", name };
+      return { target: { kind: "tag", name }, run: () => checkOutTag(repository, name) };
     case "head":
       return null;
-  }
-}
-
-/** Checks out `target` of `repository`, a Repository of the Project at `project`. */
-function checkOut(project: string, repository: Repository, target: CheckoutTarget): Promise<CurrentBranch> {
-  switch (target.kind) {
-    case "branch":
-      return checkOutBranch(repository, target.name);
-    case "tag":
-      return checkOutTag(repository, target.name);
-    case "remoteBranch":
-      return checkOutRemoteBranch(project, repository, target.name, target.localCommits);
-    case "revision":
-    case "newBranch":
-      throw new Error(`the branch selector does not check out a ${target.kind}`);
   }
 }
 

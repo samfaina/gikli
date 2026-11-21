@@ -68,17 +68,20 @@ pub(crate) struct Planned {
     pub args: Vec<String>,
     /// The failure to tell when git fails and nothing explains why.
     pub fallback: Failure,
-    /// The local branch whose commits the checkout drops, which a Backup saves first, if any.
-    pub drops: Option<Dropped>,
-    /// The local branch whose commits the checkout rebases onto `revision`, a remote branch it
-    /// then follows, if any. The checkout is then a rebase, which needs every local change gone.
-    pub rebases: Option<String>,
+    /// How git checks it out.
+    pub how: How,
 }
 
-/// The local branch `branch` a checkout moves away from `commit`, dropping commits.
-pub(crate) struct Dropped {
-    pub branch: String,
-    pub commit: String,
+/// How git runs a checkout.
+pub(crate) enum How {
+    /// git switches to the target, and no commit goes.
+    Switch,
+    /// git switches to the target, moving the local branch `branch` away from `commit` and
+    /// dropping the commits the target does not have, which a Backup saves first.
+    SwitchDropping { branch: String, commit: String },
+    /// git rebases the local branch `branch` onto the target, a remote branch it then follows,
+    /// which needs every local change gone.
+    Rebase { branch: String },
 }
 
 /// The checkout of `target` in `repository`, once the target is known to be there. A branch, a
@@ -100,8 +103,7 @@ pub(crate) fn plan(
             args: to_strings(&["switch", "--detach", &hash]),
             revision: hash,
             fallback: failed.clone(),
-            drops: None,
-            rebases: None,
+            how: How::Switch,
         })
     };
     match target {
@@ -118,8 +120,7 @@ pub(crate) fn plan(
                 revision: format!("refs/heads/{name}"),
                 args: to_strings(&["switch", "--no-guess", name]),
                 fallback: failed,
-                drops: None,
-                rebases: None,
+                how: How::Switch,
             })
         }
         CheckoutTarget::Tag { name } => {
@@ -142,7 +143,7 @@ pub(crate) fn plan(
             let revision = remote_branch.full_name();
             details::resolve_known_as(runner, repository, &revision, name)?;
             let local = local_name(runner, repository, &remote_branch)?;
-            let mut drops = None;
+            let mut how = How::Switch;
             // A local branch of that name moves to the remote branch, once nothing would be lost
             // or the user chose what happens to its commits.
             let create = if new_branch::has_local_branch(runner, repository, &local)? {
@@ -158,10 +159,10 @@ pub(crate) fn plan(
                     }
                     Some(LocalCommits::Drop) => {
                         let branch = format!("refs/heads/{local}");
-                        drops = Some(Dropped {
+                        how = How::SwitchDropping {
                             commit: details::resolve(runner, repository, &branch)?,
                             branch: local.clone(),
-                        });
+                        };
                     }
                     Some(LocalCommits::Rebase) => {
                         // By its name, as git rebases a branch it is given by its whole reference
@@ -171,8 +172,7 @@ pub(crate) fn plan(
                             args: to_strings(&["rebase", "--end-of-options", &revision, &local]),
                             revision,
                             fallback: failed,
-                            drops: None,
-                            rebases: Some(local),
+                            how: How::Rebase { branch: local },
                         });
                     }
                 }
@@ -185,8 +185,7 @@ pub(crate) fn plan(
                 args: to_strings(&["switch", create, &local, "--track", &revision]),
                 revision,
                 fallback: failed,
-                drops,
-                rebases: None,
+                how,
             })
         }
         CheckoutTarget::NewBranch { name, base } => {
@@ -197,8 +196,7 @@ pub(crate) fn plan(
                 args: to_strings(&["switch", "--create", name, &start]),
                 revision: start,
                 fallback: new_branch::not_created(repository, name),
-                drops: None,
-                rebases: None,
+                how: How::Switch,
             })
         }
     }
@@ -288,21 +286,22 @@ impl Blocking {
     fn of(runner: &GitRunner, repository: &Repository, planned: &Planned) -> Result<Self, Failure> {
         let revision = &planned.revision;
         let (moved, staged) = moved_and_staged(runner, repository, revision)?;
-        let local_changes = match &planned.rebases {
-            None => local_changes_in_the_way(runner, repository, revision, &moved, &staged)?,
-            // git rebases nothing while any tracked file has uncommitted changes.
-            Some(_) => {
+        let (local_changes, moved) = match &planned.how {
+            How::Switch | How::SwitchDropping { .. } => (
+                local_changes_in_the_way(runner, repository, revision, &moved, &staged)?,
+                moved,
+            ),
+            How::Rebase { branch } => {
+                // git rebases nothing while any tracked file has uncommitted changes.
                 let mut changed = staged;
                 changed.extend(changed_paths(runner, repository, &["diff"], &[])?);
-                changed.into_iter().collect()
+                // The rebase checks out the branch before it moves onto the remote branch.
+                let mut moved = moved;
+                let branch = format!("refs/heads/{branch}");
+                moved.extend(moved_and_staged(runner, repository, &branch)?.0);
+                (changed.into_iter().collect(), moved)
             }
         };
-        let mut moved = moved;
-        if let Some(branch) = &planned.rebases {
-            // The rebase checks out the branch before it moves onto the remote branch.
-            let branch = format!("refs/heads/{branch}");
-            moved.extend(moved_and_staged(runner, repository, &branch)?.0);
-        }
         let untracked_files = untracked_in_the_way(runner, repository, &moved, &local_changes)?;
         Ok(Self {
             local_changes,

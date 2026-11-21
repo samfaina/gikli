@@ -66,6 +66,7 @@ fn with_remote_branch(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
     (publisher, work)
 }
 
+/// HEAD on the local branch `name`, which follows `upstream` and is on the same commit.
 fn on_branch_following(name: &str, upstream: &str) -> CurrentBranch {
     CurrentBranch::Branch {
         name: name.to_owned(),
@@ -107,13 +108,13 @@ fn checking_out_a_remote_branch_creates_a_local_branch_that_follows_it() {
     assert_eq!(work.status_by_git(), Vec::<String>::new());
 }
 
-/// The local branch has none of its own commits, so moving it loses nothing: it moves to the
-/// remote branch, and follows it from then on, though it followed nothing before.
+/// The local branch has none of its own commits, only incoming ones, so moving it loses nothing:
+/// it moves to the remote branch, and follows it from then on, whatever it followed before.
 #[test]
-fn checking_out_a_remote_branch_moves_a_local_branch_behind_it_to_it() {
+fn checking_out_a_remote_branch_moves_a_local_branch_that_loses_nothing_to_it() {
     let sandbox = Sandbox::new();
     let (publisher, work) = with_remote_branch(&sandbox);
-    work.git(&["branch", "--no-track", "feature/login", "main"]);
+    work.git(&["branch", "--track", "feature/login", "origin/main"]);
     publisher.write("login.txt", "login\nagain\n");
     publisher.commit_all("Log in again");
     publisher.git(&["push", "--quiet", "origin", "feature/login"]);
@@ -149,22 +150,24 @@ fn checking_out_a_remote_branch_moves_a_local_branch_behind_it_to_it() {
 fn with_local_commits(sandbox: &Sandbox) -> TestRepository {
     let (publisher, work) = with_remote_branch(sandbox);
     work.git(&["switch", "--quiet", "--track", "origin/feature/login"]);
-    work.write(
-        "remember.txt",
-        "remember
-",
-    );
+    work.write("remember.txt", "remember\n");
     work.commit_all("Remember me");
     work.git(&["switch", "--quiet", "main"]);
-    publisher.write(
-        "login.txt",
-        "login
-again
-",
-    );
+    publisher.write("login.txt", "login\nagain\n");
     publisher.commit_all("Log in again");
     publisher.git(&["push", "--quiet", "origin", "feature/login"]);
     work.git(&["fetch", "--quiet", "origin"]);
+    work
+}
+
+/// [`with_local_commits`], where `feature/login` also changes `login.txt` as the remote branch
+/// does, so rebasing it stops on a conflict there.
+fn with_conflicting_local_commits(sandbox: &Sandbox) -> TestRepository {
+    let work = with_local_commits(sandbox);
+    work.git(&["switch", "--quiet", "feature/login"]);
+    work.write("login.txt", "login\nmine\n");
+    work.commit_all("Log in my way");
+    work.git(&["switch", "--quiet", "main"]);
     work
 }
 
@@ -275,6 +278,11 @@ fn dropping_the_local_commits_saves_a_backup_and_the_notification_offers_undo() 
         "the commits are back"
     );
     assert_eq!(head_by_git(&work), "feature/login");
+    assert!(
+        work.root().join("remember.txt").exists(),
+        "and so are their files"
+    );
+    assert_eq!(work.status_by_git(), Vec::<String>::new());
 }
 
 /// The subjects of the last `count` commits of `revision` in `repository`, newest first.
@@ -347,16 +355,7 @@ fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
 #[test]
 fn a_rebase_onto_the_remote_branch_that_stops_on_a_conflict_is_in_progress() {
     let sandbox = Sandbox::new();
-    let work = with_local_commits(&sandbox);
-    work.git(&["switch", "--quiet", "feature/login"]);
-    work.write(
-        "login.txt",
-        "login
-mine
-",
-    );
-    work.commit_all("Log in my way");
-    work.git(&["switch", "--quiet", "main"]);
+    let work = with_conflicting_local_commits(&sandbox);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
     let events = gikli.subscribe();
@@ -390,11 +389,7 @@ mine
 fn a_checkout_of_a_remote_branch_that_files_block_lists_them_and_creates_no_branch() {
     let sandbox = Sandbox::new();
     let (_publisher, work) = with_remote_branch(&sandbox);
-    work.write(
-        "login.txt",
-        "mine
-",
-    );
+    work.write("login.txt", "mine\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -425,12 +420,7 @@ fn a_checkout_of_a_remote_branch_that_files_block_lists_them_and_creates_no_bran
 fn every_local_change_blocks_a_rebase_onto_the_remote_branch_until_it_is_saved() {
     let sandbox = Sandbox::new();
     let work = with_local_commits(&sandbox);
-    work.write(
-        "notes.txt",
-        "notes
-more
-",
-    );
+    work.write("notes.txt", "notes\nmore\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
     let target = CheckoutTarget::RemoteBranch {
@@ -453,7 +443,7 @@ more
     );
     assert_eq!(head_by_git(&work), "main", "nothing changed");
 
-    gikli
+    let head = gikli
         .check_out_over_local_changes(
             work.root(),
             &root,
@@ -462,6 +452,19 @@ more
         )
         .expect("save, rebase and restore");
 
+    assert_eq!(
+        head,
+        CurrentBranch::Branch {
+            name: "feature/login".to_owned(),
+            upstream: Some(Upstream {
+                name: "origin/feature/login".to_owned(),
+                commits: Some(IncomingOutgoing {
+                    incoming: 0,
+                    outgoing: 1,
+                }),
+            }),
+        }
+    );
     assert_eq!(head_by_git(&work), "feature/login");
     assert_eq!(
         subjects(&work, "HEAD", 2),
@@ -476,12 +479,7 @@ fn discarding_local_changes_before_dropping_local_commits_saves_the_backup_too()
     let sandbox = Sandbox::new();
     let work = with_local_commits(&sandbox);
     let local = commit_of(&work, "feature/login");
-    work.write(
-        "login.txt",
-        "login
-mine
-",
-    );
+    work.write("login.txt", "login\nmine\n");
     work.git(&["add", "login.txt"]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
@@ -490,7 +488,7 @@ mine
         local_commits: Some(LocalCommits::Drop),
     };
 
-    gikli
+    let head = gikli
         .check_out_over_local_changes(
             work.root(),
             &root,
@@ -502,6 +500,10 @@ mine
         .expect("discard and drop");
 
     assert_eq!(
+        head,
+        on_branch_following("feature/login", "origin/feature/login")
+    );
+    assert_eq!(
         commit_of(&work, "HEAD"),
         commit_of(&work, "refs/remotes/origin/feature/login")
     );
@@ -509,6 +511,20 @@ mine
     let backups = backups_by_git(&work);
     assert_eq!(backups.len(), 1, "one Backup: {backups:?}");
     assert!(backups[0].ends_with(&format!(" {local}")));
+    let notifications = gikli.notifications();
+    assert!(
+        matches!(
+            &notifications[..],
+            [notification] if matches!(
+                notification.kind,
+                NotificationKind::HistoryRewritten {
+                    rewrite: Rewrite::DropLocalCommits,
+                    ..
+                }
+            )
+        ),
+        "the notification offers to undo it: {notifications:?}"
+    );
 }
 
 #[test]
@@ -533,22 +549,8 @@ fn checking_out_a_remote_branch_deleted_since_says_so() {
 #[test]
 fn saved_local_changes_stay_saved_while_the_rebase_stops_on_a_conflict() {
     let sandbox = Sandbox::new();
-    let work = with_local_commits(&sandbox);
-    work.git(&["switch", "--quiet", "feature/login"]);
-    work.write(
-        "login.txt",
-        "login
-mine
-",
-    );
-    work.commit_all("Log in my way");
-    work.git(&["switch", "--quiet", "main"]);
-    work.write(
-        "notes.txt",
-        "notes
-more
-",
-    );
+    let work = with_conflicting_local_commits(&sandbox);
+    work.write("notes.txt", "notes\nmore\n");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
     let events = gikli.subscribe();
@@ -608,4 +610,130 @@ fn dropping_the_local_commits_of_the_current_branch_moves_it_with_head() {
         commit_of(&work, "refs/remotes/origin/feature/login")
     );
     assert_eq!(work.status_by_git(), Vec::<String>::new());
+}
+
+#[test]
+fn rebasing_the_local_commits_of_the_current_branch_keeps_head_on_it() {
+    let sandbox = Sandbox::new();
+    let work = with_local_commits(&sandbox);
+    work.git(&["switch", "--quiet", "feature/login"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    let head = gikli
+        .check_out_remote_branch(
+            work.root(),
+            &root,
+            "origin/feature/login",
+            Some(LocalCommits::Rebase),
+        )
+        .expect("rebase the local commits of the current branch");
+
+    assert!(
+        matches!(&head, CurrentBranch::Branch { name, .. } if name == "feature/login"),
+        "{head:?}"
+    );
+    assert_eq!(head_by_git(&work), "feature/login");
+    assert_eq!(
+        subjects(&work, "HEAD", 2),
+        vec!["Remember me", "Log in again"]
+    );
+}
+
+/// The local branch is named as the branch is on its remote, which the remote's fetch
+/// configuration says, wherever it puts the remote branches.
+#[test]
+fn a_remote_branch_names_its_local_branch_as_the_fetch_configuration_maps_it() {
+    let sandbox = Sandbox::new();
+    let (_publisher, work) = with_remote_branch(&sandbox);
+    work.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/mirror/*",
+    ]);
+    work.git(&["fetch", "--quiet", "origin"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    let head = gikli
+        .check_out_remote_branch(work.root(), &root, "mirror/feature/login", None)
+        .expect("check out the remote branch");
+
+    assert_eq!(
+        head,
+        on_branch_following("feature/login", "mirror/feature/login")
+    );
+    assert_eq!(head_by_git(&work), "feature/login");
+    assert_eq!(
+        work.git(&["config", "branch.feature/login.merge"]).trim(),
+        "refs/heads/feature/login"
+    );
+    assert_eq!(
+        work.git(&["config", "branch.feature/login.remote"]).trim(),
+        "origin"
+    );
+}
+
+#[test]
+fn a_remote_branch_no_remote_fetches_into_has_no_branch_to_follow() {
+    let sandbox = Sandbox::new();
+    let (_publisher, work) = with_remote_branch(&sandbox);
+    work.git(&[
+        "update-ref",
+        "refs/remotes/gone/feature/login",
+        "refs/remotes/origin/feature/login",
+    ]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    assert_eq!(
+        gikli.check_out_remote_branch(work.root(), &root, "gone/feature/login", None),
+        Err(Failure::NoRemoteToFetchFrom {
+            folder: root.root.clone(),
+        })
+    );
+    assert_eq!(head_by_git(&work), "main");
+    assert!(!work.git_succeeds(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "refs/heads/feature/login"
+    ]));
+}
+
+/// Undo brings back the files of the dropped commits, which would write over a local change to a
+/// file they change too: that keeps Undo from changing anything.
+#[test]
+fn undoing_dropped_commits_keeps_the_local_changes_and_stops_at_one_they_change() {
+    let sandbox = Sandbox::new();
+    let work = with_local_commits(&sandbox);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    gikli
+        .check_out_remote_branch(
+            work.root(),
+            &root,
+            "origin/feature/login",
+            Some(LocalCommits::Drop),
+        )
+        .expect("drop the local commits");
+    let remote = commit_of(&work, "HEAD");
+    work.write("login.txt", "login\nagain\nmine\n");
+    let notification = gikli.notifications()[0].clone();
+
+    let undone = gikli.act_on_notification(notification.id, &NotificationAction::RestoreBackup);
+
+    assert!(undone.is_err(), "{undone:?}");
+    assert_eq!(commit_of(&work, "feature/login"), remote, "nothing changed");
+    assert_eq!(work.status_by_git(), vec![" M login.txt"]);
+    assert_eq!(gikli.notifications().len(), 1, "Undo is still offered");
+
+    work.git(&["checkout", "--", "login.txt"]);
+    work.write("notes.txt", "notes\nmore\n");
+    gikli
+        .act_on_notification(notification.id, &NotificationAction::RestoreBackup)
+        .expect("undo, keeping the change to notes.txt");
+
+    assert!(work.root().join("remember.txt").exists());
+    assert_eq!(work.status_by_git(), vec![" M notes.txt"]);
 }
