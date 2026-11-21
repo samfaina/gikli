@@ -82,13 +82,14 @@ import {
   type Repository,
   type RunningOperation,
   type StagingSide,
+  type StashUnavailable,
 } from "./core";
 import { createDiffView } from "./diff-view";
 import { element, hasShortcutKey } from "./dom";
 import { createChangeSelection } from "./change-selection";
 import { createCommitPanel } from "./commit-panel";
 import { createFileHistoryView } from "./file-history";
-import { createStashDialog, LOCAL_CHANGES_NOT_SAVABLE_LABELS, STASH_UNAVAILABLE_LABELS } from "./stash-dialog";
+import { createStashDialog, STASH_UNAVAILABLE_LABELS } from "./stash-dialog";
 import { createStashesView } from "./stashes-view";
 import { createUnstashDialog } from "./unstash-dialog";
 import { createPushDialog } from "./push-dialog";
@@ -2061,6 +2062,11 @@ function describeExplainedMessage(message: ExplainedMessage): string {
     }
   }
 }
+
+/** What the user reads when the local changes of a Repository cannot be saved in a stash. */
+const LOCAL_CHANGES_NOT_SAVABLE_LABELS: Record<StashUnavailable, StringKey> = {
+  noCommits: "failureLocalChangesNotSavableNoCommits",
+};
 
 const NEXT_STEPS: Record<NextStep, StringKey> = {
   fixHook: "nextStepFixHook",

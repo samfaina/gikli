@@ -19,7 +19,7 @@ pub struct SavedLocalChanges {
     pub stash: Option<String>,
     /// The identifier of the Changelist each saved change belonged to, by path relative to the
     /// Repository root, so restoring puts it back there.
-    pub changelists: BTreeMap<String, String>,
+    pub changelist_of_path: BTreeMap<String, String>,
 }
 
 /// What restoring Saved local changes came to.

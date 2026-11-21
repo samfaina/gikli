@@ -128,13 +128,14 @@ pub struct UnstashPlan {
 /// order of the reflog of `refs/stash`, as `%gd` names it by date under some date options.
 const LIST_FORMAT: &str = "--format=%H%x00%ct%x00%gs";
 
-/// Puts the uncommitted changes of `repository` aside in a stash, as `options` say. When git
-/// finds nothing to stash, it succeeds and makes none: that returns [`Failure::NothingToStash`].
+/// Puts the uncommitted changes of `repository` aside in a stash, as `options` say, and returns
+/// the full hash of its commit. When git finds nothing to stash, it succeeds and makes none: that
+/// returns [`Failure::NothingToStash`].
 pub(crate) fn push(
     runner: &GitRunner,
     repository: &Repository,
     options: &StashOptions,
-) -> Result<(), Failure> {
+) -> Result<String, Failure> {
     let before = newest(available(runner, repository)?);
     let mut args = vec!["stash", "push"];
     if options.keep_index {
@@ -154,12 +155,13 @@ pub(crate) fn push(
             folder: repository.root.clone(),
         },
     )?;
-    if newest(list(runner, repository)?) == before {
-        return Err(Failure::NothingToStash {
+    let after = newest(list(runner, repository)?);
+    match after {
+        (_, Some(hash)) if after != before => Ok(hash),
+        _ => Err(Failure::NothingToStash {
             folder: repository.root.clone(),
-        });
+        }),
     }
-    Ok(())
 }
 
 /// How many stashes there are, with the hash of the newest one: a stash made since changes the

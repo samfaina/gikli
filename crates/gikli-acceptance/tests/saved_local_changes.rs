@@ -263,3 +263,72 @@ fn a_repository_with_no_commits_cannot_save_local_changes_and_says_why() {
     );
     assert_eq!(work.status_by_git(), vec!["A  notes.txt"]);
 }
+
+#[test]
+fn both_paths_of_a_moved_file_go_back_to_its_changelist() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_files(&sandbox, &gikli);
+    work.git(&["mv", "notes.txt", "moved.txt"]);
+    move_to_feature(&gikli, &root, "moved.txt");
+
+    let saved = gikli.save_local_changes(&root).expect("save local changes");
+    gikli
+        .restore_local_changes(work.root(), &saved)
+        .expect("restore local changes");
+
+    // Unstaged again, the move is the deletion of one path and the new file at the other.
+    let changes = gikli.read_changes(&root).expect("read changes");
+    assert_eq!(
+        paths_in(&changes, "Feature"),
+        vec!["moved.txt", "notes.txt"]
+    );
+    assert_eq!(paths_in(&changes, "Changes"), Vec::<String>::new());
+}
+
+#[test]
+fn a_new_file_comes_back_staged_in_its_changelist() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_files(&sandbox, &gikli);
+    work.write("added.txt", "added\n");
+    work.git(&["add", "added.txt"]);
+    move_to_feature(&gikli, &root, "added.txt");
+
+    let saved = gikli.save_local_changes(&root).expect("save local changes");
+    gikli
+        .restore_local_changes(work.root(), &saved)
+        .expect("restore local changes");
+
+    assert_eq!(work.status_by_git(), vec!["A  added.txt"]);
+    let changes = gikli.read_changes(&root).expect("read changes");
+    assert_eq!(paths_in(&changes, "Feature"), vec!["added.txt"]);
+}
+
+#[test]
+fn a_change_whose_changelist_was_deleted_meanwhile_goes_to_the_active_changelist() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_files(&sandbox, &gikli);
+    work.write("notes.txt", "one\ntwo\nthree\n");
+    move_to_feature(&gikli, &root, "notes.txt");
+    let saved = gikli.save_local_changes(&root).expect("save local changes");
+    let clean = gikli.read_changes(&root).expect("read the clean tree");
+    let feature = clean
+        .changelists
+        .iter()
+        .find(|list| list.name == "Feature")
+        .expect("Feature exists")
+        .id
+        .clone();
+    gikli
+        .delete_changelist(&root, &feature)
+        .expect("delete Feature");
+
+    gikli
+        .restore_local_changes(work.root(), &saved)
+        .expect("restore local changes");
+
+    let changes = gikli.read_changes(&root).expect("read changes");
+    assert_eq!(paths_in(&changes, "Changes"), vec!["notes.txt"]);
+}

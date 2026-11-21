@@ -3538,16 +3538,16 @@ impl Gikli {
 
     /// Puts the uncommitted changes to tracked files of `repository` aside in a stash, before an
     /// operation that needs a clean working tree, as Saved local changes. Files git does not track
-    /// stay, as git's own autostash leaves them. When there is nothing to save, nothing is put
+    /// stay, as git's `--autostash` leaves them. When there is nothing to save, nothing is put
     /// aside, and restoring what this returns restores nothing.
     pub fn save_local_changes(
         &self,
         repository: &Repository,
     ) -> Result<SavedLocalChanges, Failure> {
         let runner = self.runner(&repository.root)?;
-        let mut changelists = BTreeMap::new();
-        self.read_changes_with_choice(repository, |lists| {
-            changelists = lists.assignments();
+        let mut followed = None;
+        let change_set = self.read_changes_with_choice(repository, |lists| {
+            followed = Some(lists.clone());
             Ok(())
         })?;
         let options = StashOptions {
@@ -3556,12 +3556,14 @@ impl Gikli {
             include_untracked: false,
         };
         let stash = match stash::push(&runner, repository, &options) {
-            Ok(()) => stash::list(&runner, repository)?
-                .entries
-                .into_iter()
-                .next()
-                .map(|stash| stash.hash),
-            Err(Failure::NothingToStash { .. }) => None,
+            Ok(hash) => hash,
+            Err(Failure::NothingToStash { .. }) => {
+                return Ok(SavedLocalChanges {
+                    repository: repository.clone(),
+                    stash: None,
+                    changelist_of_path: BTreeMap::new(),
+                });
+            }
             Err(Failure::StashUnavailable { folder, reason }) => {
                 return Err(Failure::LocalChangesNotSavable { folder, reason });
             }
@@ -3569,12 +3571,10 @@ impl Gikli {
         };
         Ok(SavedLocalChanges {
             repository: repository.clone(),
-            changelists: if stash.is_some() {
-                changelists
-            } else {
-                BTreeMap::new()
-            },
-            stash,
+            stash: Some(stash),
+            changelist_of_path: followed
+                .map(|lists| lists.changelist_of_path(&change_set.changes))
+                .unwrap_or_default(),
         })
     }
 
@@ -3600,7 +3600,7 @@ impl Gikli {
         // The Changelists follow what git holds now first, so a file committed since leaves its
         // Changelist before the restored changes go back to theirs.
         self.read_changes_with_choice(repository, |lists| {
-            lists.put_back(&saved.changelists);
+            lists.put_back(&saved.changelist_of_path);
             Ok(())
         })?;
         Ok(RestoredLocalChanges {

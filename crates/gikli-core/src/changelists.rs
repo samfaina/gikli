@@ -210,25 +210,38 @@ impl Changelists {
         Ok(())
     }
 
-    /// The identifier of the Changelist each changed file belongs to, by path.
-    pub fn assignments(&self) -> BTreeMap<String, String> {
-        self.changelists
+    /// The identifier of the Changelist each of `changes` belongs to, by path. A moved file also
+    /// gives its Changelist to the path it was at, as the move may come back as the deletion of
+    /// that path and a new file at the other.
+    pub fn changelist_of_path(&self, changes: &[Change]) -> BTreeMap<String, String> {
+        let mut of_path: BTreeMap<String, String> = self
+            .changelists
             .iter()
             .flat_map(|list| {
                 list.files
                     .iter()
                     .map(|file| (file.clone(), list.id.clone()))
             })
-            .collect()
+            .collect();
+        for change in changes {
+            let (ChangeStatus::Renamed, Some(original)) = (change.status, &change.original_path)
+            else {
+                continue;
+            };
+            if let Some(id) = of_path.get(change.path.to_string_lossy().as_ref()).cloned() {
+                of_path.insert(original.to_string_lossy().into_owned(), id);
+            }
+        }
+        of_path
     }
 
-    /// Puts each changed file back in the Changelist `assignments` say it belonged to. A file that
-    /// is not changed now, or whose Changelist is gone, stays where it is.
-    pub fn put_back(&mut self, assignments: &BTreeMap<String, String>) {
-        for (path, id) in assignments {
-            let (Some(from), Ok(to)) =
-                (self.place_holding(Path::new(path)), self.place_with_id(id))
-            else {
+    /// Puts each changed file back in the Changelist `changelist_of_path` says it belonged to, by
+    /// path. A file that is not changed now, or whose Changelist is gone, stays where it is.
+    pub fn put_back(&mut self, changelist_of_path: &BTreeMap<String, String>) {
+        for (path, id) in changelist_of_path {
+            let from = self.place_holding(Path::new(path));
+            let to = self.changelists.iter().position(|list| list.id == *id);
+            let (Some(from), Some(to)) = (from, to) else {
                 continue;
             };
             let file = self.changelists[from].files.take(path.as_str());
