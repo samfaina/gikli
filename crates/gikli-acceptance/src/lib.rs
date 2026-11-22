@@ -20,8 +20,8 @@ mod driving;
 mod http_remote;
 
 pub use driving::{
-    assert_cloned, changelist, conflicts_left, log_subjects, opened, opened_project, path_bufs,
-    paths, paths_in, read_changes, upstream,
+    changelist, conflicts_left, log_subjects, opened, opened_project, path_bufs, paths, paths_in,
+    read_changes, upstream,
 };
 pub use http_remote::HttpRemote;
 
@@ -288,6 +288,15 @@ impl Sandbox {
                 text: Some(text.to_owned()),
             },
         )
+    }
+
+    /// Checks with plain git that the clone at `target` holds what `remote` holds: its HEAD is the
+    /// commit of `remote`'s `main`.
+    pub fn assert_cloned(&self, remote: &TestRepository, target: &Path) {
+        assert_eq!(
+            self.existing_repository(target).git(&["rev-parse", "HEAD"]),
+            remote.git(&["rev-parse", "main"])
+        );
     }
 
     /// Clones `remote` into a new folder with plain git.
