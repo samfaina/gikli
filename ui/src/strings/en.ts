@@ -316,6 +316,8 @@ export const en = {
   failureCommitMessageEmpty: "A commit needs a message. Write one, then try again.",
   failureNothingToCommit: "Nothing selected or staged has changes any more, so nothing was committed.",
   failureNothingToAmend: "This Repository has no commit to amend yet. Untick Amend last commit to make the first one.",
+  failureAmendDuringOperation:
+    "{operation} is half done in this Repository, and git does not amend the last commit in the middle of it. Finish or abort it first, or untick Amend last commit to commit it.",
   failureCommitFailed: "git could not commit in {folder}. The operation log shows git's output.",
   failureNotLastCommit: "Only the last commit of the current branch can be undone, and {hash} is not that one.",
   failureCommitPushedToProtectedBranch: "{hash} is already on {branch}, a protected branch, so it is not undone. Revert it instead.",

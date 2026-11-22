@@ -1,6 +1,6 @@
 //! Committing from the commit panel in Changelist mode while an Operation in progress is there: the
 //! selected changes go through the index, as git refuses `git commit --only` during a merge or a
-//! cherry-pick.
+//! cherry-pick. An amend in the middle of either is refused before git runs, as git refuses it.
 
 use gikli_acceptance::{Sandbox, TestRepository};
 use gikli_core::{ChangeSet, Changelist, Failure, Gikli, MoveTarget, OperationKind, Repository};
@@ -222,5 +222,307 @@ fn a_conflict_left_refuses_the_commit_and_changes_nothing() {
     assert_eq!(
         in_progress(&gikli, &work, &root),
         Some(OperationKind::CherryPick)
+    );
+}
+
+/// Each Backup git holds, as `reference commit`.
+fn backups_by_git(repository: &TestRepository) -> Vec<String> {
+    repository
+        .git(&[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/gikli/backups/",
+        ])
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// What an amend refused during `operation` must leave as it was in `work`: HEAD, the status of
+/// every file, no Backup, no notification, and `operation` still in progress.
+fn assert_refused_during(
+    result: Result<ChangeSet, Failure>,
+    operation: OperationKind,
+    gikli: &Gikli,
+    work: &TestRepository,
+    root: &Repository,
+    head_before: &str,
+    status_before: &[String],
+) {
+    assert_eq!(
+        result.map(|_| ()),
+        Err(Failure::AmendDuringOperation { operation })
+    );
+    assert_eq!(work.git(&["rev-parse", "HEAD"]), head_before);
+    assert_eq!(work.status_by_git(), status_before);
+    assert_eq!(backups_by_git(work), Vec::<String>::new());
+    assert_eq!(gikli.notifications(), vec![]);
+    assert_eq!(in_progress(gikli, work, root), Some(operation));
+}
+
+#[test]
+fn an_amend_of_the_files_of_a_merge_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let work = merge_resolved(&sandbox);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    let head_before = work.git(&["rev-parse", "HEAD"]);
+    let status_before = work.status_by_git();
+
+    let result = gikli.amend_last_commit(
+        work.root(),
+        &root,
+        &paths(&["notes.txt", "plan.txt"]),
+        "Ours, and the merge",
+    );
+
+    assert_refused_during(
+        result,
+        OperationKind::Merge,
+        &gikli,
+        &work,
+        &root,
+        &head_before,
+        &status_before,
+    );
+}
+
+#[test]
+fn an_amend_of_the_files_of_a_cherry_pick_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let work = cherry_pick_resolved(&sandbox);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    let head_before = work.git(&["rev-parse", "HEAD"]);
+    let status_before = work.status_by_git();
+
+    let result = gikli.amend_last_commit(
+        work.root(),
+        &root,
+        &paths(&["notes.txt", "plan.txt"]),
+        "Ours, and theirs",
+    );
+
+    assert_refused_during(
+        result,
+        OperationKind::CherryPick,
+        &gikli,
+        &work,
+        &root,
+        &head_before,
+        &status_before,
+    );
+}
+
+/// A gikli in Staging mode.
+fn in_staging_mode(sandbox: &Sandbox) -> Gikli {
+    let gikli = sandbox.gikli();
+    gikli.set_staging_mode(true).expect("turn on Staging mode");
+    gikli
+}
+
+/// Amends with what is staged in `work`, while `operation` is in progress there, and checks that
+/// it is refused and changes nothing.
+fn assert_staged_amend_refused(sandbox: &Sandbox, work: &TestRepository, operation: OperationKind) {
+    let gikli = in_staging_mode(sandbox);
+    let root = opened(&gikli, work);
+    let head_before = work.git(&["rev-parse", "HEAD"]);
+    let status_before = work.status_by_git();
+
+    let result = gikli.amend_with_staged(work.root(), &root, "Amended");
+
+    assert_refused_during(
+        result,
+        operation,
+        &gikli,
+        work,
+        &root,
+        &head_before,
+        &status_before,
+    );
+}
+
+#[test]
+fn an_amend_with_what_a_merge_staged_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let work = merge_resolved(&sandbox);
+
+    assert_staged_amend_refused(&sandbox, &work, OperationKind::Merge);
+}
+
+#[test]
+fn an_amend_with_what_a_cherry_pick_staged_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let work = cherry_pick_resolved(&sandbox);
+
+    assert_staged_amend_refused(&sandbox, &work, OperationKind::CherryPick);
+}
+
+#[test]
+fn an_amend_during_a_merge_that_staged_nothing_is_refused_for_the_merge() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "notes\n");
+    work.commit_all("Base");
+    work.git(&["switch", "--quiet", "--create", "other"]);
+    work.write("notes.txt", "theirs\n");
+    work.commit_all("Theirs");
+    work.git(&["switch", "--quiet", "main"]);
+    // Kept as main has it, so the merge stages nothing.
+    work.git(&[
+        "merge",
+        "--quiet",
+        "--no-commit",
+        "--strategy=ours",
+        "other",
+    ]);
+    assert!(work.status_by_git().is_empty());
+
+    assert_staged_amend_refused(&sandbox, &work, OperationKind::Merge);
+}
+
+#[test]
+fn an_amend_during_a_merge_is_refused_before_a_conflict_left_is_looked_at() {
+    let sandbox = Sandbox::new();
+    let work = merge_resolved(&sandbox);
+    // Back in conflict, as the merge left it.
+    work.git(&["checkout", "--merge", "--", "notes.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    let head_before = work.git(&["rev-parse", "HEAD"]);
+    let status_before = work.status_by_git();
+
+    let result = gikli.amend_last_commit(work.root(), &root, &paths(&["plan.txt"]), "Ours");
+
+    assert_refused_during(
+        result,
+        OperationKind::Merge,
+        &gikli,
+        &work,
+        &root,
+        &head_before,
+        &status_before,
+    );
+}
+
+/// The subject of the last commit.
+fn last_subject(repository: &TestRepository) -> String {
+    repository.git(&["log", "-1", "--format=%s"])
+}
+
+/// How many commits HEAD holds, as plain git counts them.
+fn commit_count(repository: &TestRepository) -> String {
+    repository.git(&["rev-list", "--count", "HEAD"])
+}
+
+#[test]
+fn an_amend_during_a_rebase_stopped_at_a_commit_to_edit_amends_that_commit() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "notes\n");
+    work.commit_all("Base");
+    work.write("notes.txt", "edited\n");
+    work.commit_all("Edit");
+    work.git(&[
+        "-c",
+        "sequence.editor=sed -i -e s/^pick/edit/",
+        "rebase",
+        "--quiet",
+        "--interactive",
+        "HEAD~1",
+    ]);
+    work.write("todo.txt", "todo\n");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    gikli
+        .amend_last_commit(
+            work.root(),
+            &root,
+            &paths(&["todo.txt"]),
+            "Edit, with a todo",
+        )
+        .expect("amend");
+
+    assert_eq!(commit_count(&work), "2\n");
+    assert_eq!(last_subject(&work), "Edit, with a todo\n");
+    assert_eq!(last_commit_files(&work), vec!["M notes.txt", "A todo.txt"]);
+    assert_eq!(
+        in_progress(&gikli, &work, &root),
+        Some(OperationKind::Rebase)
+    );
+}
+
+#[test]
+fn an_amend_during_a_revert_stopped_on_a_resolved_conflict_goes_through() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "notes\n");
+    work.commit_all("Base");
+    work.write("notes.txt", "changed\n");
+    work.commit_all("Change");
+    work.write("notes.txt", "changed again\n");
+    work.commit_all("Change again");
+    assert!(
+        !work.git_succeeds(&["revert", "--no-edit", "HEAD~1"]),
+        "git stops on a conflict"
+    );
+    work.write("notes.txt", "notes again\n");
+    work.git(&["add", "--", "notes.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    gikli
+        .amend_last_commit(
+            work.root(),
+            &root,
+            &paths(&["notes.txt"]),
+            "Change again, undone",
+        )
+        .expect("amend");
+
+    assert_eq!(commit_count(&work), "3\n");
+    assert_eq!(last_subject(&work), "Change again, undone\n");
+    assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "notes again\n");
+}
+
+#[test]
+fn an_amend_during_a_cherry_pick_of_several_goes_through_once_the_one_it_stopped_on_is_committed() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "notes\n");
+    work.commit_all("Base");
+    work.git(&["switch", "--quiet", "--create", "other"]);
+    work.write("notes.txt", "theirs\n");
+    work.commit_all("Theirs");
+    work.write("plan.txt", "plan\n");
+    work.commit_all("Plan");
+    work.git(&["switch", "--quiet", "main"]);
+    work.write("notes.txt", "ours\n");
+    work.commit_all("Ours");
+    assert!(
+        !work.git_succeeds(&["cherry-pick", "other~1", "other"]),
+        "git stops on a conflict"
+    );
+    work.write("notes.txt", "both\n");
+    work.git(&["add", "--", "notes.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    gikli
+        .commit_files(&root, &paths(&["notes.txt"]), "Theirs")
+        .expect("commit the one it stopped on");
+    work.write("notes.txt", "both, fixed\n");
+
+    gikli
+        .amend_last_commit(work.root(), &root, &paths(&["notes.txt"]), "Theirs, fixed")
+        .expect("amend");
+
+    assert_eq!(commit_count(&work), "3\n");
+    assert_eq!(last_subject(&work), "Theirs, fixed\n");
+    assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "both, fixed\n");
+    assert_eq!(
+        in_progress(&gikli, &work, &root),
+        Some(OperationKind::CherryPick),
+        "the cherry-pick still has Plan to pick"
     );
 }
