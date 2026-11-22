@@ -1,21 +1,8 @@
 //! Rejected push: a push of the current branch that its upstream rejects, as it has commits the
 //! branch lacks, integrates them with the method the user chooses, or remembers, and pushes again.
 
-use std::sync::mpsc::Receiver;
-
-use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{
-    Event, Failure, Gikli, OperationKind, PushTags, PushTarget, Repository, UpdateMethod,
-};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
+use gikli_acceptance::{Sandbox, TestRepository, conflicts_left, opened};
+use gikli_core::{Failure, OperationKind, PushTags, PushTarget, UpdateMethod};
 
 /// A bare remote whose `main` holds First, a clone `mine` of it, and a clone `theirs` that pushes
 /// to it what others publish.
@@ -53,7 +40,8 @@ fn diverged(sandbox: &Sandbox) -> Shared {
     shared
 }
 
-fn upstream() -> PushTarget {
+/// The upstream of `main`, as a push targets it: `main` of `origin`.
+fn origin_main() -> PushTarget {
     PushTarget {
         remote: "origin".to_owned(),
         branch: "main".to_owned(),
@@ -73,7 +61,7 @@ fn a_rejected_push_offers_to_update_while_auto_update_is_off() {
         "auto-update is off by default"
     );
 
-    let rejected = gikli.push(&root, &upstream(), PushTags::None);
+    let rejected = gikli.push(&root, &origin_main(), PushTags::None);
 
     assert_eq!(
         rejected,
@@ -112,13 +100,13 @@ fn choosing_merge_merges_the_upstream_and_pushes_again() {
     let Shared { remote, mine, .. } = diverged(&sandbox);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
-    let rejected = gikli.push(&root, &upstream(), PushTags::None);
+    let rejected = gikli.push(&root, &origin_main(), PushTags::None);
     assert!(matches!(rejected, Err(Failure::PushRejected { .. })));
 
     gikli
         .update_and_push(
             &root,
-            &upstream(),
+            &origin_main(),
             PushTags::None,
             UpdateMethod::Merge,
             false,
@@ -166,13 +154,13 @@ fn choosing_rebase_and_remembering_it_rebases_silently_from_then_on() {
     let shared = diverged(&sandbox);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &shared.mine);
-    let rejected = gikli.push(&root, &upstream(), PushTags::None);
+    let rejected = gikli.push(&root, &origin_main(), PushTags::None);
     assert!(matches!(rejected, Err(Failure::PushRejected { .. })));
 
     gikli
         .update_and_push(
             &root,
-            &upstream(),
+            &origin_main(),
             PushTags::None,
             UpdateMethod::Rebase,
             true,
@@ -207,7 +195,7 @@ fn choosing_rebase_and_remembering_it_rebases_silently_from_then_on() {
 
     diverge_again(&shared, "again");
     gikli
-        .push(&root, &upstream(), PushTags::None)
+        .push(&root, &origin_main(), PushTags::None)
         .expect("the push updates without asking");
 
     assert_eq!(
@@ -237,7 +225,7 @@ fn auto_update_turned_on_without_a_method_chosen_merges_silently() {
     assert!(settings.auto_update_if_push_rejected);
 
     gikli
-        .push(&root, &upstream(), PushTags::None)
+        .push(&root, &origin_main(), PushTags::None)
         .expect("the push updates without asking");
 
     let history = history(&mine);
@@ -250,17 +238,6 @@ fn auto_update_turned_on_without_a_method_chosen_merges_silently() {
         mine.git(&["rev-parse", "main"]),
         "git agrees the remote has the branch"
     );
-}
-
-/// The Repositories the `events` received say were left with files in conflict.
-fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
-    events
-        .try_iter()
-        .filter_map(|event| match event {
-            Event::ConflictsLeft { repository } => Some(repository),
-            _ => None,
-        })
-        .collect()
 }
 
 #[test]
@@ -283,7 +260,7 @@ fn an_update_that_stops_on_a_conflict_pushes_nothing_and_leads_to_the_conflict_l
 
     let stopped = gikli.update_and_push(
         &root,
-        &upstream(),
+        &origin_main(),
         PushTags::None,
         UpdateMethod::Merge,
         false,

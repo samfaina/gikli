@@ -3,17 +3,11 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TWO_CHANGELISTS, TestRepository, file_url};
+use gikli_acceptance::{Sandbox, TWO_CHANGELISTS, TestRepository, file_url, opened};
 use gikli_core::{
     ChangeGrouping, DiffContent, Difference, Failure, FileDiff, Gikli, LineRange, LocalReadOnly,
-    Repository, TextDiff, UnchangedRegion,
+    TextDiff, UnchangedRegion,
 };
-
-/// The Repository of `repository`, opened as a Project.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    let project = gikli.open_project(repository.root()).expect("open project");
-    project.repositories[0].clone()
-}
 
 /// The diff of the file at `path`.
 fn read_diff(gikli: &Gikli, repository: &TestRepository, path: &str) -> FileDiff {

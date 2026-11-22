@@ -3,30 +3,8 @@
 //! cherry-pick. An amend in the middle of either, or of a rebase that stopped on a merge, is refused
 //! before git runs, as git refuses it.
 
-use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{ChangeSet, Changelist, Failure, Gikli, MoveTarget, OperationKind, Repository};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-fn paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|path| (*path).to_owned()).collect()
-}
-
-/// The paths the last commit touched, one `status path` entry each.
-fn last_commit_files(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["show", "--format=", "--name-status", "--no-renames", "HEAD"])
-        .lines()
-        .map(|line| line.replace('\t', " "))
-        .collect()
-}
+use gikli_acceptance::{Sandbox, TestRepository, changelist, opened, paths, paths_in};
+use gikli_core::{ChangeSet, Failure, Gikli, MoveTarget, OperationKind, Repository};
 
 /// The kind of the Operation in progress in `repository`, if any.
 fn in_progress(
@@ -85,7 +63,7 @@ fn committing_the_files_of_a_cherry_pick_stopped_on_a_resolved_conflict_conclude
         .commit_files(&root, &paths(&["notes.txt", "plan.txt"]), "Theirs")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&work), vec!["M notes.txt", "A plan.txt"]);
+    assert_eq!(work.last_commit_files(), vec!["M notes.txt", "A plan.txt"]);
     assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "both\n");
     assert_eq!(in_progress(&gikli, &work, &root), None);
     assert!(work.status_by_git().is_empty());
@@ -113,32 +91,13 @@ fn committing_the_files_of_a_merge_stopped_on_a_resolved_conflict_makes_the_merg
     assert!(work.status_by_git().is_empty());
 }
 
-/// The Changelist called `name`.
-fn list<'a>(change_set: &'a ChangeSet, name: &str) -> &'a Changelist {
-    change_set
-        .changelists
-        .iter()
-        .find(|list| list.name == name)
-        .expect("the Changelist exists")
-}
-
-/// The paths of the changes in the Changelist called `name`.
-fn paths_in(change_set: &ChangeSet, name: &str) -> Vec<String> {
-    list(change_set, name)
-        .group
-        .changes
-        .iter()
-        .map(|change| change.path.to_string_lossy().into_owned())
-        .collect()
-}
-
 /// A Changelist called Other holding `todo.txt` of `work`, which has a local edit.
 fn todo_edited_in_its_own_changelist(gikli: &Gikli, work: &TestRepository, root: &Repository) {
     work.write("todo.txt", "todo, edited\n");
     let changes = gikli
         .create_changelist(root, "Other", None)
         .expect("create Other");
-    let other = list(&changes, "Other").id.clone();
+    let other = changelist(&changes, "Other").id.clone();
     gikli
         .move_changes(
             root,
@@ -178,7 +137,7 @@ fn an_unticked_local_edit_stays_out_of_the_commit_of_a_cherry_pick_and_in_its_ch
         .commit_files(&root, &paths(&["notes.txt", "plan.txt"]), "Theirs")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&work), vec!["M notes.txt", "A plan.txt"]);
+    assert_eq!(work.last_commit_files(), vec!["M notes.txt", "A plan.txt"]);
     assert_eq!(work.status_by_git(), vec![" M todo.txt"]);
     assert_eq!(paths_in(&changes, "Other"), vec!["todo.txt"]);
     assert_eq!(in_progress(&gikli, &work, &root), None);
@@ -195,7 +154,7 @@ fn an_unticked_file_a_cherry_pick_brought_stays_out_of_the_commit_as_a_local_cha
         .commit_files(&root, &paths(&["notes.txt"]), "Theirs, without the plan")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&work), vec!["M notes.txt"]);
+    assert_eq!(work.last_commit_files(), vec!["M notes.txt"]);
     assert_eq!(work.status_by_git(), vec!["A  plan.txt"]);
     let left: Vec<_> = changes.changes.iter().map(|change| &change.path).collect();
     assert_eq!(left, vec![std::path::Path::new("plan.txt")]);
@@ -226,19 +185,6 @@ fn a_conflict_left_refuses_the_commit_and_changes_nothing() {
     );
 }
 
-/// Each Backup git holds, as `reference commit`.
-fn backups_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&[
-            "for-each-ref",
-            "--format=%(refname) %(objectname)",
-            "refs/gikli/backups/",
-        ])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
 /// What an amend refused during `operation` must leave as it was in `work`: HEAD, the status of
 /// every file, no Backup, no notification, and `operation` still in progress.
 fn assert_refused_during(
@@ -256,7 +202,7 @@ fn assert_refused_during(
     );
     assert_eq!(work.git(&["rev-parse", "HEAD"]), head_before);
     assert_eq!(work.status_by_git(), status_before);
-    assert_eq!(backups_by_git(work), Vec::<String>::new());
+    assert_eq!(work.backups_by_git(), Vec::<String>::new());
     assert_eq!(gikli.notifications(), vec![]);
     assert_eq!(in_progress(gikli, work, root), Some(operation));
 }
@@ -315,17 +261,10 @@ fn an_amend_of_the_files_of_a_cherry_pick_is_refused_and_changes_nothing() {
     );
 }
 
-/// A gikli in Staging mode.
-fn in_staging_mode(sandbox: &Sandbox) -> Gikli {
-    let gikli = sandbox.gikli();
-    gikli.set_staging_mode(true).expect("turn on Staging mode");
-    gikli
-}
-
 /// Amends with what is staged in `work`, while `operation` is in progress there, and checks that
 /// it is refused and changes nothing.
 fn assert_staged_amend_refused(sandbox: &Sandbox, work: &TestRepository, operation: OperationKind) {
-    let gikli = in_staging_mode(sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, work);
     let head_before = work.git(&["rev-parse", "HEAD"]);
     let status_before = work.status_by_git();
@@ -411,11 +350,6 @@ fn last_subject(repository: &TestRepository) -> String {
     repository.git(&["log", "-1", "--format=%s"])
 }
 
-/// How many commits HEAD holds, as plain git counts them.
-fn commit_count(repository: &TestRepository) -> String {
-    repository.git(&["rev-list", "--count", "HEAD"])
-}
-
 #[test]
 fn an_amend_during_a_rebase_stopped_at_a_commit_to_edit_amends_that_commit() {
     let sandbox = Sandbox::new();
@@ -445,9 +379,9 @@ fn an_amend_during_a_rebase_stopped_at_a_commit_to_edit_amends_that_commit() {
         )
         .expect("amend");
 
-    assert_eq!(commit_count(&work), "2\n");
+    assert_eq!(work.commit_count(), "2\n");
     assert_eq!(last_subject(&work), "Edit, with a todo\n");
-    assert_eq!(last_commit_files(&work), vec!["M notes.txt", "A todo.txt"]);
+    assert_eq!(work.last_commit_files(), vec!["M notes.txt", "A todo.txt"]);
     assert_eq!(
         in_progress(&gikli, &work, &root),
         Some(OperationKind::Rebase)
@@ -538,7 +472,7 @@ fn an_amend_during_a_rebase_stopped_on_a_resolved_conflict_of_a_pick_amends_the_
         )
         .expect("amend");
 
-    assert_eq!(commit_count(&work), "2\n");
+    assert_eq!(work.commit_count(), "2\n");
     assert_eq!(last_subject(&work), "Theirs, with ours\n");
     assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "both\n");
     assert_eq!(
@@ -575,7 +509,7 @@ fn an_amend_during_a_revert_stopped_on_a_resolved_conflict_goes_through() {
         )
         .expect("amend");
 
-    assert_eq!(commit_count(&work), "3\n");
+    assert_eq!(work.commit_count(), "3\n");
     assert_eq!(last_subject(&work), "Change again, undone\n");
     assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "notes again\n");
 }
@@ -611,7 +545,7 @@ fn an_amend_during_a_cherry_pick_of_several_goes_through_once_the_one_it_stopped
         .amend_last_commit(work.root(), &root, &paths(&["notes.txt"]), "Theirs, fixed")
         .expect("amend");
 
-    assert_eq!(commit_count(&work), "3\n");
+    assert_eq!(work.commit_count(), "3\n");
     assert_eq!(last_subject(&work), "Theirs, fixed\n");
     assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "both, fixed\n");
     assert_eq!(

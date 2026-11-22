@@ -3,20 +3,11 @@
 
 use std::path::Path;
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened, paths};
 use gikli_core::{
     Change, ChangeStatus, DiffContent, Gikli, LocalReadOnly, Repository, StagingArea, StagingSide,
     TextDiff,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository with one commit holding `a.txt` and `b.txt`.
 fn repository_with_a_commit(sandbox: &Sandbox) -> TestRepository {
@@ -25,13 +16,6 @@ fn repository_with_a_commit(sandbox: &Sandbox) -> TestRepository {
     repository.write("b.txt", "b\n");
     repository.commit_all("Initial commit");
     repository
-}
-
-/// gikli in Staging mode.
-fn in_staging_mode(sandbox: &Sandbox) -> Gikli {
-    let gikli = sandbox.gikli();
-    gikli.set_staging_mode(true).expect("turn on Staging mode");
-    gikli
 }
 
 /// The Staged and Unstaged changes of `root` as gikli reads them.
@@ -87,7 +71,7 @@ fn a_file_shows_as_staged_unstaged_or_both_by_what_differs() {
     repository.write("c.txt", "c\n");
     repository.git(&["add", "--", "c.txt"]);
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let changes = gikli.read_changes(&root).expect("read");
@@ -119,7 +103,7 @@ fn a_move_shows_with_its_original_path_on_the_staged_side() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
     repository.git(&["mv", "--", "a.txt", "moved.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let area = staging_area(&gikli, &root);
@@ -143,7 +127,7 @@ fn a_file_staged_and_then_removed_from_disk_shows_on_both_sides() {
     repository.git(&["add", "--", "c.txt"]);
     repository.delete("c.txt");
     repository.delete("b.txt");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let area = staging_area(&gikli, &root);
@@ -167,7 +151,7 @@ fn staged_and_unstaged_changes_follow_the_grouping_the_user_chose() {
     let repository = repository_with_a_commit(&sandbox);
     repository.write("src/x.txt", "x\n");
     repository.git(&["add", "--", "src/x.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let area = staging_area(&gikli, &root);
@@ -178,10 +162,6 @@ fn staged_and_unstaged_changes_follow_the_grouping_the_user_chose() {
     ));
 }
 
-fn paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|path| (*path).to_owned()).collect()
-}
-
 #[test]
 fn staging_a_file_moves_it_to_the_staged_side() {
     let sandbox = Sandbox::new();
@@ -189,7 +169,7 @@ fn staging_a_file_moves_it_to_the_staged_side() {
     repository.write("a.txt", "a changed\n");
     repository.delete("b.txt");
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
@@ -210,7 +190,7 @@ fn unstaging_a_file_leaves_its_working_tree_content() {
     repository.write("b.txt", "b changed\n");
     repository.write("c.txt", "c\n");
     repository.git(&["add", "--all"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
@@ -232,7 +212,7 @@ fn unstaging_a_move_puts_both_of_its_paths_back() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
     repository.git(&["mv", "--", "a.txt", "moved.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
@@ -249,7 +229,7 @@ fn files_can_be_unstaged_before_the_first_commit() {
     repository.write("a.txt", "a\n");
     repository.write("b.txt", "b\n");
     repository.git(&["add", "--all"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
@@ -265,7 +245,7 @@ fn unstaging_what_is_not_staged_changes_nothing() {
     let repository = repository_with_a_commit(&sandbox);
     repository.write("a.txt", "a changed\n");
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
@@ -282,7 +262,7 @@ fn stage_all_takes_every_change_and_new_file() {
     repository.write("a.txt", "a changed\n");
     repository.delete("b.txt");
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli.stage_all(&root).expect("stage all");
@@ -300,7 +280,7 @@ fn stage_tracked_leaves_new_files_out() {
     repository.write("a.txt", "a changed\n");
     repository.delete("b.txt");
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli.stage_tracked(&root).expect("stage tracked");
@@ -318,7 +298,7 @@ fn a_failed_unstage_says_so() {
     repository.write("a.txt", "a changed\n");
     repository.git(&["add", "--", "a.txt"]);
     let lock = repository.root().join(".git/index.lock");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
     std::fs::write(&lock, "").expect("lock the index");
 
@@ -333,10 +313,6 @@ fn a_failed_unstage_says_so() {
     assert_eq!(repository.status_by_git(), vec!["M  a.txt"]);
 }
 
-fn commit_count(repository: &TestRepository) -> String {
-    repository.git(&["rev-list", "--count", "HEAD"])
-}
-
 #[test]
 fn a_commit_takes_what_is_staged_and_leaves_the_rest() {
     let sandbox = Sandbox::new();
@@ -346,14 +322,14 @@ fn a_commit_takes_what_is_staged_and_leaves_the_rest() {
     repository.write("a.txt", "a staged and changed again\n");
     repository.write("b.txt", "b changed\n");
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
         .commit_staged(&root, "Commit the index")
         .expect("commit");
 
-    assert_eq!(commit_count(&repository), "2\n");
+    assert_eq!(repository.commit_count(), "2\n");
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a staged\n");
     assert_eq!(repository.git(&["show", "HEAD:b.txt"]), "b\n");
     assert_eq!(
@@ -372,7 +348,7 @@ fn a_commit_records_a_staged_move_and_a_staged_deletion() {
     let repository = repository_with_a_commit(&sandbox);
     repository.git(&["mv", "--", "a.txt", "moved.txt"]);
     repository.git(&["rm", "--quiet", "--", "b.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
@@ -393,7 +369,7 @@ fn the_first_commit_of_a_repository_takes_what_is_staged() {
     repository.write("a.txt", "a\n");
     repository.write("b.txt", "b\n");
     repository.git(&["add", "--", "a.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli.commit_staged(&root, "First").expect("commit");
@@ -411,7 +387,7 @@ fn a_message_reaches_the_commit_as_written() {
     let repository = repository_with_a_commit(&sandbox);
     repository.write("a.txt", "a changed\n");
     repository.git(&["add", "--", "a.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
@@ -429,7 +405,7 @@ fn with_nothing_staged_there_is_nothing_to_commit() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
     repository.write("a.txt", "a changed\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let failure = gikli
@@ -437,7 +413,7 @@ fn with_nothing_staged_there_is_nothing_to_commit() {
         .expect_err("nothing is staged");
 
     assert_eq!(failure, gikli_core::Failure::NothingToCommit);
-    assert_eq!(commit_count(&repository), "1\n");
+    assert_eq!(repository.commit_count(), "1\n");
 }
 
 #[test]
@@ -446,7 +422,7 @@ fn a_commit_needs_a_message() {
     let repository = repository_with_a_commit(&sandbox);
     repository.write("a.txt", "a changed\n");
     repository.git(&["add", "--", "a.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let failure = gikli.commit_staged(&root, " \n").expect_err("no message");
@@ -462,7 +438,7 @@ fn a_commit_a_hook_stops_leaves_the_index_as_it_was() {
     let repository = repository_with_a_commit_past_hooks(&sandbox);
     repository.write("a.txt", "a changed\n");
     repository.git(&["add", "--", "a.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let failure = gikli
@@ -474,7 +450,7 @@ fn a_commit_a_hook_stops_leaves_the_index_as_it_was() {
         "got {failure:?}"
     );
     assert_eq!(repository.status_by_git(), vec!["M  a.txt"]);
-    assert_eq!(commit_count(&repository), "1\n");
+    assert_eq!(repository.commit_count(), "1\n");
 }
 
 /// A repository like [`repository_with_a_commit`], for a sandbox with a hook that would stop the
@@ -500,14 +476,14 @@ fn an_amend_puts_what_is_staged_into_the_last_commit() {
     repository.write("a.txt", "a staged\n");
     repository.git(&["add", "--", "a.txt"]);
     repository.write("b.txt", "b changed\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli
         .amend_with_staged(repository.root(), &root, "Amended")
         .expect("amend");
 
-    assert_eq!(commit_count(&repository), "1\n");
+    assert_eq!(repository.commit_count(), "1\n");
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a staged\n");
     assert_eq!(repository.git(&["log", "-1", "--format=%B"]), "Amended\n\n");
     assert_eq!(repository.status_by_git(), vec![" M b.txt"]);
@@ -522,7 +498,7 @@ fn an_amend_puts_what_is_staged_into_the_last_commit() {
 fn an_amend_needs_something_staged() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let failure = gikli
@@ -542,7 +518,7 @@ fn there_is_nothing_to_amend_before_the_first_commit() {
     let repository = sandbox.repository("app");
     repository.write("a.txt", "a\n");
     repository.git(&["add", "--", "a.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let failure = gikli
@@ -581,7 +557,7 @@ fn repository_with_three_versions(sandbox: &Sandbox) -> TestRepository {
 fn the_diff_of_a_staged_change_compares_head_with_the_index() {
     let sandbox = Sandbox::new();
     let repository = repository_with_three_versions(&sandbox);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, side) = side_diff(&gikli, &root, "a.txt", StagingSide::Staged);
@@ -597,7 +573,7 @@ fn the_diff_of_a_staged_change_compares_head_with_the_index() {
 fn the_diff_of_an_unstaged_change_compares_the_index_with_the_working_tree() {
     let sandbox = Sandbox::new();
     let repository = repository_with_three_versions(&sandbox);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, side) = side_diff(&gikli, &root, "a.txt", StagingSide::Unstaged);
@@ -615,7 +591,7 @@ fn a_staged_new_file_has_nothing_on_the_head_side() {
     let repository = repository_with_a_commit(&sandbox);
     repository.write("c.txt", "c\n");
     repository.git(&["add", "--", "c.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, _) = side_diff(&gikli, &root, "c.txt", StagingSide::Staged);
@@ -631,7 +607,7 @@ fn a_staged_file_diffs_before_the_first_commit() {
     let repository = sandbox.repository("app");
     repository.write("a.txt", "a\n");
     repository.git(&["add", "--", "a.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, _) = side_diff(&gikli, &root, "a.txt", StagingSide::Staged);
@@ -646,7 +622,7 @@ fn a_staged_deletion_has_nothing_on_the_index_side() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
     repository.git(&["rm", "--quiet", "--", "b.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, _) = side_diff(&gikli, &root, "b.txt", StagingSide::Staged);
@@ -665,7 +641,7 @@ fn a_staged_move_compares_the_file_where_head_has_it() {
     repository.git(&["mv", "--", "a.txt", "moved.txt"]);
     repository.write("moved.txt", "one\ntwo\nthree\nfour\nfive changed\n");
     repository.git(&["add", "--", "moved.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let diff = gikli
@@ -689,7 +665,7 @@ fn a_file_removed_from_disk_compares_the_index_with_nothing() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
     repository.delete("b.txt");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, _) = side_diff(&gikli, &root, "b.txt", StagingSide::Unstaged);
@@ -705,7 +681,7 @@ fn a_new_file_has_nothing_on_the_index_side() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, _) = side_diff(&gikli, &root, "new.txt", StagingSide::Unstaged);
@@ -721,7 +697,7 @@ fn a_line_ending_git_converts_is_no_unstaged_difference() {
     let repository = repository_with_a_commit(&sandbox);
     repository.git(&["config", "core.autocrlf", "true"]);
     repository.write("a.txt", "a\r\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, _) = side_diff(&gikli, &root, "a.txt", StagingSide::Unstaged);
@@ -735,7 +711,7 @@ fn a_staged_binary_file_shows_no_text_diff() {
     let repository = repository_with_a_commit(&sandbox);
     std::fs::write(repository.root().join("data.bin"), [0u8, 1, 2, 0]).expect("write");
     repository.git(&["add", "--", "data.bin"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let diff = gikli
@@ -756,7 +732,7 @@ fn a_conflicted_file_is_in_the_conflicts_on_neither_side_and_compares_with_head(
     repository.write("a.txt", "ours\n");
     repository.commit_all("Ours");
     assert!(!repository.git_succeeds(&["merge", "--quiet", "other"]));
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let changes = gikli.read_changes(&root).expect("read changes");
@@ -783,7 +759,7 @@ fn next_and_previous_file_stay_on_the_side_of_the_diff() {
     repository.write("a.txt", "a on disk\n");
     repository.write("b.txt", "b changed\n");
     repository.write("new.txt", "new\n");
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     gikli
         .set_change_grouping(gikli_core::ChangeGrouping::Flat)
         .expect("flat");
@@ -822,7 +798,7 @@ fn next_and_previous_file_stay_on_the_side_of_the_diff() {
 fn saving_the_local_side_of_an_unstaged_diff_writes_the_file_and_leaves_the_index() {
     let sandbox = Sandbox::new();
     let repository = repository_with_three_versions(&sandbox);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
     let (text, _) = side_diff(&gikli, &root, "a.txt", StagingSide::Unstaged);
 
@@ -985,7 +961,7 @@ fn a_change_made_in_staging_mode_goes_to_the_active_changelist() {
 fn a_commit_in_changelist_mode_still_takes_the_working_tree() {
     let sandbox = Sandbox::new();
     let repository = repository_with_three_versions(&sandbox);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     gikli.set_staging_mode(false).expect("turn off");
     let root = opened(&gikli, &repository);
 
@@ -1005,7 +981,7 @@ fn a_staged_deletion_is_not_mistaken_for_a_new_file_in_a_folder_of_the_same_name
     repository.delete("x");
     repository.write("x/y", "in the folder\n");
     repository.git(&["add", "--all"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let (text, _) = side_diff(&gikli, &root, "x", StagingSide::Staged);
@@ -1030,7 +1006,7 @@ fn a_merge_with_nothing_to_stage_can_be_concluded() {
         "--no-commit",
         "other",
     ]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     assert!(staging_area(&gikli, &root).merging);
@@ -1048,7 +1024,7 @@ fn a_merge_with_nothing_to_stage_can_be_concluded() {
 fn outside_a_merge_the_staging_area_says_so() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_commit(&sandbox);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     assert!(!staging_area(&gikli, &root).merging);
@@ -1062,7 +1038,7 @@ fn a_file_added_with_intent_to_add_is_unstaged_and_stays_out_of_a_commit() {
     repository.git(&["add", "--intent-to-add", "--", "planned.txt"]);
     repository.write("a.txt", "a changed\n");
     repository.git(&["add", "--", "a.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let area = staging_area(&gikli, &root);
@@ -1094,7 +1070,7 @@ fn a_file_added_with_intent_to_add_that_git_finds_moved_says_where_from() {
     )
     .expect("move");
     repository.git(&["add", "--intent-to-add", "--", "moved.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let area = staging_area(&gikli, &root);
@@ -1117,7 +1093,7 @@ fn paths_git_could_read_as_patterns_or_options_are_taken_literally() {
     repository.write("-dash.txt", "dash\n");
     repository.write("a b.txt", "a file the pattern would match\n");
     let selected = paths(&["[a] b.txt", "-dash.txt"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli.add_files(&root, &selected).expect("stage");
@@ -1144,7 +1120,7 @@ fn more_files_than_fit_on_a_command_line_can_be_unstaged() {
         std::fs::write(repository.root().join(name), "new\n").expect("write");
     }
     repository.git(&["add", "--all"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     gikli.unstage_files(&root, &names).expect("unstage");
@@ -1162,7 +1138,7 @@ fn a_submodule_shows_no_text_diff_on_the_staged_side() {
     let repository = repository_with_a_commit(&sandbox);
     let url = gikli_acceptance::file_url(library.root());
     repository.git(&["submodule", "--quiet", "add", "--", &url, "lib"]);
-    let gikli = in_staging_mode(&sandbox);
+    let gikli = sandbox.gikli_in_staging_mode();
     let root = opened(&gikli, &repository);
 
     let diff = gikli

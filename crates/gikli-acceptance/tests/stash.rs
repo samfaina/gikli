@@ -1,20 +1,11 @@
 //! Stash: the user puts work aside in a stash, sees what each stash holds, and drops one or clears
 //! them all.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened};
 use gikli_core::{
     ChangeStatus, DiffContent, Failure, Gikli, Repository, StashDiffBase, StashOptions,
     StashUnavailable,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository whose one commit holds `notes.txt`.
 fn with_notes(sandbox: &Sandbox) -> TestRepository {
@@ -22,15 +13,6 @@ fn with_notes(sandbox: &Sandbox) -> TestRepository {
     work.write("notes.txt", "one\ntwo\n");
     work.commit_all("Add notes");
     work
-}
-
-/// The stashes of `repository` as plain git lists them, newest first: the subject of each.
-fn stashes_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["stash", "list", "--format=%gs"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
 }
 
 /// The options of a stash with `message` that neither keeps the index nor includes the files git
@@ -63,7 +45,7 @@ fn a_stash_with_a_message_puts_the_changes_aside() {
         stashes.entries[0].hash,
         work.git(&["rev-parse", "stash@{0}"]).trim()
     );
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(work.status_by_git(), Vec::<String>::new());
 }
 
@@ -136,7 +118,7 @@ fn a_stash_of_a_clean_tree_says_there_is_nothing_to_stash() {
             folder: root.root.clone()
         })
     );
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -154,7 +136,7 @@ fn files_git_does_not_track_alone_are_nothing_to_stash_unless_included() {
         "{stashed:?}"
     );
     assert_eq!(work.status_by_git(), vec!["?? draft.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -500,7 +482,7 @@ fn dropping_a_stash_removes_that_one_alone() {
         .map(|stash| (stash.name.as_str(), stash.hash.as_str()))
         .collect();
     assert_eq!(left, vec![("stash@{0}", hashes[0].as_str())]);
-    assert_eq!(stashes_by_git(&work), vec!["On main: Newer"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Newer"]);
 }
 
 #[test]
@@ -518,7 +500,7 @@ fn a_stash_that_is_gone_is_not_dropped_again() {
             hash: hashes[1].clone()
         })
     );
-    assert_eq!(stashes_by_git(&work), vec!["On main: Newer"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Newer"]);
 }
 
 #[test]
@@ -532,7 +514,7 @@ fn clearing_the_stashes_removes_them_all() {
         .expect("clear the stashes");
 
     assert_eq!(stashes.entries, Vec::new());
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -552,7 +534,7 @@ fn stashes_the_user_did_not_see_are_not_cleared() {
         })
     );
     assert_eq!(
-        stashes_by_git(&work),
+        work.stashes_by_git(),
         vec!["On main: Elsewhere", "On main: Newer", "On main: Older"]
     );
 }

@@ -8,15 +8,13 @@ use std::sync::mpsc::Receiver;
 use std::thread::ScopedJoinHandle;
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{Sandbox, TestRepository, WslRepository, as_git_writes_it, file_url};
+use gikli_acceptance::{
+    DEADLINE, Sandbox, TestRepository, WslRepository, as_git_writes_it, file_url, wait_until,
+};
 use gikli_core::{
     Event, ExplainedMessage, Explanation, Failure, FailureAction, Gikli, LongOperation, NextStep,
     NotificationKind, Project, Repository, RunningOperation,
 };
-
-/// How long anything here may take. Generous, for slow CI machines, and far below what a process
-/// left alive would take to end: never.
-const DEADLINE: Duration = Duration::from_secs(60);
 
 /// How long gikli waits for a program that left a cancelled run to stop holding git's output.
 #[cfg(unix)]
@@ -74,15 +72,6 @@ fn wait_for_hook(events: &Receiver<Event>, hook: &str) -> u64 {
             Ok(_) => {}
             Err(error) => panic!("{hook} was not reported: {error}"),
         }
-    }
-}
-
-/// Waits for `condition` to hold, for a limited time. `what` says what the test waits for.
-fn wait_until(what: &str, condition: impl Fn() -> bool) {
-    let give_up = Instant::now() + DEADLINE;
-    while !condition() {
-        assert!(Instant::now() < give_up, "waited in vain for {what}");
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

@@ -11,13 +11,19 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use gikli_core::{Gikli, HostEnvironment};
 use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 use tempfile::TempDir;
 
+mod driving;
 mod http_remote;
 
+pub use driving::{
+    changelist, conflicts_left, log_subjects, opened, opened_project, path_bufs, paths, paths_in,
+    push_target, read_changes, the_notification, upstream,
+};
 pub use http_remote::HttpRemote;
 
 use http_remote::Refusal;
@@ -43,6 +49,19 @@ pub const FIRST_MINUTE: i64 = 1_700_000_000;
 /// The moment `minute` minutes after [`FIRST_MINUTE`], in seconds since the epoch.
 pub fn minute_as_seconds(minute: i64) -> i64 {
     FIRST_MINUTE + minute * 60
+}
+
+/// How long anything a test waits for may take. Generous, for slow CI machines, and far below what
+/// a process left alive would take to end: never.
+pub const DEADLINE: Duration = Duration::from_secs(60);
+
+/// Waits for `condition` to hold, for at most [`DEADLINE`]. `what` says what the test waits for.
+pub fn wait_until(what: &str, condition: impl Fn() -> bool) {
+    let give_up = Instant::now() + DEADLINE;
+    while !condition() {
+        assert!(Instant::now() < give_up, "waited in vain for {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Whether the tests of speed check their budgets, which they do only when `GIKLI_CHECK_BUDGETS`
@@ -174,6 +193,13 @@ impl Sandbox {
         self.gikli_in(self.host_environment())
     }
 
+    /// gikli, running in the sandbox's environment, with Staging mode turned on.
+    pub fn gikli_in_staging_mode(&self) -> Gikli {
+        let gikli = self.gikli();
+        gikli.set_staging_mode(true).expect("turn on Staging mode");
+        gikli
+    }
+
     /// gikli, running in `host`. Every gikli of one sandbox shares the sandbox's configuration
     /// folder, as every start of the app shares the user's.
     pub fn gikli_in(&self, host: HostEnvironment) -> Gikli {
@@ -276,6 +302,15 @@ impl Sandbox {
                 text: Some(text.to_owned()),
             },
         )
+    }
+
+    /// Checks with plain git that the clone at `target` holds what `remote` holds: its HEAD is the
+    /// commit of `remote`'s `main`.
+    pub fn assert_cloned(&self, remote: &TestRepository, target: &Path) {
+        assert_eq!(
+            self.existing_repository(target).git(&["rev-parse", "HEAD"]),
+            remote.git(&["rev-parse", "main"])
+        );
     }
 
     /// Clones `remote` into a new folder with plain git.
@@ -710,6 +745,114 @@ impl TestRepository {
     /// Deletes a file from the working tree.
     pub fn delete(&self, path: &str) {
         fs::remove_file(self.root.join(path)).expect("delete file");
+    }
+
+    /// What the file at `path` of the working tree holds on disk.
+    pub fn read(&self, path: &str) -> String {
+        fs::read_to_string(self.root.join(path)).expect("read the file")
+    }
+
+    /// The full hash of the commit `revision` names, as plain git resolves it, peeling a tag to
+    /// the commit it points at. Panics if `revision` names no commit.
+    pub fn commit_of(&self, revision: &str) -> String {
+        self.git(&["rev-parse", "--verify", &format!("{revision}^{{commit}}")])
+            .trim_end()
+            .to_owned()
+    }
+
+    /// How many commits HEAD holds, as plain git counts them, with the newline git ends it with.
+    pub fn commit_count(&self) -> String {
+        self.git(&["rev-list", "--count", "HEAD"])
+    }
+
+    /// The message of the last commit, as plain git prints it with `git log --format=%B`: as git
+    /// stores it, and a blank line after.
+    pub fn last_message(&self) -> String {
+        self.git(&["log", "-1", "--format=%B"])
+    }
+
+    /// The paths the last commit touched as plain git reports them, one `status path` entry each,
+    /// such as `M a.txt`.
+    pub fn last_commit_files(&self) -> Vec<String> {
+        self.git(&["show", "--format=", "--name-status", "--no-renames", "HEAD"])
+            .lines()
+            .map(|line| line.replace('\t', " "))
+            .collect()
+    }
+
+    /// The subjects of the commits from HEAD back, newest first, as plain git lists them.
+    pub fn subjects(&self) -> Vec<String> {
+        self.git(&["log", "--format=%s"])
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Each Backup plain git holds, as `reference commit`.
+    pub fn backups_by_git(&self) -> Vec<String> {
+        self.git(&[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/gikli/backups/",
+        ])
+        .lines()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    /// The stashes as plain git lists them, newest first: the subject of each.
+    pub fn stashes_by_git(&self) -> Vec<String> {
+        self.git(&["stash", "list", "--format=%gs"])
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The paths plain git lists as in conflict, once each.
+    pub fn conflicted_by_git(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .git(&["diff", "--name-only", "--diff-filter=U"])
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        paths.dedup();
+        paths
+    }
+
+    /// The branch HEAD is on, as plain git names it.
+    pub fn head_by_git(&self) -> String {
+        self.git(&["symbolic-ref", "--short", "HEAD"])
+            .trim()
+            .to_owned()
+    }
+
+    /// The local branches, as plain git lists them.
+    pub fn branches_by_git(&self) -> Vec<String> {
+        self.git(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The parents of HEAD, as plain git lists them: the first parent first.
+    pub fn parents_of_head(&self) -> Vec<String> {
+        self.git(&["rev-list", "--parents", "--max-count=1", "HEAD"])
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The upstream of the local branch `branch` as plain git names it, such as `origin/main`, if
+    /// it has one.
+    pub fn upstream_by_git(&self, branch: &str) -> Option<String> {
+        let upstream = self.git(&[
+            "for-each-ref",
+            "--format=%(upstream:short)",
+            &format!("refs/heads/{branch}"),
+        ]);
+        let upstream = upstream.trim();
+        (!upstream.is_empty()).then(|| upstream.to_owned())
     }
 
     /// The uncommitted changes as plain git reports them, one `XY path` entry per file in

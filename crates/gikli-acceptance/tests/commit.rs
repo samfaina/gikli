@@ -3,19 +3,10 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it};
+use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, opened, paths};
 use gikli_core::{
     ChangeSet, ExplainedMessage, Failure, Gikli, LongOperation, MoveTarget, Repository,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository with one commit that holds `a.txt` and `b.txt`.
 fn committed_repository(sandbox: &Sandbox) -> TestRepository {
@@ -24,24 +15,6 @@ fn committed_repository(sandbox: &Sandbox) -> TestRepository {
     repository.write("b.txt", "b\n");
     repository.commit_all("Initial commit");
     repository
-}
-
-fn paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|path| (*path).to_owned()).collect()
-}
-
-/// The message of the last commit, as git stores it.
-fn last_message(repository: &TestRepository) -> String {
-    repository.git(&["log", "-1", "--format=%B"])
-}
-
-/// The paths the last commit touched, one `status path` entry each.
-fn last_commit_files(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["show", "--format=", "--name-status", "--no-renames", "HEAD"])
-        .lines()
-        .map(|line| line.replace('\t', " "))
-        .collect()
 }
 
 #[test]
@@ -57,8 +30,8 @@ fn a_selected_file_is_committed_and_the_others_stay_changed() {
         .commit_files(&root, &paths(&["a.txt"]), "Change a")
         .expect("commit");
 
-    assert_eq!(last_message(&repository), "Change a\n\n");
-    assert_eq!(last_commit_files(&repository), vec!["M a.txt"]);
+    assert_eq!(repository.last_message(), "Change a\n\n");
+    assert_eq!(repository.last_commit_files(), vec!["M a.txt"]);
     assert_eq!(repository.status_by_git(), vec![" M b.txt"]);
     let left: Vec<_> = changes.changes.iter().map(|change| &change.path).collect();
     assert_eq!(left, vec![std::path::Path::new("b.txt")]);
@@ -100,7 +73,7 @@ fn a_staged_file_that_is_not_selected_stays_staged_and_out_of_the_commit() {
         .commit_files(&root, &paths(&["a.txt"]), "Change a")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["M a.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["M a.txt"]);
     assert_eq!(repository.status_by_git(), vec!["MM b.txt"]);
     assert_eq!(repository.git(&["show", ":b.txt"]), "b staged\n");
 }
@@ -118,7 +91,7 @@ fn a_deletion_that_is_selected_is_recorded() {
         .commit_files(&root, &paths(&["a.txt", "b.txt"]), "Remove both")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["D a.txt", "D b.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["D a.txt", "D b.txt"]);
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
@@ -168,7 +141,7 @@ fn a_whole_changelist_is_committed_on_its_own() {
         .commit_files(&root, &changelist_paths(&changes, "Feature"), "Feature")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["M a.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["M a.txt"]);
     assert_eq!(changelist_paths(&after, "Feature"), Vec::<String>::new());
     assert_eq!(changelist_paths(&after, "Changes"), vec!["b.txt"]);
 }
@@ -202,7 +175,7 @@ fn the_first_commit_of_a_repository_works() {
         .commit_files(&root, &paths(&["a.txt"]), "First")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["A a.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["A a.txt"]);
     assert!(changes.changes.is_empty());
 }
 
@@ -225,7 +198,7 @@ fn a_path_is_taken_literally() {
         .commit_files(&root, &paths(&["[a].txt"]), "Only the brackets")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["M [a].txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["M [a].txt"]);
 }
 
 #[test]
@@ -248,7 +221,7 @@ fn a_selected_unversioned_file_is_added_in_the_same_step() {
         .commit_files(&root, &paths(&["new.txt"]), "Add new")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["A new.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["A new.txt"]);
     assert_eq!(
         repository.git(&["show", "HEAD:new.txt"]),
         "new
@@ -270,7 +243,7 @@ fn a_selected_rename_records_both_of_its_paths() {
         .expect("commit");
 
     assert_eq!(
-        last_commit_files(&repository),
+        repository.last_commit_files(),
         vec!["D a.txt", "A moved.txt"]
     );
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
@@ -290,7 +263,7 @@ fn a_file_moved_and_then_removed_from_disk_leaves_nothing_in_the_index() {
         .commit_files(&root, &paths(&["a.txt"]), "Remove a")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["D a.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["D a.txt"]);
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
@@ -340,12 +313,7 @@ fn a_selection_longer_than_a_command_line_is_committed() {
         .expect("commit");
 
     assert!(changes.changes.is_empty());
-    assert_eq!(last_commit_files(&repository).len(), names.len());
-}
-
-/// How many commits HEAD holds, as plain git counts them.
-fn commit_count(repository: &TestRepository) -> String {
-    repository.git(&["rev-list", "--count", "HEAD"])
+    assert_eq!(repository.last_commit_files().len(), names.len());
 }
 
 #[test]
@@ -366,7 +334,7 @@ fn a_missing_name_or_email_is_asked_for_before_anything_happens() {
             email_missing: false,
         })
     );
-    assert_eq!(commit_count(&repository), "1\n");
+    assert_eq!(repository.commit_count(), "1\n");
     assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
 }
 
@@ -446,7 +414,7 @@ fn a_selection_where_nothing_is_a_change_any_more_commits_nothing() {
     let result = gikli.commit_files(&root, &paths(&["a.txt", "debug.log"]), "Nothing");
 
     assert_eq!(result, Err(Failure::NothingToCommit));
-    assert_eq!(commit_count(&repository), "2\n");
+    assert_eq!(repository.commit_count(), "2\n");
 }
 
 #[test]
@@ -463,7 +431,7 @@ fn hooks_run_as_configured() {
         .expect("commit");
 
     assert_eq!(
-        last_message(&repository),
+        repository.last_message(),
         "Change a\nReviewed-by: a hook\n\n"
     );
 }
@@ -490,7 +458,7 @@ fn a_hook_that_refuses_leaves_everything_as_it_was() {
             output: "Lint found 2 problems\n".to_owned(),
         }
     );
-    assert_eq!(commit_count(&repository), "1\n");
+    assert_eq!(repository.commit_count(), "1\n");
     assert_eq!(repository.status_by_git(), vec![" M a.txt", "?? new.txt"]);
 }
 
@@ -532,8 +500,8 @@ fn a_commit_works_in_a_linked_worktree() {
         .commit_files(&root, &paths(&["a.txt"]), "In the worktree")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&worktree), vec!["M a.txt"]);
-    assert_eq!(commit_count(&main), "1\n");
+    assert_eq!(worktree.last_commit_files(), vec!["M a.txt"]);
+    assert_eq!(main.commit_count(), "1\n");
 }
 
 /// A pre-commit hook that says it started and then runs until something ends it.
@@ -585,7 +553,7 @@ fn a_commit_is_a_long_operation_the_user_can_cancel_and_commits_nothing() {
         ),
         "the cancelled run left nothing behind: {result:?}"
     );
-    assert_eq!(commit_count(&repository), "1\n");
+    assert_eq!(repository.commit_count(), "1\n");
     assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
 }
 
@@ -604,7 +572,7 @@ fn a_selected_rename_leaves_out_a_new_file_at_its_old_path() {
         .commit_files(&root, &paths(&["moved.txt"]), "Move a")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["A moved.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["A moved.txt"]);
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a\n");
     assert_eq!(repository.status_by_git(), vec!["D  a.txt", "?? a.txt"]);
 }
@@ -693,7 +661,7 @@ fn the_first_commit_of_a_repository_leaves_out_what_is_staged_elsewhere() {
         .commit_files(&root, &paths(&["a.txt"]), "Add a")
         .expect("commit");
 
-    assert_eq!(last_commit_files(&repository), vec!["A a.txt"]);
+    assert_eq!(repository.last_commit_files(), vec!["A a.txt"]);
     assert_eq!(repository.status_by_git(), vec!["A  b.txt"]);
 }
 

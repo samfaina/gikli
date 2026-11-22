@@ -1,20 +1,11 @@
 //! The branch selector and the branches pane of the log: every branch of a Repository, grouped
 //! and searched.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened, upstream};
 use gikli_core::{
-    Branch, BranchNode, Branches, CurrentBranch, Failure, Gikli, IncomingOutgoing, LogFilter,
-    RefKind, RefLabel, Repository, Upstream,
+    Branch, BranchNode, Branches, CurrentBranch, Failure, Gikli, LogFilter, RefKind, RefLabel,
+    Repository, Upstream,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 fn label(name: &str, kind: RefKind) -> RefLabel {
     RefLabel {
@@ -78,15 +69,6 @@ fn the_selector_shows_the_current_branch_then_local_and_remote_branches_and_tags
             tags: vec![branch("v1", RefKind::Tag), branch("v2", RefKind::Tag)],
         }
     );
-}
-
-/// The upstream `name` of a branch, with `incoming` commits the branch does not have and
-/// `outgoing` ones it does not have.
-fn upstream(name: &str, incoming: usize, outgoing: usize) -> Option<Upstream> {
-    Some(Upstream {
-        name: name.to_owned(),
-        commits: Some(IncomingOutgoing { incoming, outgoing }),
-    })
 }
 
 fn local_branch(name: &str, upstream: Option<Upstream>) -> BranchNode {
@@ -487,24 +469,20 @@ fn the_branches_pane_goes_to_the_latest_commit_of_a_branch() {
         })
         .collect();
 
-    let commit_of = |revision: &str| work.git(&["rev-parse", revision]).trim().to_owned();
     assert_eq!(
         latest,
         vec![
             (
                 "origin/main".to_owned(),
-                commit_of("refs/heads/origin/main")
+                work.commit_of("refs/heads/origin/main")
             ),
-            ("feature".to_owned(), commit_of("refs/heads/feature")),
-            ("main".to_owned(), commit_of("refs/heads/main")),
+            ("feature".to_owned(), work.commit_of("refs/heads/feature")),
+            ("main".to_owned(), work.commit_of("refs/heads/main")),
             (
                 "origin/main".to_owned(),
-                commit_of("refs/remotes/origin/main")
+                work.commit_of("refs/remotes/origin/main")
             ),
-            (
-                "feature".to_owned(),
-                commit_of("refs/tags/feature^{commit}")
-            ),
+            ("feature".to_owned(), work.commit_of("refs/tags/feature")),
         ]
     );
 }

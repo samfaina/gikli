@@ -1,29 +1,11 @@
 //! Unstash: the user brings stashed work back, by applying a stash, popping it or creating a branch
 //! from it, and a conflict never loses the stash.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, conflicts_left, opened};
 use gikli_core::{
-    Event, Failure, Gikli, Notification, NotificationAction, NotificationKind, Repository,
-    StashOptions, StashUnavailable, UnstashOptions,
+    Failure, Gikli, Notification, NotificationAction, NotificationKind, Repository, StashOptions,
+    StashUnavailable, UnstashOptions,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The stashes of `repository` as plain git lists them, newest first: the subject of each.
-fn stashes_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["stash", "list", "--format=%gs"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
 
 /// A repository whose one commit holds `notes.txt`, with a stash `Half done` that changed it to
 /// `one\ntwo\nthree\n`, and the hash of that stash.
@@ -65,7 +47,7 @@ fn applying_a_stash_brings_its_changes_back_and_keeps_it() {
 
     assert!(!unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries[0].hash, hash);
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(work.status_by_git(), vec![" M notes.txt"]);
     assert_eq!(
         std::fs::read_to_string(work.root().join("notes.txt")).expect("read notes"),
@@ -91,7 +73,7 @@ fn popping_a_stash_brings_its_changes_back_and_drops_it() {
 
     assert!(!unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries, Vec::new());
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
     assert_eq!(work.status_by_git(), vec![" M notes.txt"]);
 }
 
@@ -151,7 +133,7 @@ fn applying_and_popping_can_restore_what_was_staged() {
         )
         .expect("apply the stash with its index");
     assert_eq!(work.status_by_git(), vec!["A  added.txt", "M  notes.txt"]);
-    assert_eq!(stashes_by_git(&work), vec!["On main: Staged"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Staged"]);
 
     work.git(&["reset", "--hard", "--quiet"]);
     gikli
@@ -166,7 +148,7 @@ fn applying_and_popping_can_restore_what_was_staged() {
         )
         .expect("pop the stash with its index");
     assert_eq!(work.status_by_git(), vec!["A  added.txt", "M  notes.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 /// [`with_a_stash`], where a commit since changed the line the stash adds, so applying it stops on
@@ -187,26 +169,6 @@ THREE
     (work, root, hash)
 }
 
-/// The Repositories the events received so far said an operation left in conflict.
-fn conflicts_left(events: &std::sync::mpsc::Receiver<Event>) -> Vec<Repository> {
-    events
-        .try_iter()
-        .filter_map(|event| match event {
-            Event::ConflictsLeft { repository } => Some(repository),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The files of `repository` in conflict, as plain git lists them.
-fn conflicted_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["diff", "--name-only", "--diff-filter=U"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
 #[test]
 fn a_pop_that_conflicts_opens_conflict_resolution_and_keeps_the_stash() {
     let sandbox = Sandbox::new();
@@ -220,9 +182,9 @@ fn a_pop_that_conflicts_opens_conflict_resolution_and_keeps_the_stash() {
 
     assert!(unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries[0].hash, hash);
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
-    assert_eq!(conflicted_by_git(&work), vec!["notes.txt"]);
+    assert_eq!(work.conflicted_by_git(), vec!["notes.txt"]);
 }
 
 /// The notifications raised about a stash kept in `repository` after it conflicted.
@@ -256,13 +218,13 @@ fn a_stash_kept_after_a_conflict_is_dropped_once_the_user_confirms_it() {
     gikli
         .mark_resolved(work.root(), &root, &["notes.txt".to_owned()])
         .expect("mark the file resolved");
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
 
     gikli
         .act_on_notification(kept[0].id, &NotificationAction::DropStash)
         .expect("drop the kept stash");
 
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
     assert_eq!(kept_stash_notifications(&gikli, &root), Vec::new());
 }
 
@@ -279,7 +241,7 @@ fn applying_a_stash_that_conflicts_keeps_it_without_asking_to_drop_it() {
 
     assert!(unstashed.conflicts_left);
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(kept_stash_notifications(&gikli, &root), Vec::new());
 }
 
@@ -314,7 +276,7 @@ fn applying_onto_uncommitted_changes_warns_and_does_not_block() {
     assert!(plan.local_changes);
     assert!(!unstashed.conflicts_left);
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M other.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -356,7 +318,7 @@ changed here
         })
     );
     assert_eq!(conflicts_left(&events), vec![]);
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(work.status_by_git(), vec![" M notes.txt"]);
 }
 
@@ -375,7 +337,7 @@ fn a_branch_from_a_stash_starts_where_it_was_made_with_its_changes_and_drops_it(
 
     assert!(!unstashed.conflicts_left);
     assert_eq!(unstashed.stashes.entries, Vec::new());
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
     assert_eq!(work.git(&["branch", "--show-current"]), "from-stash\n");
     assert_eq!(work.git(&["rev-parse", "HEAD"]), made_on);
     assert_eq!(work.status_by_git(), vec!["A  added.txt", "M  notes.txt"]);
@@ -402,7 +364,7 @@ fn a_branch_from_a_stash_takes_a_name_as_a_new_branch_does() {
             name: "@{-1}".to_owned()
         })
     );
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(work.git(&["branch", "--show-current"]), "main\n");
 }
 
@@ -420,7 +382,7 @@ fn no_stash_is_brought_back_while_files_are_in_conflict() {
 
     assert_eq!(applied, Err(Failure::ConflictsNotResolved));
     assert_eq!(branched, Err(Failure::ConflictsNotResolved));
-    assert_eq!(stashes_by_git(&work), vec!["On main: Half done"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(work.git(&["branch", "--list", "from-stash"]), "");
 }
 
@@ -512,7 +474,7 @@ fn popping_a_stash_brings_back_the_files_git_did_not_track() {
 
     assert_eq!(plan.untracked_in_the_way, Vec::<std::path::PathBuf>::new());
     assert_eq!(work.status_by_git(), vec![" M notes.txt", "?? draft.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -536,7 +498,7 @@ fn a_file_the_stash_did_not_track_already_on_disk_is_warned_of_and_keeps_the_sta
             folder: root.root.clone()
         })
     );
-    assert_eq!(stashes_by_git(&work), vec!["On main: With draft"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: With draft"]);
     assert_eq!(
         std::fs::read_to_string(work.root().join("draft.txt")).expect("read the draft"),
         "another draft\n"
@@ -559,5 +521,5 @@ fn a_branch_from_a_stash_git_cannot_apply_whole_stays_and_keeps_the_stash() {
         })
     );
     assert_eq!(work.git(&["branch", "--show-current"]), "from-stash\n");
-    assert_eq!(stashes_by_git(&work), vec!["On main: With draft"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: With draft"]);
 }

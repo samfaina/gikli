@@ -2,16 +2,8 @@
 
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{Change, ChangeSet, ChangeStatus, ConflictKind, Failure, Gikli, SubmoduleState};
-
-/// Opens the repository's folder as a Project and reads the changes of its Repository.
-fn read_changes(gikli: &Gikli, repository: &TestRepository) -> ChangeSet {
-    let project = gikli.open_project(repository.root()).expect("open project");
-    gikli
-        .read_changes(&project.repositories[0])
-        .expect("read changes")
-}
+use gikli_acceptance::{Sandbox, TestRepository, read_changes};
+use gikli_core::{Change, ChangeStatus, ConflictKind, Failure, SubmoduleState};
 
 fn change(path: &str, status: ChangeStatus) -> Change {
     Change {

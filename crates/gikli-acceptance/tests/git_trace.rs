@@ -6,17 +6,15 @@
 //! there from inside the run and again after it.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
 
-use gikli_acceptance::{HttpRemote, Sandbox, TestRepository, as_git_writes_it, file_url};
+use gikli_acceptance::{
+    HttpRemote, Sandbox, TestRepository, as_git_writes_it, file_url, wait_until,
+};
 use gikli_core::{Event, ExplainedMessage, Failure, Repository};
 
 const USERNAME: &str = "ada-lovelace-1815";
 const PASSWORD: &str = "tr0ub4dor-and-3";
-
-/// How long anything here may take. Generous, for slow CI machines.
-const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Words of the trace, which nothing a test's hooks and git say holds.
 const TRACE_WORDS: [&str; 3] = ["\"event\"", "\"sid\"", "gikli-trace-"];
@@ -117,16 +115,6 @@ impl TraceWatch {
     }
 }
 
-/// Checks with plain git that `target` holds what `remote` holds.
-fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
-    assert_eq!(
-        sandbox
-            .existing_repository(target)
-            .git(&["rev-parse", "HEAD"]),
-        remote.git(&["rev-parse", "main"])
-    );
-}
-
 /// The name of the hook `result` says failed, and what it wrote.
 fn failed_hook_of<T: std::fmt::Debug>(result: &Result<T, Failure>) -> (&str, &str) {
     let Err(Failure::Explained { explanation }) = result else {
@@ -148,7 +136,7 @@ fn assert_clone_leaves_the_password_in_no_file(url_of: fn(&Sandbox) -> RemoteWit
 
     gikli.clone_repository(&remote.url, &target).expect("clone");
 
-    assert_cloned(&sandbox, &remote.remote, &target);
+    sandbox.assert_cloned(&remote.remote, &target);
     watch.assert_no_file_holds_the_password();
 }
 
@@ -201,14 +189,6 @@ fn a_fetch_of_a_password_holding_a_slash_in_the_configuration_leaves_it_in_no_fi
     assert_fetch_leaves_the_password_in_no_file(url_git_takes_for_a_path);
 }
 
-fn wait_until(what: &str, condition: impl Fn() -> bool) {
-    let give_up = Instant::now() + DEADLINE;
-    while !condition() {
-        assert!(Instant::now() < give_up, "waited in vain for {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
 /// The program outlives the run and holds on to all it inherited from git. It waits for the test to
 /// say so, or a minute, so a run that waits for it ends with `finished` already there.
 #[test]
@@ -242,7 +222,7 @@ fn a_program_that_outlives_the_run_is_not_waited_for_and_leaves_no_file() {
 
     gikli.clone_repository(&remote.url, &target).expect("clone");
 
-    assert_cloned(&sandbox, &remote.remote, &target);
+    sandbox.assert_cloned(&remote.remote, &target);
     assert!(!finished.exists(), "the run waited for the program");
     fs::write(&release, "").expect("release the program");
     wait_until("the program to finish", || finished.exists());
@@ -327,7 +307,7 @@ fn what_a_hook_captures_of_a_git_it_starts_holds_no_trace_and_no_password() {
 
     gikli.clone_repository(&remote.url, &target).expect("clone");
 
-    assert_cloned(&sandbox, &remote.remote, &target);
+    sandbox.assert_cloned(&remote.remote, &target);
     let merged = fs::read_to_string(merged_file).expect("the hook ran");
     assert!(merged.contains("refs/heads/main"), "{merged}");
     assert_holds_no_trace(&merged);
@@ -366,7 +346,7 @@ fn without_a_reader_git_still_runs_and_no_trace_file_appears() {
     assert_eq!(watch.targets(), ["0"]);
     watch.assert_no_file_holds_the_password();
     // The plain git of this check does write that trace.
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
 }
 
 /// Without a trace, gikli cannot name the hook, and what a failed clone reports says what happened.
@@ -464,8 +444,9 @@ mod wsl {
             (result, gikli)
         }
 
-        /// Checks with plain git that the clone holds what the repository holds.
-        fn assert_cloned(&self) {
+        /// Checks with plain git inside WSL that the clone beside the repository holds what the
+        /// repository holds.
+        fn assert_cloned_beside(&self) {
             let clone = self.source.linux_path_beside("clone");
             assert_eq!(
                 self.source.git(&["-C", &clone, "rev-parse", "HEAD"]),
@@ -502,7 +483,7 @@ mod wsl {
 
         /// Checks that the clone worked and that git got no target for a trace.
         fn assert_cloned_without_a_trace(&self) {
-            self.assert_cloned();
+            self.assert_cloned_beside();
             assert_eq!(self.output_of_hook("trace-targets"), "0\n");
         }
     }
@@ -540,7 +521,7 @@ mod wsl {
         assert_eq!(hook, "post-checkout");
         assert!(output.contains("half a line"), "{output}");
         assert_holds_no_trace(&format!("{result:?}{:?}", gikli.operation_log()));
-        setup.assert_cloned();
+        setup.assert_cloned_beside();
         setup.assert_no_file_holds_the_password();
         let merged = setup.output_of_hook("merged-output");
         assert!(merged.contains("HEAD"), "{merged}");
@@ -572,7 +553,7 @@ mod wsl {
         let (result, _gikli) = setup.clone(setup.host(&[]));
 
         result.expect("clone");
-        setup.assert_cloned();
+        setup.assert_cloned_beside();
         assert!(
             !setup.source.windows_path_beside("finished").exists(),
             "the run waited"

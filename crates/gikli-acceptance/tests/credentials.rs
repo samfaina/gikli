@@ -53,15 +53,6 @@ fn knows_the_credentials() -> String {
     format!("echo username={USERNAME}; echo password={PASSWORD}")
 }
 
-fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
-    assert_eq!(
-        sandbox
-            .existing_repository(target)
-            .git(&["rev-parse", "HEAD"]),
-        remote.git(&["rev-parse", "main"])
-    );
-}
-
 #[test]
 fn the_users_credential_helper_answers_without_a_prompt_by_default() {
     let sandbox = Sandbox::new();
@@ -77,7 +68,7 @@ fn the_users_credential_helper_answers_without_a_prompt_by_default() {
         .clone_repository(&server.url(), &target)
         .expect("clone with the helper's credentials");
 
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
     let record = fs::read_to_string(record).expect("git asked the helper");
     assert!(record.starts_with("get\n"), "{record}");
 }
@@ -161,7 +152,7 @@ fn username_and_password_prompts_reach_the_user_and_gikli_keeps_neither_answer()
     });
 
     result.unwrap_or_else(|failure| panic!("{failure:?}: {:#?}", gikli.operation_log().pop()));
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
     assert_eq!(
         prompts.iter().map(|prompt| prompt.kind).collect::<Vec<_>>(),
         [PromptKind::Username, PromptKind::Password]
@@ -191,7 +182,7 @@ fn username_and_password_prompts_reach_the_user_and_gikli_keeps_neither_answer()
         gikli.clone_repository(&server.url(), &second)
     });
     result.expect("clone again, answering again");
-    assert_cloned(&sandbox, &remote, &second);
+    sandbox.assert_cloned(&remote, &second);
     assert_eq!(prompts.len(), 2, "gikli remembers no answer: {prompts:?}");
 }
 
@@ -217,7 +208,7 @@ fn with_the_setting_off_git_asks_the_user_and_the_helper_stays_out_of_it() {
         gikli.clone_repository(&server.url(), &target)
     });
     result.expect("clone with the answers");
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(!record.exists(), "git never started the helper");
 
@@ -229,7 +220,7 @@ fn with_the_setting_off_git_asks_the_user_and_the_helper_stays_out_of_it() {
         gikli.clone_repository(&server.url(), &again)
     });
     result.expect("clone with the credentials of the helper");
-    assert_cloned(&sandbox, &remote, &again);
+    sandbox.assert_cloned(&remote, &again);
     assert_eq!(prompts, []);
     assert!(record.exists());
 }
@@ -269,7 +260,7 @@ fn the_users_helper_keeps_what_the_user_answered_and_forgets_what_the_remote_ref
         gikli.clone_repository(&server.url(), &target)
     });
     result.expect("clone with the answers");
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
     let told = fs::read_to_string(&record).expect("git told the helper");
     assert!(
         told.contains(&format!(
@@ -504,7 +495,7 @@ fn an_ssh_passphrase_prompt_reaches_the_user_and_gikli_keeps_no_answer() {
     );
 
     result.expect("clone with the passphrase");
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     assert_eq!(prompts[0].kind, PromptKind::Passphrase);
     assert!(prompts[0].text.contains("id_ed25519"), "{prompts:?}");
@@ -587,7 +578,7 @@ fn the_user_decides_about_an_unknown_host_key_inside_gikli() {
     );
 
     result.expect("clone from the host the user trusted");
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     assert_eq!(prompts[0].kind, PromptKind::HostKey);
     assert_eq!(prompts[0].text, UNKNOWN_HOST_KEY_QUESTION);
@@ -794,7 +785,7 @@ fn a_prompt_closes_by_itself_when_what_asked_no_longer_needs_the_answer() {
     });
 
     result.expect("clone once the key is touched");
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
 }
 
 /// The first event `wanted` picks.
@@ -828,7 +819,7 @@ fn a_program_without_the_token_cannot_ask_the_user_anything() {
     );
 
     result.expect("the clone goes on");
-    assert_cloned(&sandbox, &remote, &target);
+    sandbox.assert_cloned(&remote, &target);
     assert_eq!(prompts, []);
 }
 

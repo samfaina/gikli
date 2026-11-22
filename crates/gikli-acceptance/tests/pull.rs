@@ -2,22 +2,12 @@
 //! user chooses, and remembering a source branch other than the default.
 
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, conflicts_left, opened};
 use gikli_core::{
-    Event, ExplainedMessage, Explanation, Failure, Gikli, NextStep, OperationAction,
-    OperationInProgress, OperationKind, PullOptions, PullPlan, PullRemote, PullSource, Repository,
+    ExplainedMessage, Explanation, Failure, NextStep, OperationAction, OperationInProgress,
+    OperationKind, PullOptions, PullPlan, PullRemote, PullSource,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A bare remote whose `main` holds First, a clone `mine` of it, and a clone `theirs` that pushes
 /// to it what others publish.
@@ -74,33 +64,6 @@ fn source(remote: &str, branch: &str) -> PullSource {
     }
 }
 
-/// The subjects of the commits on HEAD of `repository`, newest first, as git lists them.
-fn subjects(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["log", "--format=%s"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The parents of HEAD in `repository`, as git lists them.
-fn parents_of_head(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["rev-list", "--parents", "--max-count=1", "HEAD"])
-        .split_whitespace()
-        .skip(1)
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The commit `revision` names in `repository`.
-fn commit_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", revision])
-        .trim_end()
-        .to_owned()
-}
-
 /// Publishes a commit of `theirs` that changes `path` to `contents`, as someone else would.
 fn publish(theirs: &TestRepository, path: &str, contents: &str, message: &str) {
     theirs.write(path, contents);
@@ -127,8 +90,8 @@ fn pulling_brings_the_commits_others_published() {
 
     assert_eq!(operation, None, "nothing is left half done");
     assert_eq!(
-        commit_of(&mine, "main"),
-        commit_of(&theirs, "main"),
+        mine.commit_of("main"),
+        theirs.commit_of("main"),
         "git agrees the branch fast-forwarded to what they published"
     );
 }
@@ -140,7 +103,7 @@ fn pulling_merges_a_branch_that_parted_from_the_remote_one() {
     publish(&theirs, "theirs.txt", "theirs\n", "Theirs");
     mine.write("mine.txt", "mine\n");
     mine.commit_all("Mine");
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
 
@@ -154,8 +117,8 @@ fn pulling_merges_a_branch_that_parted_from_the_remote_one() {
         .expect("pull");
 
     assert_eq!(
-        parents_of_head(&mine),
-        [mine_before, commit_of(&theirs, "main")],
+        mine.parents_of_head(),
+        [mine_before, theirs.commit_of("main")],
         "git made a merge of both"
     );
 }
@@ -188,8 +151,8 @@ fn pulling_with_rebase_puts_the_branch_s_own_commits_on_top_of_the_remote_ones()
         )
         .expect("pull with rebase");
 
-    assert_eq!(subjects(&mine), ["Mine", "Theirs", "First"]);
-    assert_eq!(parents_of_head(&mine), [commit_of(&theirs, "main")]);
+    assert_eq!(mine.subjects(), ["Mine", "Theirs", "First"]);
+    assert_eq!(mine.parents_of_head(), [theirs.commit_of("main")]);
 }
 
 #[test]
@@ -197,7 +160,7 @@ fn pulling_merges_when_the_user_chose_to_even_if_git_is_configured_to_rebase() {
     let sandbox = Sandbox::new();
     let Shared { mine, theirs, .. } = parted(&sandbox);
     sandbox.configure("[pull]\n\trebase = true\n");
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
 
@@ -211,8 +174,8 @@ fn pulling_merges_when_the_user_chose_to_even_if_git_is_configured_to_rebase() {
         .expect("pull");
 
     assert_eq!(
-        parents_of_head(&mine),
-        [mine_before, commit_of(&theirs, "main")]
+        mine.parents_of_head(),
+        [mine_before, theirs.commit_of("main")]
     );
 }
 
@@ -220,7 +183,7 @@ fn pulling_merges_when_the_user_chose_to_even_if_git_is_configured_to_rebase() {
 fn pulling_fast_forward_only_leaves_a_branch_that_parted_as_it_was() {
     let sandbox = Sandbox::new();
     let Shared { mine, .. } = parted(&sandbox);
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
 
@@ -235,7 +198,7 @@ fn pulling_fast_forward_only_leaves_a_branch_that_parted_as_it_was() {
     );
 
     assert!(pulled.is_err(), "the branch cannot fast-forward");
-    assert_eq!(commit_of(&mine, "main"), mine_before);
+    assert_eq!(mine.commit_of("main"), mine_before);
 }
 
 #[test]
@@ -243,7 +206,7 @@ fn pulling_without_fast_forward_makes_a_merge_commit_anyway() {
     let sandbox = Sandbox::new();
     let Shared { mine, theirs, .. } = shared(&sandbox);
     publish(&theirs, "theirs.txt", "theirs\n", "Theirs");
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
 
@@ -260,8 +223,8 @@ fn pulling_without_fast_forward_makes_a_merge_commit_anyway() {
         .expect("pull without fast-forward");
 
     assert_eq!(
-        parents_of_head(&mine),
-        [mine_before, commit_of(&theirs, "main")]
+        mine.parents_of_head(),
+        [mine_before, theirs.commit_of("main")]
     );
 }
 
@@ -269,7 +232,7 @@ fn pulling_without_fast_forward_makes_a_merge_commit_anyway() {
 fn pulling_squashed_stages_what_the_remote_brings_without_a_commit() {
     let sandbox = Sandbox::new();
     let Shared { mine, .. } = parted(&sandbox);
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
 
@@ -286,7 +249,7 @@ fn pulling_squashed_stages_what_the_remote_brings_without_a_commit() {
         .expect("pull squashed");
 
     assert_eq!(operation, None, "a squash leaves no merge to finish");
-    assert_eq!(commit_of(&mine, "main"), mine_before);
+    assert_eq!(mine.commit_of("main"), mine_before);
     assert_eq!(mine.status_by_git(), ["A  theirs.txt"]);
 }
 
@@ -294,7 +257,7 @@ fn pulling_squashed_stages_what_the_remote_brings_without_a_commit() {
 fn pulling_without_a_commit_leaves_the_merge_in_progress() {
     let sandbox = Sandbox::new();
     let Shared { mine, .. } = parted(&sandbox);
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
 
@@ -317,7 +280,7 @@ fn pulling_without_a_commit_leaves_the_merge_in_progress() {
             actions: vec![OperationAction::CommitMerge, OperationAction::Abort],
         })
     );
-    assert_eq!(commit_of(&mine, "main"), mine_before);
+    assert_eq!(mine.commit_of("main"), mine_before);
 }
 
 #[test]
@@ -325,7 +288,7 @@ fn pulling_without_verify_skips_the_hooks_of_the_merge() {
     let sandbox = Sandbox::new();
     let Shared { mine, theirs, .. } = parted(&sandbox);
     sandbox.hook("pre-merge-commit", "echo refused by the hook >&2\nexit 1");
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
     let verified = gikli.pull(
@@ -350,8 +313,8 @@ fn pulling_without_verify_skips_the_hooks_of_the_merge() {
         .expect("pull without verify");
 
     assert_eq!(
-        parents_of_head(&mine),
-        [mine_before, commit_of(&theirs, "main")]
+        mine.parents_of_head(),
+        [mine_before, theirs.commit_of("main")]
     );
 }
 
@@ -359,7 +322,7 @@ fn pulling_without_verify_skips_the_hooks_of_the_merge() {
 fn options_that_contradict_each_other_are_refused_before_git_runs() {
     let sandbox = Sandbox::new();
     let Shared { mine, .. } = parted(&sandbox);
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
     let contradictions = [
@@ -408,10 +371,10 @@ fn options_that_contradict_each_other_are_refused_before_git_runs() {
             })
         );
     }
-    assert_eq!(commit_of(&mine, "main"), mine_before);
+    assert_eq!(mine.commit_of("main"), mine_before);
     assert_eq!(
-        commit_of(&mine, "origin/main"),
-        commit_of(&mine, "main~1"),
+        mine.commit_of("origin/main"),
+        mine.commit_of("main~1"),
         "nothing was fetched either"
     );
 }
@@ -424,17 +387,6 @@ fn in_conflict(sandbox: &Sandbox) -> Shared {
     shared.mine.write("file.txt", "mine\n");
     shared.mine.commit_all("Mine");
     shared
-}
-
-/// The Repositories the `events` received say were left with files in conflict.
-fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
-    events
-        .try_iter()
-        .filter_map(|event| match event {
-            Event::ConflictsLeft { repository } => Some(repository),
-            _ => None,
-        })
-        .collect()
 }
 
 #[test]
@@ -726,7 +678,7 @@ fn a_source_on_a_remote_the_repository_does_not_have_is_refused() {
     let sandbox = Sandbox::new();
     let Shared { mine, remote, .. } = shared(&sandbox);
     let path = remote.root().to_string_lossy().into_owned();
-    let mine_before = commit_of(&mine, "main");
+    let mine_before = mine.commit_of("main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
 
@@ -738,7 +690,7 @@ fn a_source_on_a_remote_the_repository_does_not_have_is_refused() {
     );
 
     assert_eq!(pulled, Err(Failure::RemoteNotFound { remote: path }));
-    assert_eq!(commit_of(&mine, "main"), mine_before);
+    assert_eq!(mine.commit_of("main"), mine_before);
 }
 
 #[test]

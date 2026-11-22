@@ -1,24 +1,9 @@
 //! The log: the user reads the history of a Repository as a commit list with a graph.
 
-use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository, minute_as_seconds};
+use gikli_acceptance::{
+    ImportedHistory, Sandbox, TestRepository, log_subjects, minute_as_seconds, opened,
+};
 use gikli_core::{Failure, Gikli, GraphLine, LogPage, LogRow, Repository};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The full hash of `revision`, as git names it.
-fn hash_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", revision])
-        .trim_end()
-        .to_owned()
-}
 
 #[test]
 fn the_log_lists_commits_newest_first_with_what_a_row_shows() {
@@ -33,8 +18,8 @@ fn the_log_lists_commits_newest_first_with_what_a_row_shows() {
 
     let newest = &page.rows[0];
     assert_eq!(page.rows.len(), 2);
-    assert_eq!(newest.hash, hash_of(&repository, "HEAD"));
-    assert_eq!(newest.parents, vec![hash_of(&repository, "HEAD~1")]);
+    assert_eq!(newest.hash, repository.commit_of("HEAD"));
+    assert_eq!(newest.parents, vec![repository.commit_of("HEAD~1")]);
     assert_eq!(newest.subject, "Second");
     assert_eq!(newest.author, "Test User");
     assert_eq!(newest.committed_at, minute_as_seconds(2));
@@ -59,11 +44,6 @@ fn a_repository_with_no_commits_shows_an_empty_log() {
         !repository.git_succeeds(&["rev-parse", "--verify", "--quiet", "HEAD"]),
         "git agrees there is no commit"
     );
-}
-
-/// The subjects of `rows`, in order.
-fn subjects(rows: &[LogRow]) -> Vec<&str> {
-    rows.iter().map(|row| row.subject.as_str()).collect()
 }
 
 /// Checks that `rows` are the commits plain git lists from `revisions`, in its order, each with the
@@ -110,7 +90,7 @@ fn every_branch_remote_branch_tag_and_head_show_in_order_of_commit_date() {
     let page = gikli.read_log(&root, None, 50).expect("read the log");
 
     assert_eq!(
-        subjects(&page.rows),
+        log_subjects(&page.rows),
         vec![
             "On a remote branch",
             "On detached HEAD",
@@ -131,7 +111,7 @@ fn commits_only_a_stash_or_a_backup_holds_stay_out_of_the_log() {
     repository.write("a.txt", "a changed\n");
     repository.git(&["stash", "push", "--quiet", "--message", "Saved work"]);
     repository.commit_at(9, "Rewritten away");
-    let backup = hash_of(&repository, "HEAD");
+    let backup = repository.commit_of("HEAD");
     repository.git(&["update-ref", "refs/gikli/backups/one", &backup]);
     repository.git(&["reset", "--quiet", "--hard", "HEAD~1"]);
     let gikli = sandbox.gikli();
@@ -139,7 +119,7 @@ fn commits_only_a_stash_or_a_backup_holds_stay_out_of_the_log() {
 
     let page = gikli.read_log(&root, None, 50).expect("read the log");
 
-    assert_eq!(subjects(&page.rows), vec!["Base"]);
+    assert_eq!(log_subjects(&page.rows), vec!["Base"]);
     assert_git_lists(&repository, WHOLE_GRAPH, &page.rows);
 }
 
@@ -154,7 +134,7 @@ fn a_branch_with_commits_shows_while_head_is_on_a_branch_with_none() {
 
     let page = gikli.read_log(&root, None, 50).expect("read the log");
 
-    assert_eq!(subjects(&page.rows), vec!["On main"]);
+    assert_eq!(log_subjects(&page.rows), vec!["On main"]);
     assert_git_lists(&repository, &["--branches"], &page.rows);
 }
 
@@ -491,7 +471,7 @@ fn a_read_of_the_log_gikli_let_go_of_shows_as_cancelled_in_the_operation_log_and
         .collect();
     assert_eq!(reads.len(), 1, "the read shows once it ended: {reads:?}");
     assert!(reads[0].cancelled, "{:?}", reads[0]);
-    let newest = hash_of(&repository, "HEAD");
+    let newest = repository.commit_of("HEAD");
     assert!(
         reads[0].stdout.starts_with(&newest),
         "it shows what gikli read"
@@ -549,7 +529,7 @@ fn a_page_asked_for_after_a_branch_was_replaced_says_so_even_when_the_last_commi
     let root = opened(&gikli, &repository);
     let first = gikli.read_log(&root, None, 3).expect("read the log");
     assert_eq!(
-        subjects(&first.rows),
+        log_subjects(&first.rows),
         vec!["Replaced two", "Replaced one", "Last of the page"]
     );
 
@@ -591,8 +571,8 @@ fn the_users_log_settings_do_not_change_what_the_log_reads() {
 
     let page = gikli.read_log(&root, None, 50).expect("read the log");
 
-    assert_eq!(subjects(&page.rows), vec!["Größe ändern ✓"]);
-    assert_eq!(page.rows[0].hash, hash_of(&repository, "HEAD"));
+    assert_eq!(log_subjects(&page.rows), vec!["Größe ändern ✓"]);
+    assert_eq!(page.rows[0].hash, repository.commit_of("HEAD"));
     assert_eq!(page.rows[0].committed_at, minute_as_seconds(1));
 }
 

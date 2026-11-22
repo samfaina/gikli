@@ -1,25 +1,8 @@
 //! Checkout of a local branch, which HEAD switches to, and of a tag or a revision, which leave a
 //! detached HEAD.
 
-use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{CurrentBranch, Failure, Gikli, Repository};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The commit `revision` names in `repository`, as git resolves it.
-fn commit_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", &format!("{revision}^{{commit}}")])
-        .trim()
-        .to_owned()
-}
+use gikli_acceptance::{Sandbox, opened};
+use gikli_core::{CurrentBranch, Failure};
 
 #[test]
 fn checking_out_a_local_branch_switches_to_it() {
@@ -53,7 +36,7 @@ fn checking_out_a_local_branch_switches_to_it() {
         work.root().join("login.txt").exists(),
         "the working tree follows"
     );
-    assert_eq!(commit_of(&work, "HEAD"), commit_of(&work, "feature/login"));
+    assert_eq!(work.commit_of("HEAD"), work.commit_of("feature/login"));
 }
 
 /// git would otherwise create a local branch that follows a remote branch of that name, which
@@ -102,7 +85,7 @@ fn checking_out_a_tag_leaves_a_detached_head_on_its_commit() {
     work.git(&["branch", "v1"]);
     work.commit_at(2, "Second");
     work.git(&["branch", "--force", "v1"]);
-    let first = commit_of(&work, "refs/tags/v1");
+    let first = work.commit_of("refs/tags/v1");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -113,7 +96,7 @@ fn checking_out_a_tag_leaves_a_detached_head_on_its_commit() {
         !work.git_succeeds(&["symbolic-ref", "--quiet", "HEAD"]),
         "detached"
     );
-    assert_eq!(commit_of(&work, "HEAD"), first);
+    assert_eq!(work.commit_of("HEAD"), first);
     assert_eq!(
         gikli.current_branch(&root),
         Ok(detached_at(&first)),
@@ -135,7 +118,7 @@ fn checking_out_a_revision_leaves_a_detached_head_on_it() {
     let work = sandbox.repository("work");
     work.commit_at(1, "First");
     work.commit_at(2, "Second");
-    let first = commit_of(&work, "HEAD~1");
+    let first = work.commit_of("HEAD~1");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -144,7 +127,7 @@ fn checking_out_a_revision_leaves_a_detached_head_on_it() {
         .expect("check out the revision");
 
     assert_eq!(head, detached_at(&first));
-    assert_eq!(commit_of(&work, "HEAD"), first);
+    assert_eq!(work.commit_of("HEAD"), first);
     assert_eq!(
         work.git(&["log", "-1", "--format=%s", "main"]).trim(),
         "Second",

@@ -1,17 +1,11 @@
 //! Changelists: the changes view groups changes into Changelists, new changes go to the Active
 //! changelist, and the Changelists follow what actually happens in git.
 
-use gikli_acceptance::{Sandbox, TWO_CHANGELISTS, TestRepository};
-use gikli_core::{ChangeSet, Changelist, Failure, Gikli, MoveTarget};
+use gikli_acceptance::{
+    Sandbox, TWO_CHANGELISTS, TestRepository, changelist, paths_in, read_changes,
+};
+use gikli_core::{ChangeSet, Failure, Gikli, MoveTarget};
 use std::fs;
-
-/// Opens the repository's folder as a Project and reads the changes of its Repository.
-fn read_changes(gikli: &Gikli, repository: &TestRepository) -> ChangeSet {
-    let project = gikli.open_project(repository.root()).expect("open project");
-    gikli
-        .read_changes(&project.repositories[0])
-        .expect("read changes")
-}
 
 fn set_active(gikli: &Gikli, repository: &TestRepository, id: &str) -> ChangeSet {
     let project = gikli.open_project(repository.root()).expect("open project");
@@ -82,25 +76,7 @@ fn create_feature(gikli: &Gikli, repository: &TestRepository) -> String {
 
 /// The identifier of the Changelist called `name`.
 fn id_of(change_set: &ChangeSet, name: &str) -> String {
-    list(change_set, name).id.clone()
-}
-
-fn list<'a>(change_set: &'a ChangeSet, name: &str) -> &'a Changelist {
-    change_set
-        .changelists
-        .iter()
-        .find(|list| list.name == name)
-        .expect("the Changelist exists")
-}
-
-/// The paths of the changes in the Changelist called `name`.
-fn paths_in(change_set: &ChangeSet, name: &str) -> Vec<String> {
-    list(change_set, name)
-        .group
-        .changes
-        .iter()
-        .map(|change| change.path.to_string_lossy().into_owned())
-        .collect()
+    changelist(change_set, name).id.clone()
 }
 
 /// The paths of the files in Unversioned Files.
@@ -177,14 +153,16 @@ fn the_user_can_create_a_changelist_with_a_name_and_a_description() {
         Some("The new login"),
     );
 
-    let feature = list(&change_set, "Feature");
+    let feature = changelist(&change_set, "Feature");
     assert_eq!(feature.description.as_deref(), Some("The new login"));
     assert!(!feature.active);
-    assert!(list(&change_set, "Changes").active);
+    assert!(changelist(&change_set, "Changes").active);
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
     let after_restarting = read_changes(&sandbox.gikli(), &repository);
     assert_eq!(
-        list(&after_restarting, "Feature").description.as_deref(),
+        changelist(&after_restarting, "Feature")
+            .description
+            .as_deref(),
         Some("The new login")
     );
 }
@@ -198,8 +176,11 @@ fn a_description_is_optional_and_a_blank_one_is_none() {
     create(&gikli, &repository, "No description", None);
     let change_set = create(&gikli, &repository, "Blank description", Some("  \n "));
 
-    assert_eq!(list(&change_set, "No description").description, None);
-    assert_eq!(list(&change_set, "Blank description").description, None);
+    assert_eq!(changelist(&change_set, "No description").description, None);
+    assert_eq!(
+        changelist(&change_set, "Blank description").description,
+        None
+    );
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
@@ -267,7 +248,7 @@ fn renaming_a_changelist_keeps_its_changes_and_whether_it_is_active() {
 
     let change_set = rename(&gikli, &repository, &feature, "  Sign in  ");
 
-    let renamed = list(&change_set, "Sign in");
+    let renamed = changelist(&change_set, "Sign in");
     assert_eq!(renamed.id, feature);
     assert_eq!(renamed.description.as_deref(), Some("Login"));
     assert!(renamed.active);
@@ -369,7 +350,7 @@ fn the_active_changelist_cannot_be_deleted() {
 
     assert_eq!(failure, Failure::ActiveChangelistNotDeletable);
     let change_set = read_changes(&gikli, &repository);
-    assert!(list(&change_set, "Feature").active);
+    assert!(changelist(&change_set, "Feature").active);
     assert_eq!(paths_in(&change_set, "Feature"), vec!["README.md"]);
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);
 }
@@ -477,9 +458,9 @@ fn changelists_saved_by_an_earlier_gikli_are_read_and_saved_in_the_current_forma
 
     let change_set = read_changes(&gikli, &repository);
 
-    assert_eq!(list(&change_set, "Feature").description, None);
-    assert_eq!(list(&change_set, "Feature").comment, None);
-    assert!(list(&change_set, "Changes").active);
+    assert_eq!(changelist(&change_set, "Feature").description, None);
+    assert_eq!(changelist(&change_set, "Feature").comment, None);
+    assert!(changelist(&change_set, "Changes").active);
 
     create(&gikli, &repository, "Other", Some("With a description"));
 
@@ -496,8 +477,8 @@ fn the_user_can_set_any_changelist_as_the_active_changelist() {
 
     let change_set = set_active(&gikli, &repository, &feature);
 
-    assert!(list(&change_set, "Feature").active);
-    assert!(!list(&change_set, "Changes").active);
+    assert!(changelist(&change_set, "Feature").active);
+    assert!(!changelist(&change_set, "Changes").active);
     repository.write("README.md", "hello, world\n");
     let change_set = read_changes(&gikli, &repository);
     assert_eq!(paths_in(&change_set, "Feature"), vec!["README.md"]);
@@ -536,7 +517,7 @@ fn setting_active_a_changelist_that_does_not_exist_changes_nothing() {
             id: "gone".to_owned()
         }
     );
-    assert!(list(&read_changes(&gikli, &repository), "Changes").active);
+    assert!(changelist(&read_changes(&gikli, &repository), "Changes").active);
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
@@ -551,7 +532,7 @@ fn changelists_survive_restarting_gikli() {
 
     let change_set = read_changes(&sandbox.gikli(), &repository);
 
-    assert!(list(&change_set, "Feature").active);
+    assert!(changelist(&change_set, "Feature").active);
     assert_eq!(paths_in(&change_set, "Changes"), vec!["README.md"]);
     assert_eq!(paths_in(&change_set, "Feature"), vec!["notes.md"]);
     assert_eq!(
@@ -572,7 +553,7 @@ fn changelists_survive_moving_the_project_folder() {
 
     let change_set = read_changes(&sandbox.gikli(), &repository);
 
-    assert!(list(&change_set, "Feature").active);
+    assert!(changelist(&change_set, "Feature").active);
     assert_eq!(paths_in(&change_set, "Changes"), vec!["README.md"]);
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);
 }
@@ -618,8 +599,8 @@ fn each_linked_worktree_keeps_its_own_changelists() {
 
     let in_main = read_changes(&gikli, &main);
     let in_worktree = read_changes(&gikli, &worktree);
-    assert!(list(&in_main, "Changes").active);
-    assert!(list(&in_worktree, "Feature").active);
+    assert!(changelist(&in_main, "Changes").active);
+    assert!(changelist(&in_worktree, "Feature").active);
     assert_eq!(paths_in(&in_main, "Changes"), vec!["README.md"]);
     assert_eq!(paths_in(&in_worktree, "Changes"), vec!["notes.md"]);
     assert_eq!(paths_in(&in_worktree, "Feature"), vec!["README.md"]);
@@ -746,7 +727,7 @@ fn setting_active_a_changelist_when_it_cannot_be_saved_fails_and_changes_nothing
             if *file == repository.root().join(".git/gikli/changelists.json")),
         "{failure:?}"
     );
-    assert!(list(&read_changes(&gikli, &repository), "Changes").active);
+    assert!(changelist(&read_changes(&gikli, &repository), "Changes").active);
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
 }
 
@@ -1012,8 +993,8 @@ fn a_file_whose_path_is_not_utf8_stays_in_its_changelist() {
 
     let change_set = read_changes(&sandbox.gikli(), &repository);
 
-    assert_eq!(list(&change_set, "Changes").group.changes.len(), 1);
-    assert!(list(&change_set, "Feature").group.changes.is_empty());
+    assert_eq!(changelist(&change_set, "Changes").group.changes.len(), 1);
+    assert!(changelist(&change_set, "Feature").group.changes.is_empty());
     assert_eq!(
         repository.git(&["status", "--porcelain"]),
         " M \"caf\\351.md\"\n"
@@ -1064,7 +1045,7 @@ fn the_user_can_move_selected_changes_to_a_new_changelist() {
     assert_eq!(change_set.changelists[1].name, "Feature");
     assert_eq!(paths_in(&change_set, "Feature"), vec!["notes.md"]);
     assert_eq!(paths_in(&change_set, "Changes"), vec!["README.md"]);
-    assert!(list(&change_set, "Changes").active);
+    assert!(changelist(&change_set, "Changes").active);
     assert_eq!(
         repository.status_by_git(),
         vec![" M README.md", " M notes.md"]
@@ -1259,8 +1240,8 @@ fn moving_changes_can_make_the_target_the_active_changelist_in_the_same_step() {
     )
     .expect("move the changes");
 
-    assert!(list(&change_set, "Feature").active);
-    assert!(!list(&change_set, "Changes").active);
+    assert!(changelist(&change_set, "Feature").active);
+    assert!(!changelist(&change_set, "Changes").active);
     repository.write("notes.md", "more notes\n");
     let after_restarting = read_changes(&sandbox.gikli(), &repository);
     assert_eq!(
@@ -1291,7 +1272,7 @@ fn a_new_changelist_can_become_active_in_the_same_step_as_the_move() {
     )
     .expect("move the changes");
 
-    assert!(list(&change_set, "Feature").active);
+    assert!(changelist(&change_set, "Feature").active);
     assert_eq!(paths_in(&change_set, "Feature"), vec!["README.md"]);
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);
 }
@@ -1341,14 +1322,14 @@ fn a_changelist_can_carry_a_comment_which_is_stored_with_it() {
         .expect("set the comment");
 
     assert_eq!(
-        list(&change_set, "Feature").comment.as_deref(),
+        changelist(&change_set, "Feature").comment.as_deref(),
         Some("Add the login page\n\nWith the new form.")
     );
-    assert_eq!(list(&change_set, "Changes").comment, None);
+    assert_eq!(changelist(&change_set, "Changes").comment, None);
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
     let after_restarting = read_changes(&sandbox.gikli(), &repository);
     assert_eq!(
-        list(&after_restarting, "Feature").comment.as_deref(),
+        changelist(&after_restarting, "Feature").comment.as_deref(),
         Some("Add the login page\n\nWith the new form.")
     );
 }
@@ -1364,7 +1345,7 @@ fn a_comment_can_be_changed_and_taken_away() {
         let change_set = gikli
             .set_changelist_comment(repo, &feature, comment)
             .expect("set the comment");
-        list(&change_set, "Feature").comment.clone()
+        changelist(&change_set, "Feature").comment.clone()
     };
 
     assert_eq!(comment_after(Some("First")), Some("First".to_owned()));
@@ -1389,7 +1370,7 @@ fn a_comment_stays_with_its_changelist_when_it_is_renamed_and_when_changes_move(
     rename(&gikli, &repository, &feature, "Sign in");
     let change_set = move_changes(&gikli, &repository, &["README.md"], &feature);
 
-    let signed_in = list(&change_set, "Sign in");
+    let signed_in = changelist(&change_set, "Sign in");
     assert_eq!(signed_in.comment.as_deref(), Some("Add the login"));
     assert_eq!(paths_in(&change_set, "Sign in"), vec!["README.md"]);
     assert_eq!(repository.status_by_git(), vec![" M README.md"]);

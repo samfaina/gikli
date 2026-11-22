@@ -3,20 +3,11 @@
 
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, conflicts_left, opened};
 use gikli_core::{
-    ConflictSide, ConflictedFile, Event, Failure, Gikli, Notification, NotificationAction,
+    ConflictSide, ConflictedFile, Failure, Gikli, Notification, NotificationAction,
     NotificationKind, NotificationOutcome, OperationAction, Repository, SideChange,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository where `main` and `other` each changed the one line of `file.txt` differently since
 /// they parted, so combining them stops on a conflict.
@@ -31,17 +22,6 @@ fn diverged(sandbox: &Sandbox) -> TestRepository {
     work.write("file.txt", "ours\n");
     work.commit_all("Ours");
     work
-}
-
-/// The paths git lists as in conflict in `repository`, once each.
-fn conflicted_by_git(repository: &TestRepository) -> Vec<String> {
-    let mut paths: Vec<String> = repository
-        .git(&["diff", "--name-only", "--diff-filter=U"])
-        .lines()
-        .map(str::to_owned)
-        .collect();
-    paths.dedup();
-    paths
 }
 
 #[test]
@@ -64,7 +44,7 @@ fn a_merge_that_stops_on_a_conflict_lists_the_conflicted_file() {
             theirs: SideChange::Modified,
         }]
     );
-    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
+    assert_eq!(work.conflicted_by_git(), vec!["file.txt"]);
 }
 
 /// A repository where `main` deleted `file.txt` and `other` changed it since they parted.
@@ -121,7 +101,7 @@ fn accepting_theirs_in_a_merge_takes_their_version_and_resolves_the_file() {
         .expect("accept theirs");
 
     assert_eq!(left, vec![]);
-    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.conflicted_by_git(), Vec::<String>::new());
     assert_eq!(
         work.git(&["show", ":file.txt"]),
         "theirs
@@ -152,7 +132,7 @@ fn accepting_yours_during_a_rebase_keeps_the_deletion_of_the_branch_being_rebase
         .expect("accept yours");
 
     assert_eq!(left, vec![]);
-    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.conflicted_by_git(), Vec::<String>::new());
     assert!(
         !work.git_succeeds(&["cat-file", "-e", ":file.txt"]),
         "git no longer tracks it"
@@ -191,7 +171,7 @@ fn accepting_theirs_in_a_delete_modify_conflict_keeps_the_file_they_changed() {
         .expect("accept theirs");
 
     assert_eq!(left, vec![]);
-    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.conflicted_by_git(), Vec::<String>::new());
     assert_eq!(work.git(&["show", ":file.txt"]), "theirs\n");
     assert_eq!(
         std::fs::read_to_string(work.root().join("file.txt")).expect("read the file"),
@@ -222,7 +202,7 @@ fn accepting_a_side_of_a_file_not_in_conflict_resolves_nothing() {
             path: PathBuf::from("second.txt")
         })
     );
-    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
+    assert_eq!(work.conflicted_by_git(), vec!["file.txt"]);
 }
 
 #[test]
@@ -263,7 +243,7 @@ fn a_file_edited_by_hand_can_be_marked_resolved() {
         .expect("mark the file resolved");
 
     assert_eq!(left, vec![]);
-    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.conflicted_by_git(), Vec::<String>::new());
     assert_eq!(work.git(&["show", ":file.txt"]), "both\n");
 }
 
@@ -281,7 +261,7 @@ fn a_file_deleted_by_hand_is_marked_resolved_as_deleted() {
         .expect("mark the file resolved");
 
     assert_eq!(left, vec![]);
-    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.conflicted_by_git(), Vec::<String>::new());
     assert!(
         !work.git_succeeds(&["cat-file", "-e", ":file.txt"]),
         "git no longer tracks it"
@@ -374,17 +354,6 @@ fn diverged_twice(sandbox: &Sandbox) -> TestRepository {
     work
 }
 
-/// The Repositories the events received so far said an operation left in conflict.
-fn conflicts_left(events: &std::sync::mpsc::Receiver<Event>) -> Vec<Repository> {
-    events
-        .try_iter()
-        .filter_map(|event| match event {
-            Event::ConflictsLeft { repository } => Some(repository),
-            _ => None,
-        })
-        .collect()
-}
-
 #[test]
 fn an_operation_that_stops_on_a_conflict_says_so_so_the_conflicts_dialog_opens() {
     let sandbox = Sandbox::new();
@@ -406,7 +375,7 @@ fn an_operation_that_stops_on_a_conflict_says_so_so_the_conflicts_dialog_opens()
         .expect("continue the rebase");
 
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
-    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
+    assert_eq!(work.conflicted_by_git(), vec!["file.txt"]);
 }
 
 #[test]
@@ -464,7 +433,7 @@ fn closing_the_conflicts_dialog_raises_one_notification_that_offers_resolve_and_
             NotificationAction::AbortOperation
         ]
     );
-    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
+    assert_eq!(work.conflicted_by_git(), vec!["file.txt"]);
 }
 
 #[test]
@@ -485,7 +454,7 @@ fn resolve_in_the_notification_opens_the_conflicts_dialog_again() {
 
     assert_eq!(outcome, NotificationOutcome::ResolveConflicts(root.clone()));
     assert_eq!(conflict_notifications(&gikli, &root), vec![]);
-    assert_eq!(conflicted_by_git(&work), vec!["file.txt"]);
+    assert_eq!(work.conflicted_by_git(), vec!["file.txt"]);
 }
 
 #[test]
@@ -708,7 +677,7 @@ fn submodule_moved_on_both_sides(sandbox: &Sandbox) -> (TestRepository, String, 
 fn accepting_theirs_for_a_submodule_records_the_commit_they_moved_it_to() {
     let sandbox = Sandbox::new();
     let (work, _, theirs) = submodule_moved_on_both_sides(&sandbox);
-    assert_eq!(conflicted_by_git(&work), vec!["lib"]);
+    assert_eq!(work.conflicted_by_git(), vec!["lib"]);
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -722,7 +691,7 @@ fn accepting_theirs_for_a_submodule_records_the_commit_they_moved_it_to() {
         .expect("accept theirs");
 
     assert_eq!(left, vec![]);
-    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.conflicted_by_git(), Vec::<String>::new());
     assert_eq!(work.git(&["rev-parse", ":lib"]).trim(), theirs);
 }
 
@@ -739,6 +708,6 @@ fn accepting_yours_for_a_submodule_records_the_commit_you_moved_it_to() {
         .accept_side(work.root(), &root, &["lib".to_owned()], ConflictSide::Yours)
         .expect("accept yours");
 
-    assert_eq!(conflicted_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.conflicted_by_git(), Vec::<String>::new());
     assert_eq!(work.git(&["rev-parse", ":lib"]).trim(), ours);
 }

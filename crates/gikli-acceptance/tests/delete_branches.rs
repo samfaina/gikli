@@ -1,46 +1,11 @@
 //! Delete: one or several local branches go, merged or not, and the notification that says so can
 //! bring them back, show the commits no other branch had, and delete the remote branch too.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened_project, the_notification};
 use gikli_core::{
-    DeletedBranch, Event, Failure, Gikli, Notification, NotificationAction, NotificationKind,
-    NotificationOutcome, Project, RemoteBranch, Repository,
+    DeletedBranch, Event, Failure, Notification, NotificationAction, NotificationKind,
+    NotificationOutcome, RemoteBranch,
 };
-
-/// Opens the repository's folder as a Project and returns it with its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> (Project, Repository) {
-    let project = gikli.open_project(repository.root()).expect("open project");
-    let root = project.repositories[0].clone();
-    (project, root)
-}
-
-/// The local branches of `repository`, as git lists them.
-fn branches_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The commit `revision` names in `repository`, as git resolves it.
-fn commit_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", &format!("{revision}^{{commit}}")])
-        .trim()
-        .to_owned()
-}
-
-/// The one notification raised.
-fn the_notification(gikli: &Gikli) -> Notification {
-    let notifications = gikli.notifications();
-    assert_eq!(
-        notifications.len(),
-        1,
-        "one notification: {notifications:?}"
-    );
-    notifications[0].clone()
-}
 
 #[test]
 fn a_deleted_branch_goes_and_its_notification_offers_to_restore_it() {
@@ -48,16 +13,16 @@ fn a_deleted_branch_goes_and_its_notification_offers_to_restore_it() {
     let work = sandbox.repository("work");
     work.commit_at(1, "First");
     work.git(&["branch", "feature"]);
-    let commit = commit_of(&work, "feature");
+    let commit = work.commit_of("feature");
     let head = commit.clone();
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
 
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
 
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
     let notification = the_notification(&gikli);
     assert_eq!(notification.project, project.folder);
     assert_eq!(
@@ -87,13 +52,13 @@ fn a_branch_that_is_not_merged_goes_too_and_restoring_brings_it_back_on_the_same
     work.git(&["checkout", "--quiet", "-b", "feature"]);
     work.commit_at(2, "Only on feature");
     work.git(&["checkout", "--quiet", "main"]);
-    let commit = commit_of(&work, "feature");
+    let commit = work.commit_of("feature");
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
     let notification = the_notification(&gikli);
 
     let outcome = gikli
@@ -101,8 +66,8 @@ fn a_branch_that_is_not_merged_goes_too_and_restoring_brings_it_back_on_the_same
         .expect("restore the branch");
 
     assert_eq!(outcome, NotificationOutcome::BranchesChanged(root));
-    assert_eq!(branches_by_git(&work), vec!["feature", "main"]);
-    assert_eq!(commit_of(&work, "feature"), commit);
+    assert_eq!(work.branches_by_git(), vec!["feature", "main"]);
+    assert_eq!(work.commit_of("feature"), commit);
     assert_eq!(
         gikli.notifications(),
         vec![],
@@ -121,7 +86,7 @@ fn a_branch_with_commits_head_does_not_have_links_to_them() {
     work.git(&["checkout", "--quiet", "main"]);
     work.commit_at(4, "On main");
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
@@ -180,23 +145,12 @@ fn clone_with_pushed_feature(sandbox: &Sandbox) -> (TestRepository, TestReposito
     (remote, work)
 }
 
-/// The upstream of `branch` in `repository`, as git names it, if it has one.
-fn upstream_by_git(repository: &TestRepository, branch: &str) -> Option<String> {
-    let upstream = repository.git(&[
-        "for-each-ref",
-        "--format=%(upstream:short)",
-        &format!("refs/heads/{branch}"),
-    ]);
-    let upstream = upstream.trim();
-    (!upstream.is_empty()).then(|| upstream.to_owned())
-}
-
 #[test]
 fn the_remote_branch_a_deleted_branch_followed_can_be_deleted_too() {
     let sandbox = Sandbox::new();
     let (remote, work) = clone_with_pushed_feature(&sandbox);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
@@ -227,7 +181,7 @@ fn the_remote_branch_a_deleted_branch_followed_can_be_deleted_too() {
         .expect("delete the remote branch");
 
     assert_eq!(outcome, NotificationOutcome::BranchesChanged(root));
-    assert_eq!(branches_by_git(&remote), vec!["main"]);
+    assert_eq!(remote.branches_by_git(), vec!["main"]);
     assert!(
         !work.git_succeeds(&[
             "rev-parse",
@@ -250,7 +204,7 @@ fn restoring_a_branch_brings_back_its_upstream() {
     let sandbox = Sandbox::new();
     let (_remote, work) = clone_with_pushed_feature(&sandbox);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
@@ -261,7 +215,7 @@ fn restoring_a_branch_brings_back_its_upstream() {
         .expect("restore the branch");
 
     assert_eq!(
-        upstream_by_git(&work, "feature").as_deref(),
+        work.upstream_by_git("feature").as_deref(),
         Some("origin/feature")
     );
 }
@@ -276,7 +230,7 @@ fn several_branches_go_at_once_and_come_back_together() {
     work.commit_at(2, "On b");
     work.git(&["checkout", "--quiet", "main"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
 
     gikli
         .delete_branches(
@@ -286,7 +240,7 @@ fn several_branches_go_at_once_and_come_back_together() {
         )
         .expect("delete the branches");
 
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
     let notification = the_notification(&gikli);
     let NotificationKind::BranchesDeleted { branches, .. } = &notification.kind else {
         panic!("not a deletion: {notification:?}");
@@ -297,7 +251,7 @@ fn several_branches_go_at_once_and_come_back_together() {
         .act_on_notification(notification.id, &NotificationAction::RestoreBranches)
         .expect("restore the branches");
     assert_eq!(
-        branches_by_git(&work),
+        work.branches_by_git(),
         vec!["feature/a", "feature/b", "main"]
     );
 }
@@ -309,7 +263,7 @@ fn the_current_branch_is_not_deleted_and_neither_are_the_others_asked_with_it() 
     work.commit_at(1, "First");
     work.git(&["branch", "feature"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
 
     let deleted = gikli.delete_branches(
         &project.folder,
@@ -323,7 +277,7 @@ fn the_current_branch_is_not_deleted_and_neither_are_the_others_asked_with_it() 
             name: "main".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["feature", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature", "main"]);
     assert_eq!(gikli.notifications(), vec![]);
 }
 
@@ -334,7 +288,7 @@ fn a_branch_deleted_since_is_reported_and_nothing_goes() {
     work.commit_at(1, "First");
     work.git(&["branch", "feature"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
 
     let deleted = gikli.delete_branches(
         &project.folder,
@@ -348,7 +302,7 @@ fn a_branch_deleted_since_is_reported_and_nothing_goes() {
             revision: "gone".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["feature", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature", "main"]);
 }
 
 #[test]
@@ -359,7 +313,7 @@ fn a_branch_that_took_the_name_since_keeps_the_deleted_ones_from_coming_back() {
     work.git(&["branch", "feature/a"]);
     work.git(&["branch", "feature/b"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(
             &project.folder,
@@ -378,7 +332,7 @@ fn a_branch_that_took_the_name_since_keeps_the_deleted_ones_from_coming_back() {
             name: "feature/b".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["feature/b", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature/b", "main"]);
     assert_eq!(
         gikli.notifications(),
         vec![notification],
@@ -393,7 +347,7 @@ fn the_notification_stays_until_gikli_restarts() {
     work.commit_at(1, "First");
     work.git(&["branch", "feature"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
@@ -420,7 +374,7 @@ fn a_branch_git_cannot_delete_stops_the_deletion_and_the_notification_tells_of_t
     let _elsewhere = work.linked_worktree("b");
     work.git(&["branch", "c"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
 
     let deleted = gikli.delete_branches(
         &project.folder,
@@ -432,7 +386,7 @@ fn a_branch_git_cannot_delete_stops_the_deletion_and_the_notification_tells_of_t
         deleted.is_err(),
         "git keeps a branch another worktree has checked out: {deleted:?}"
     );
-    assert_eq!(branches_by_git(&work), vec!["b", "c", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["b", "c", "main"]);
     let notification = the_notification(&gikli);
     let NotificationKind::BranchesDeleted { branches, .. } = &notification.kind else {
         panic!("not a deletion: {notification:?}");
@@ -447,7 +401,7 @@ fn branches_that_follow_one_remote_branch_offer_to_delete_it_once() {
     let (_remote, work) = clone_with_pushed_feature(&sandbox);
     work.git(&["branch", "--track", "feature-copy", "origin/feature"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
 
     gikli
         .delete_branches(
@@ -481,7 +435,7 @@ fn a_deleted_branch_whose_remote_branch_is_gone_offers_no_deletion_of_it() {
     remote.git(&["branch", "-D", "feature"]);
     work.git(&["fetch", "--quiet", "--prune"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
 
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
@@ -504,7 +458,7 @@ fn deleting_the_remote_branch_keeps_the_notification_where_it_was() {
     let (_remote, work) = clone_with_pushed_feature(&sandbox);
     work.git(&["branch", "other"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
@@ -549,7 +503,7 @@ fn deleting_the_same_branch_again_tells_of_it_again() {
     work.commit_at(1, "First");
     work.git(&["branch", "feature"]);
     let gikli = sandbox.gikli();
-    let (project, root) = opened(&gikli, &work);
+    let (project, root) = opened_project(&gikli, &work);
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
