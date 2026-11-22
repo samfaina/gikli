@@ -363,6 +363,11 @@ pub enum Failure {
     NothingToCommit,
     /// The Repository has no commit yet, so there is nothing to amend.
     NothingToAmend,
+    /// `operation`, a merge or a cherry-pick stopped on a commit, is half done in the Repository,
+    /// and git does not amend the last commit in the middle of one. Nothing changed.
+    AmendDuringOperation {
+        operation: OperationKind,
+    },
     /// git could not commit in the Repository at `folder`. The operation log holds git's output.
     #[serde(rename_all = "camelCase")]
     CommitFailed {
@@ -1969,8 +1974,10 @@ impl Gikli {
     /// Replaces the last commit of `repository` with one that also holds the changes at `paths`, as
     /// they are in the working tree, and has `message` as written, and returns the changes after
     /// that. It saves a Backup of the commit it replaces first, and raises a notification about the
-    /// Project at `project` that offers to undo the amend. Everything else works as in
-    /// [`Self::commit_files`].
+    /// Project at `project` that offers to undo the amend. In the middle of a merge or of a
+    /// cherry-pick stopped on a commit, which git does not amend in, it returns
+    /// [`Failure::AmendDuringOperation`] before reading the changes, and nothing changes. Everything
+    /// else works as in [`Self::commit_files`].
     pub fn amend_last_commit(
         &self,
         project: &Path,
@@ -1997,7 +2004,8 @@ impl Gikli {
 
     /// Replaces the last commit of `repository` with one that also holds what is staged, and has
     /// `message` as written, and returns the changes after that. It saves a Backup and raises a
-    /// notification as [`Self::amend_last_commit`] does. Everything else works as in
+    /// notification as [`Self::amend_last_commit`] does, and is refused in the middle of a merge or
+    /// of a cherry-pick as it is, even with nothing staged. Everything else works as in
     /// [`Self::commit_staged`].
     pub fn amend_with_staged(
         &self,
@@ -2073,7 +2081,8 @@ impl Gikli {
     }
 
     /// The runner for a commit in `repository` with `message`, once what can be told before reading
-    /// the changes says it can go ahead.
+    /// the changes says it can go ahead. An amend needs a commit to amend, and no operation in
+    /// progress that git does not amend in.
     fn commit_runner(
         &self,
         repository: &Repository,
@@ -2084,8 +2093,13 @@ impl Gikli {
             return Err(Failure::CommitMessageEmpty);
         }
         let runner = self.runner(&repository.root)?;
-        if kind == commit::CommitKind::Amend && !commit::has_commits(&runner, &repository.root)? {
-            return Err(Failure::NothingToAmend);
+        if kind == commit::CommitKind::Amend {
+            if !commit::has_commits(&runner, &repository.root)? {
+                return Err(Failure::NothingToAmend);
+            }
+            if let Some(operation) = in_progress::refusing_amend(&runner, repository)? {
+                return Err(Failure::AmendDuringOperation { operation });
+            }
         }
         Ok(runner)
     }

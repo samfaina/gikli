@@ -2258,6 +2258,8 @@ function describeFailure(failure: Failure): string {
       return t("failureNothingToCommit");
     case "nothingToAmend":
       return t("failureNothingToAmend");
+    case "amendDuringOperation":
+      return t("failureAmendDuringOperation", { operation: describeOperationKind(failure.operation) });
     case "commitFailed":
       return t("failureCommitFailed", { folder: failure.folder });
     case "notLastCommit":
