@@ -414,6 +414,67 @@ fn a_revert_committed_outside_gikli_gives_up_the_commits_after_it() {
     );
 }
 
+#[test]
+fn continuing_a_revert_started_outside_gikli_after_its_own_was_aborted_reverts_nothing_after_it() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_two_commits(&sandbox, &gikli);
+    let two = commit_of(&work, "HEAD");
+    let one = commit_of(&work, "HEAD~1");
+    gikli
+        .revert_commits(&root, &[two.clone(), one])
+        .expect("revert Two, with One left to revert");
+    // Outside gikli, the user aborts it, and reverts Two again on another HEAD.
+    work.git(&["revert", "--abort"]);
+    work.write("other.txt", "other\n");
+    work.commit_all("Other");
+    work.git(&["revert", "--no-commit", &two]);
+
+    let in_progress = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Continue)
+        .expect("continue the revert");
+
+    assert_eq!(in_progress, None);
+    assert_eq!(
+        subjects(&work),
+        vec!["Revert \"Two\"", "Other", "Two", "One", "Base"]
+    );
+    assert_eq!(
+        gikli.prepared_revert(&root).expect("read the revert"),
+        None,
+        "One is not reverted after it"
+    );
+}
+
+#[test]
+fn skipping_a_revert_started_outside_gikli_after_its_own_was_aborted_reverts_nothing_after_it() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root) = with_one_in_conflict(&sandbox, &gikli);
+    let three = commit_of(&work, "HEAD");
+    let one = commit_of(&work, "HEAD~2");
+    let two = commit_of(&work, "HEAD~1");
+    gikli
+        .revert_commits(&root, &[one, two.clone()])
+        .expect("the revert of One stops on a conflict, with Two left to revert");
+    // Outside gikli, the user aborts it, and reverts another commit.
+    work.git(&["revert", "--abort"]);
+    work.git(&["revert", "--no-commit", &three]);
+
+    let in_progress = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Skip)
+        .expect("skip the revert of Three");
+
+    assert_eq!(in_progress, None);
+    assert_eq!(commit_of(&work, "HEAD"), three, "Three is left as it is");
+    assert_eq!(
+        gikli.prepared_revert(&root).expect("read the revert"),
+        None,
+        "Two is not reverted after it"
+    );
+    assert!(work.root().join("two.txt").exists());
+}
+
 /// A repository on `main` with Base, which holds `notes.txt`, then One, which adds `one.txt`,
 /// then Two, which adds `two-a.txt` and `two-b.txt`, opened as a Project.
 fn with_two_files_in_two(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repository) {

@@ -21,6 +21,7 @@ mod file_history;
 mod git;
 mod host;
 mod in_progress;
+mod left_waiting;
 mod listed_commit;
 mod log;
 mod merge;
@@ -58,6 +59,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
+
+use left_waiting::{Left, LeftWaiting};
 
 pub use backups::{Backup, Rewrite};
 pub use branches::{Branch, BranchNode, Branches};
@@ -2924,8 +2927,7 @@ impl Gikli {
             let half_done = in_progress::read(runner, repository)?.is_some();
             let left: Vec<_> = runs.collect();
             if half_done && !left.is_empty() {
-                cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(runner, repository)?)
-                    .keep(&left)?;
+                Self::keep_left(runner, repository, Left::ToPick(left))?;
             }
             // git stops on a conflict, or on a commit whose changes the branch has already, which
             // is left empty, for the user to skip.
@@ -3004,16 +3006,34 @@ impl Gikli {
         // Kept once the revert is in progress, so a read of the operation in progress meanwhile,
         // which gives them up when there is none, keeps them.
         if !rest.is_empty() && in_progress::read(runner, repository)?.is_some() {
-            revert::LeftToRevert::in_git_dir(&in_progress::git_dir(runner, repository)?)
-                .keep(rest)?;
+            Self::keep_left(runner, repository, Left::ToRevert(rest.to_vec()))?;
         }
         reverted
+    }
+
+    /// Keeps `left` waiting in the git directory of `repository`, for the cherry-pick or revert in
+    /// progress there, which left it, as git stopped it now.
+    fn keep_left(runner: &GitRunner, repository: &Repository, left: Left) -> Result<(), Failure> {
+        let operation = in_progress::identity(runner, repository, left.kind())?;
+        LeftWaiting::in_git_dir(&in_progress::git_dir(runner, repository)?).keep(left, operation)
+    }
+
+    /// Takes what waits in the git directory of `repository` when the operation of `kind` in
+    /// progress there is the one that left it, and gives it up otherwise.
+    fn take_left(
+        runner: &GitRunner,
+        repository: &Repository,
+        kind: OperationKind,
+    ) -> Result<Option<Left>, Failure> {
+        let operation = in_progress::identity(runner, repository, kind)?;
+        Ok(LeftWaiting::in_git_dir(&in_progress::git_dir(runner, repository)?).take(&operation))
     }
 
     /// Runs `step`, which may end the revert half done in `repository`, through `runner`, and when
     /// it is a revert from gikli with commits left to revert after it, reverts the next one once it
     /// is over, unless `gives_up`, as when the user aborted it. While it is still half done, as
-    /// when the step failed, they keep waiting.
+    /// when the step failed, they keep waiting. Commits another revert left are given up, and the
+    /// step goes on as for a revert gikli did not start.
     fn going_on_with_revert<T>(
         &self,
         runner: &GitRunner,
@@ -3026,15 +3046,18 @@ impl Gikli {
         if !reverting {
             return step();
         }
-        let left = revert::LeftToRevert::in_git_dir(&in_progress::git_dir(runner, repository)?);
         // Taken first, so a read of the operation in progress while git goes on keeps them.
-        let waiting = left.take();
+        let Some(Left::ToRevert(waiting)) =
+            Self::take_left(runner, repository, OperationKind::Revert)?
+        else {
+            return step();
+        };
         let taken = step();
         if waiting.is_empty() {
             return taken;
         }
         if in_progress::read(runner, repository)?.is_some() {
-            left.keep(&waiting)?;
+            Self::keep_left(runner, repository, Left::ToRevert(waiting))?;
         } else if taken.is_ok() && !gives_up {
             self.revert_next(runner, repository, waiting)?;
         }
@@ -3669,9 +3692,7 @@ impl Gikli {
         let operation = in_progress::read(&runner, repository)?;
         if operation.is_none() {
             // The cherry-pick or revert they waited for is over without gikli going on with it.
-            let git_dir = in_progress::git_dir(&runner, repository)?;
-            cherry_pick::LeftToPick::in_git_dir(&git_dir).take();
-            revert::LeftToRevert::in_git_dir(&git_dir).take();
+            LeftWaiting::in_git_dir(&in_progress::git_dir(&runner, repository)?).give_up();
         }
         if operation.is_none() && !in_conflict {
             self.restore_saved_for_merge(project, &runner, repository)?;
@@ -3845,7 +3866,10 @@ impl Gikli {
     /// does, and when it is a cherry-pick or a revert from gikli with commits left after it, goes
     /// on with them once it is over, unless the user aborted it: picks them, or reverts the next
     /// one, as [`Self::going_on_with_revert`] tells. While it is still half done, as when the
-    /// action failed or git stopped again, they keep waiting.
+    /// action failed or git stopped again, they keep waiting, for it as git stopped it now. What
+    /// another cherry-pick or revert left, as when the user aborted gikli's outside gikli and
+    /// started another one, is given up, and the action goes on as for an operation gikli did not
+    /// start.
     fn run_operation_action_going_on(
         &self,
         repository: &Repository,
@@ -3862,15 +3886,18 @@ impl Gikli {
         if kind != Some(OperationKind::CherryPick) {
             return self.run_operation_action(repository, action);
         }
-        let left = cherry_pick::LeftToPick::in_git_dir(&in_progress::git_dir(&runner, repository)?);
         // Taken first, so a read of the operation in progress while git goes on keeps them.
-        let waiting = left.take();
+        let Some(Left::ToPick(waiting)) =
+            Self::take_left(&runner, repository, OperationKind::CherryPick)?
+        else {
+            return self.run_operation_action(repository, action);
+        };
         let taken = self.run_operation_action(repository, action);
         if waiting.is_empty() {
             return taken;
         }
         if in_progress::read(&runner, repository)?.is_some() {
-            left.keep(&waiting)?;
+            Self::keep_left(&runner, repository, Left::ToPick(waiting))?;
         } else if taken.is_ok() && action != OperationAction::Abort {
             self.pick(&runner, repository, waiting)?;
         }

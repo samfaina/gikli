@@ -1,13 +1,9 @@
 //! The integration engine's revert: commits of the current branch the user selected in the log,
 //! undone by inverse commits, one per commit, each reviewed in the commit panel.
 
-use std::io;
-use std::path::{Path, PathBuf};
-
 use serde::Serialize;
 
 use crate::git::GitRunner;
-use crate::project::{take_once, write_at_once};
 use crate::{Failure, Repository, cherry_pick, details, git_failed_to_start};
 
 /// The inverse of a commit, which git brought into the working tree and the index without
@@ -184,37 +180,4 @@ pub(crate) fn commits_to_revert(
         commits.push(commit);
     }
     Ok(commits)
-}
-
-/// Where the commits of a revert from gikli that wait for the one in progress are kept, in the
-/// git directory of the worktree, so whoever goes on with it from gikli reverts them after it.
-pub(crate) struct LeftToRevert {
-    file: PathBuf,
-}
-
-impl LeftToRevert {
-    /// The store in `git_dir`, which is the git directory of the worktree.
-    pub fn in_git_dir(git_dir: &Path) -> Self {
-        Self {
-            file: git_dir.join("gikli").join("left-to-revert.json"),
-        }
-    }
-
-    /// Keeps `commits`, in place of what waited before.
-    pub fn keep(&self, commits: &[String]) -> Result<(), Failure> {
-        let json = serde_json::to_vec_pretty(commits).map_err(io::Error::other);
-        json.and_then(|json| write_at_once(&self.file, &json))
-            .map_err(|error| Failure::CommitsToRevertNotKept {
-                file: self.file.clone(),
-                message: error.to_string(),
-            })
-    }
-
-    /// Takes what waits, so that one taker alone reverts it. Nothing waits when nothing can be
-    /// read.
-    pub fn take(&self) -> Vec<String> {
-        take_once(&self.file)
-            .and_then(|json| serde_json::from_slice(&json).ok())
-            .unwrap_or_default()
-    }
 }
