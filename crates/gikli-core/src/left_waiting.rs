@@ -1,16 +1,17 @@
 //! What a cherry-pick or a revert from gikli left to do after the commit git stopped on, kept in
-//! the git directory of the worktree together with which operation left it, so that only going on
-//! with that same operation from gikli does it.
+//! the git directory of the worktree together with where git stopped the operation that left it,
+//! so that only going on with that same operation from gikli does it.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::cherry_pick::Run;
-use crate::in_progress::Identity;
+use crate::git::GitRunner;
+use crate::in_progress::{self, OperationStop};
 use crate::project::{take_once, write_at_once};
-use crate::{Failure, OperationKind};
+use crate::{Failure, OperationKind, Repository};
 
 /// What waits for the operation in progress to be over.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,19 +26,45 @@ pub(crate) enum Left {
 
 impl Left {
     /// The kind of operation that leaves this to do.
-    pub fn kind(&self) -> OperationKind {
+    fn kind(&self) -> OperationKind {
         match self {
             Self::ToPick(_) => OperationKind::CherryPick,
             Self::ToRevert(_) => OperationKind::Revert,
         }
     }
+
+    /// The failure of keeping this in `file`, as `message` says.
+    fn not_kept(&self, file: PathBuf, message: String) -> Failure {
+        match self {
+            Self::ToPick(_) => Failure::CommitsToPickNotKept { file, message },
+            Self::ToRevert(_) => Failure::CommitsToRevertNotKept { file, message },
+        }
+    }
 }
 
-/// What the store holds: what waits, and the operation that left it.
+/// Keeps `left` waiting in the git directory of `repository`, for the operation in progress
+/// there, which left it, as git stopped it now, in place of what waited before.
+pub(crate) fn keep(runner: &GitRunner, repository: &Repository, left: Left) -> Result<(), Failure> {
+    let stop = in_progress::stop(runner, repository, left.kind())?;
+    LeftWaiting::of(runner, repository)?.keep(left, stop)
+}
+
+/// Takes what waits in the git directory of `repository` when the operation of `kind` in progress
+/// there is the one that left it, and gives it up otherwise.
+pub(crate) fn take(
+    runner: &GitRunner,
+    repository: &Repository,
+    kind: OperationKind,
+) -> Result<Option<Left>, Failure> {
+    let stop = in_progress::stop(runner, repository, kind)?;
+    Ok(LeftWaiting::of(runner, repository)?.take(&stop))
+}
+
+/// What the store holds: what waits, and where git stopped the operation that left it.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Kept {
-    operation: Identity,
+    operation: OperationStop,
     left: Left,
 }
 
@@ -48,32 +75,30 @@ pub(crate) struct LeftWaiting {
 }
 
 impl LeftWaiting {
-    /// The store in `git_dir`, which is the git directory of the worktree.
-    pub fn in_git_dir(git_dir: &Path) -> Self {
-        Self {
+    /// The store in the git directory of the worktree `repository` is.
+    pub fn of(runner: &GitRunner, repository: &Repository) -> Result<Self, Failure> {
+        let git_dir = in_progress::git_dir(runner, repository)?;
+        Ok(Self {
             file: git_dir.join("gikli").join("left-waiting.json"),
-        }
+        })
     }
 
-    /// Keeps `left`, which `operation`, the operation in progress, left to do, in place of what
-    /// waited before.
-    pub fn keep(&self, left: Left, operation: Identity) -> Result<(), Failure> {
-        let not_kept: fn(PathBuf, String) -> Failure = match left {
-            Left::ToPick(_) => |file, message| Failure::CommitsToPickNotKept { file, message },
-            Left::ToRevert(_) => |file, message| Failure::CommitsToRevertNotKept { file, message },
-        };
-        let json = serde_json::to_vec_pretty(&Kept { operation, left }).map_err(io::Error::other);
+    /// Keeps `left`, which the operation in progress, stopped at `operation`, left to do, in place
+    /// of what waited before.
+    pub fn keep(&self, left: Left, operation: OperationStop) -> Result<(), Failure> {
+        let kept = Kept { operation, left };
+        let json = serde_json::to_vec_pretty(&kept).map_err(io::Error::other);
         json.and_then(|json| write_at_once(&self.file, &json))
-            .map_err(|error| not_kept(self.file.clone(), error.to_string()))
+            .map_err(|error| kept.left.not_kept(self.file.clone(), error.to_string()))
     }
 
-    /// Takes what waits, so that one taker alone does it, when `operation`, the operation in
-    /// progress, is the one that left it. What another operation left is given up. Nothing waits
-    /// when nothing can be read.
-    pub fn take(&self, operation: &Identity) -> Option<Left> {
+    /// Takes what waits, so that one taker alone does it, when the operation in progress, stopped
+    /// at `operation`, is the one that left it. What another operation left is given up. Nothing
+    /// waits when nothing can be read.
+    pub fn take(&self, operation: &OperationStop) -> Option<Left> {
         let kept: Kept =
             take_once(&self.file).and_then(|json| serde_json::from_slice(&json).ok())?;
-        (kept.operation == *operation && kept.left.kind() == operation.kind).then_some(kept.left)
+        (kept.operation == *operation).then_some(kept.left)
     }
 
     /// Gives up what waits, as when the operation that left it is over.

@@ -52,17 +52,13 @@ impl OperationKind {
             Self::CherryPick => "cherry-pick",
         }
     }
-
-    /// The name git gives the commit an operation of this kind stopped on, for a revert or a
-    /// cherry-pick.
-    fn stopped_on(self) -> Option<&'static str> {
-        match self {
-            Self::CherryPick => Some("CHERRY_PICK_HEAD"),
-            Self::Revert => Some("REVERT_HEAD"),
-            Self::Merge | Self::Rebase => None,
-        }
-    }
 }
+
+/// The names git gives the commit a cherry-pick or a revert stopped on.
+const STOPPED_ON: [(&str, OperationKind); 2] = [
+    ("CHERRY_PICK_HEAD", OperationKind::CherryPick),
+    ("REVERT_HEAD", OperationKind::Revert),
+];
 
 /// What the user can do about an operation in progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,31 +116,32 @@ pub(crate) fn action_args(kind: OperationKind, action: OperationAction) -> [&'st
     [kind.command(), option]
 }
 
-/// Which revert or cherry-pick is in progress in a Repository, as far as gikli tells them apart:
-/// its kind, the commit git stopped on and the commit HEAD was on then. Another one that stops on
-/// the same commit with the same HEAD counts as the same one.
+/// Where git stopped the operation in progress in a Repository, which tells gikli one operation
+/// from another: its kind, the commit it stopped on and the commit HEAD was on then. Another one
+/// that stops on the same commit with the same HEAD counts as the same one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Identity {
+pub(crate) struct OperationStop {
     pub kind: OperationKind,
-    /// The commit git stopped on, by its full hash, as it names it `CHERRY_PICK_HEAD` or
-    /// `REVERT_HEAD`, if it names one.
+    /// The commit a cherry-pick or a revert stopped on, by its full hash, as git names it
+    /// `CHERRY_PICK_HEAD` or `REVERT_HEAD`, if it names one.
     pub stopped_on: Option<String>,
     /// The commit HEAD is on, by its full hash, if it is on one.
     pub head: Option<String>,
 }
 
-/// The identity of the operation of `kind` in progress in `repository`, a revert or a cherry-pick.
-pub(crate) fn identity(
+/// Where git stopped the operation of `kind` in progress in `repository`.
+pub(crate) fn stop(
     runner: &GitRunner,
     repository: &Repository,
     kind: OperationKind,
-) -> Result<Identity, Failure> {
-    let stopped_on = match kind.stopped_on() {
-        Some(name) => commit_named(runner, repository, name)?,
+) -> Result<OperationStop, Failure> {
+    let name = STOPPED_ON.iter().find(|(_, named)| *named == kind);
+    let stopped_on = match name {
+        Some((name, _)) => commit_named(runner, repository, name)?,
         None => None,
     };
-    Ok(Identity {
+    Ok(OperationStop {
         kind,
         stopped_on,
         head: head(runner, repository)?,
@@ -183,10 +180,7 @@ fn picking(
     repository: &Repository,
     git_dir: &Path,
 ) -> Result<Option<OperationKind>, Failure> {
-    for kind in [OperationKind::CherryPick, OperationKind::Revert] {
-        let Some(name) = kind.stopped_on() else {
-            continue;
-        };
+    for (name, kind) in STOPPED_ON {
         if commit_named(runner, repository, name)?.is_some() {
             return Ok(Some(kind));
         }

@@ -460,9 +460,10 @@ fn aborting_a_cherry_pick_gives_up_the_commits_left_to_pick() {
     assert_eq!(commit_of(&work, "HEAD~1"), ours);
 }
 
-#[test]
-fn the_commits_left_are_picked_once_a_cherry_pick_that_stopped_again_on_continue_is_over() {
-    let sandbox = Sandbox::new();
+/// A clone whose `main` holds Base, then Fix, which adds `fix.txt`, then More, which adds
+/// `more.txt`, all pushed to `main` of its remote, and whose branch `release`, the current one,
+/// starts at Base. `feature` holds Feature on top of More.
+fn release_before_fix_and_more(sandbox: &Sandbox) -> TestRepository {
     let remote = sandbox.bare_remote("remote.git");
     let work = sandbox.clone_of(&remote, "work");
     work.git(&["switch", "--quiet", "--create", "main"]);
@@ -477,19 +478,30 @@ fn the_commits_left_are_picked_once_a_cherry_pick_that_stopped_again_on_continue
     work.write("feature.txt", "feature\n");
     work.commit_all("Feature");
     work.git(&["switch", "--quiet", "--create", "release", "main~2"]);
+    work
+}
+
+/// Fix, More and Feature of [`release_before_fix_and_more`], in that order. Fix and More, from a
+/// protected branch, go in a run of their own, and Feature in the one after it.
+fn fix_more_and_feature(work: &TestRepository) -> [String; 3] {
+    [
+        commit_of(work, "main~1"),
+        commit_of(work, "main"),
+        commit_of(work, "feature"),
+    ]
+}
+
+#[test]
+fn the_commits_left_are_picked_once_a_cherry_pick_that_stopped_again_on_continue_is_over() {
+    let sandbox = Sandbox::new();
+    let work = release_before_fix_and_more(&sandbox);
     work.write("fix.txt", "ours\n");
     work.write("more.txt", "ours\n");
     work.commit_all("Ours");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
-    // Fix and More, from a protected branch, go in a run of their own, and Feature after them.
-    let selected = [
-        commit_of(&work, "main~1"),
-        commit_of(&work, "main"),
-        commit_of(&work, "feature"),
-    ];
     gikli
-        .cherry_pick(work.root(), &root, &selected)
+        .cherry_pick(work.root(), &root, &fix_more_and_feature(&work))
         .expect("the cherry-pick stops on a conflict at Fix");
     work.write("fix.txt", "both\n");
     gikli
@@ -510,6 +522,38 @@ fn the_commits_left_are_picked_once_a_cherry_pick_that_stopped_again_on_continue
     let in_progress = gikli
         .take_operation_action(work.root(), &root, OperationAction::Continue)
         .expect("continue the cherry-pick");
+
+    assert_eq!(in_progress, None);
+    assert_eq!(
+        subjects(&work),
+        vec!["Feature", "More", "Fix", "Ours", "Base"]
+    );
+}
+
+#[test]
+fn the_commits_left_are_picked_on_continue_after_committing_what_is_staged_in_the_middle_of_a_run()
+{
+    let sandbox = Sandbox::new();
+    let work = release_before_fix_and_more(&sandbox);
+    work.write("fix.txt", "ours\n");
+    work.commit_all("Ours");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    gikli
+        .cherry_pick(work.root(), &root, &fix_more_and_feature(&work))
+        .expect("the cherry-pick stops on a conflict at Fix");
+    work.write("fix.txt", "both\n");
+    gikli
+        .mark_resolved(work.root(), &root, &["fix.txt".to_owned()])
+        .expect("mark fix.txt resolved");
+    // git takes CHERRY_PICK_HEAD away with the commit, and has More left to pick.
+    gikli
+        .commit_staged(&root, "Fix")
+        .expect("commit Fix from the commit panel in Staging mode");
+
+    let in_progress = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Continue)
+        .expect("continue the cherry-pick with More");
 
     assert_eq!(in_progress, None);
     assert_eq!(
