@@ -563,6 +563,36 @@ fn the_commits_left_are_picked_on_continue_after_committing_what_is_staged_in_th
 }
 
 #[test]
+fn the_commits_left_are_picked_on_continue_after_committing_the_files_in_the_middle_of_a_run() {
+    let sandbox = Sandbox::new();
+    let work = release_before_fix_and_more(&sandbox);
+    work.write("fix.txt", "ours\n");
+    work.commit_all("Ours");
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    gikli
+        .cherry_pick(work.root(), &root, &fix_more_and_feature(&work))
+        .expect("the cherry-pick stops on a conflict at Fix");
+    work.write("fix.txt", "both\n");
+    gikli
+        .mark_resolved(work.root(), &root, &["fix.txt".to_owned()])
+        .expect("mark fix.txt resolved");
+    gikli
+        .commit_files(&root, &["fix.txt".to_owned()], "Fix")
+        .expect("commit Fix from the commit panel in Changelist mode");
+
+    let in_progress = gikli
+        .take_operation_action(work.root(), &root, OperationAction::Continue)
+        .expect("continue the cherry-pick with More");
+
+    assert_eq!(in_progress, None);
+    assert_eq!(
+        subjects(&work),
+        vec!["Feature", "More", "Fix", "Ours", "Base"]
+    );
+}
+
+#[test]
 fn a_cherry_pick_started_outside_gikli_after_its_own_was_aborted_picks_none_of_the_commits_left() {
     let sandbox = Sandbox::new();
     let work = release_in_conflict_with_fix(&sandbox);

@@ -1779,8 +1779,8 @@ impl Gikli {
             .map_err(git_failed_to_start)?
             .ok_or_else(not_unstaged)?;
         let selection = commit::Selection {
-            unversioned: Vec::new(),
             committed: staged,
+            ..commit::Selection::default()
         };
         let input = commit::CommitInput::write(root, &git_dir, &selection, "")
             .map_err(|_| not_unstaged())?;
@@ -1946,13 +1946,17 @@ impl Gikli {
     }
 
     /// Commits the changes at `paths`, relative to the root of `repository`, as they are in the
-    /// working tree, with `message` as written, and returns the changes after that. Unversioned
-    /// Files among them are added in the same step, and go back to being unversioned when the commit
-    /// fails, unless a cancelled run left the lock of the index in the way. What is staged at any
-    /// other path stays staged, and out of the commit. Hooks run as the user configured them.
+    /// working tree, with `message` as written, and returns the changes after that. The commit goes
+    /// through the index, so it works the same during a merge or a cherry-pick, which it concludes:
+    /// what is staged at any other path is taken out of the index for it and staged again after
+    /// it, so it stays out of the commit, even a change the operation brought. Unversioned Files
+    /// among them are added in the same step. When the commit fails, the index goes back to what it
+    /// was, and those files to being unversioned, unless a cancelled run left the lock of the index
+    /// in the way. Hooks run as the user configured them.
     ///
     /// Without a `user.name` and a `user.email` this returns [`Failure::CommitIdentityMissing`], and
-    /// nothing happens until [`Self::set_commit_identity`] has the answer.
+    /// nothing happens until [`Self::set_commit_identity`] has the answer. With a Conflict left in
+    /// the Repository it returns [`Failure::ConflictsNotResolved`] before git runs.
     pub fn commit_files(
         &self,
         repository: &Repository,
@@ -2021,6 +2025,10 @@ impl Gikli {
     ) -> Result<ChangeSet, Failure> {
         let runner = self.commit_runner(repository, message, kind)?;
         let status = read_status(&runner, repository, true)?;
+        // git commits no index with a Conflict left in it.
+        if status.has_conflicts() {
+            return Err(Failure::ConflictsNotResolved);
+        }
         let selection = commit::Selection::of(&status, paths);
         if selection.committed.is_empty() {
             return Err(Failure::NothingToCommit);
@@ -2148,22 +2156,30 @@ impl Gikli {
             .operations
             .run(operation, runner.runs_natively(), |run| {
                 let git = |command: &[String]| runner.run_operation(root, &as_args(command), run);
-                if let Some(add) = input.add_command() {
-                    let added = git(&add)?;
-                    if !added.success {
-                        return Ok(Some(added));
-                    }
+                if scope == commit::CommitScope::Index {
+                    let committed = git(&input.commit_command(kind))?;
+                    return Ok((!committed.success).then_some(committed));
                 }
-                let committed = git(&input.commit_command(scope, kind))?;
-                if committed.success {
-                    return Ok(None);
+                let written = git(&commit::CommitInput::index_tree_command())?;
+                if !written.success {
+                    return Ok(Some(written));
                 }
-                if let Some(forget) = input.forget_added_command() {
+                let index_before = written.stdout_text().trim().to_owned();
+                let outcome = commit_through_index(&input, kind, git);
+                let restoring = match &outcome {
+                    Ok(None) => input
+                        .stage_again_command(&index_before)
+                        .into_iter()
+                        .collect(),
+                    _ => input.put_back_commands(&index_before),
+                };
+                for command in restoring {
                     // Not as part of the operation: a cancelled one would end this at once. When
-                    // it fails, the files stay added, and the operation log says why.
-                    let _ = runner.run(root, &as_args(&forget));
+                    // it fails, as when a cancelled run left the lock of the index, the index stays
+                    // as the commit left it, and the operation log says why.
+                    let _ = runner.run(root, &as_args(&command));
                 }
-                Ok(Some(committed))
+                outcome
             })
             .map_err(git_failed_to_start);
         let failure = match failed {
@@ -4769,6 +4785,25 @@ fn conflicts_unresolved(repository: &Repository) -> NotificationKind {
     NotificationKind::ConflictsUnresolved {
         repository: repository.clone(),
     }
+}
+
+/// Commits the selection `input` was written for through the index, with `git` running each
+/// command: takes out what is staged at the paths it touches, adds the selected paths as they are
+/// in the working tree, and commits. Returns the run of git that failed, if one did.
+fn commit_through_index(
+    input: &commit::CommitInput,
+    kind: commit::CommitKind,
+    git: impl Fn(&[String]) -> std::io::Result<Invocation>,
+) -> std::io::Result<Option<Invocation>> {
+    let prepare = [input.take_out_command(), input.add_command()];
+    for command in prepare.into_iter().flatten() {
+        let prepared = git(&command)?;
+        if !prepared.success {
+            return Ok(Some(prepared));
+        }
+    }
+    let committed = git(&input.commit_command(kind))?;
+    Ok((!committed.success).then_some(committed))
 }
 
 /// `command`, a list of arguments gikli built, as the runner takes it.

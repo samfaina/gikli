@@ -1,5 +1,6 @@
 // The panel next to the changes where the user commits a Changelist or selected files. It blocks nothing: the changes stay in reach while it is open.
 // While a revert is in progress, it starts from the inverse commit: the files the reverted commit changed ticked, and the automatic message.
+// While a merge is in progress, it asks before a commit that leaves any change out of the merge commit.
 
 import {
   amendLastCommit,
@@ -9,6 +10,7 @@ import {
   commitWarning,
   isFailure,
   lastCommitMessage,
+  operationInProgress,
   prefilledCommitMessage,
   preparedRevert,
   previousCommitMessages,
@@ -101,8 +103,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
   submitAndPush.dataset.testid = "commit-and-push-submit";
 
   const identity = identityForm(host.repository, host.errorView, () => void commit());
-  const warning = warningForm(() => void commit());
-  view.append(title, files, amendLabel, messageLabel, previousMessages, identity.view, warning.view, result, submit, submitAndPush);
+  const warning = warningForm(() => void commitUnlessMergeLeavesOut());
+  const mergeCheck = mergeCheckForm(host.describeChange, () => void commit());
+  view.append(title, files, amendLabel, messageLabel, previousMessages, identity.view, warning.view, mergeCheck.view, result, submit, submitAndPush);
 
   let ticked = new Set<string>();
   /** The files of the Active changelist the last time, so that one the user unticked is told from one that just came in. */
@@ -164,7 +167,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
 
   /** Starts the message from the last commit when amending, or else from what the ticked files call for, unless the user has written one. */
   async function prefillMessage(): Promise<void> {
-    if (shownChanges === null || message.value !== prefilled) {
+    // A read while a commit goes on can show the committed files gone before the commit is over: the message stays the one
+    // being committed, and the commit decides what comes after it.
+    if (shownChanges === null || committing || message.value !== prefilled) {
       return;
     }
     // Staging mode commits no Changelist, so no comment of one starts the message.
@@ -178,7 +183,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     const request = ++prefillRequests;
     try {
       const text = await (amend.checked ? lastCommitMessage(host.repository) : prefilledCommitMessage(host.repository, paths));
-      if (request === prefillRequests && message.value === prefilled) {
+      if (request === prefillRequests && !committing && message.value === prefilled) {
         message.value = text ?? "";
         // Read back, as the box gives its line ends its own way.
         prefilled = message.value;
@@ -307,6 +312,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     updateSubmit();
     result.replaceChildren();
     warning.close();
+    mergeCheck.close();
     return true;
   }
 
@@ -328,7 +334,48 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
       committing = false;
       updateSubmit();
     }
+    await commitUnlessMergeLeavesOut();
+  }
+
+  /** Commits, unless a merge is in progress and the commit leaves out changes, which the user confirms first. */
+  async function commitUnlessMergeLeavesOut(): Promise<void> {
+    if (!startCommitting()) {
+      return;
+    }
+    let leftOut: Change[];
+    try {
+      leftOut = await changesLeftOutOfMerge();
+    } catch (error) {
+      result.replaceChildren(host.errorView(error, () => void commitUnlessMergeLeavesOut()));
+      return;
+    } finally {
+      committing = false;
+      updateSubmit();
+    }
+    if (leftOut.length > 0) {
+      mergeCheck.ask(leftOut);
+      return;
+    }
     await commit();
+  }
+
+  /**
+   * The changes of the Changelists the commit leaves out while a merge is in progress, none otherwise. Staging mode commits what
+   * the user staged, and a cherry-pick, a revert or a rebase is no merge commit, so they ask nothing. As in JetBrains, only a commit
+   * with a change of the Changelists ticked asks: one of Unversioned Files alone does not.
+   */
+  async function changesLeftOutOfMerge(): Promise<Change[]> {
+    const project = host.project();
+    if (shownChanges === null || shownChanges.staging !== null || project === null) {
+      return [];
+    }
+    const changes = shownChanges.changelists.flatMap((list) => list.group.changes);
+    const leftOut = changes.filter((change) => !ticked.has(change.path));
+    if (leftOut.length === 0 || leftOut.length === changes.length) {
+      return [];
+    }
+    const operation = await operationInProgress(project, host.repository);
+    return operation?.kind === "merge" ? leftOut : [];
   }
 
   async function commit(): Promise<void> {
@@ -500,35 +547,77 @@ function listedPaths(changeSet: ChangeSet): Set<string> {
   );
 }
 
-/** Says where a commit would go and lets the user go on with it or leave it. */
-function warningForm(proceed: () => void): { view: HTMLElement; ask: (found: CommitWarning) => void; close: () => void } {
+/** A form that asks before a commit, with `content` above its buttons, and lets the user commit anyway or leave it. */
+function askingForm(testId: string, content: HTMLElement[], proceed: () => void): { view: HTMLElement; open: () => void; close: () => void } {
   const view = document.createElement("div");
   view.className = "changelist-form";
-  view.dataset.testid = "commit-warning";
+  view.dataset.testid = testId;
   view.setAttribute("role", "alert");
   view.hidden = true;
-  const text = document.createElement("p");
-  text.dataset.testid = "commit-warning-text";
 
   const close = (): void => {
     view.hidden = true;
   };
-  const button = (testId: string, label: string, clicked: () => void): HTMLButtonElement => {
+  const button = (suffix: string, label: string, clicked: () => void): HTMLButtonElement => {
     const element = document.createElement("button");
     element.type = "button";
-    element.dataset.testid = testId;
+    element.dataset.testid = `${testId}-${suffix}`;
     element.textContent = label;
     element.addEventListener("click", clicked);
     return element;
   };
-  view.append(text, button("commit-warning-proceed", t("commitWarningProceed"), proceed), button("commit-warning-cancel", t("commitWarningCancel"), close));
+  view.append(...content, button("proceed", t("commitWarningProceed"), proceed), button("cancel", t("commitWarningCancel"), close));
 
   return {
     view,
     close,
+    open: () => {
+      view.hidden = false;
+    },
+  };
+}
+
+/** Says where a commit would go and lets the user go on with it or leave it. */
+function warningForm(proceed: () => void): { view: HTMLElement; ask: (found: CommitWarning) => void; close: () => void } {
+  const text = document.createElement("p");
+  text.dataset.testid = "commit-warning-text";
+  const form = askingForm("commit-warning", [text], proceed);
+
+  return {
+    view: form.view,
+    close: form.close,
     ask: (found) => {
       text.textContent = t(found === "rebase" ? "commitWarningRebase" : "commitWarningDetachedHead");
-      view.hidden = false;
+      form.open();
+    },
+  };
+}
+
+/** Lists the changes a merge commit would leave out and lets the user commit anyway or leave it. */
+function mergeCheckForm(
+  describeChange: CommitPanelHost["describeChange"],
+  proceed: () => void,
+): { view: HTMLElement; ask: (leftOut: Change[]) => void; close: () => void } {
+  const text = document.createElement("p");
+  text.textContent = t("commitMergeLeavesOut");
+  const list = document.createElement("ul");
+  list.dataset.testid = "commit-merge-check-files";
+  const form = askingForm("commit-merge-check", [text, list], proceed);
+
+  return {
+    view: form.view,
+    close: form.close,
+    ask: (leftOut) => {
+      list.replaceChildren(
+        ...leftOut.map((change) => {
+          const item = document.createElement("li");
+          item.dataset.testid = "commit-merge-check-file";
+          item.dataset.path = change.path;
+          item.textContent = t("commitFile", { path: change.path, description: describeChange(change) });
+          return item;
+        }),
+      );
+      form.open();
     },
   };
 }

@@ -1183,6 +1183,142 @@ describe("gikli", () => {
       }
     });
 
+    it("asks before a commit from the panel leaves changes out of a merge in progress, and commits the merge once confirmed", async () => {
+      const file = "merged.txt";
+      const unticked = "left out of the merge.txt";
+      /** Commits `path` holding `text`, without a line end, which `core.autocrlf` would change when the app's git writes the file. */
+      const commitFile = (path, text, message) => {
+        fs.writeFileSync(inRepository(path), text);
+        git("add", "--", path);
+        commitStaged(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), message);
+      };
+      const staged = await unstageAll();
+      try {
+        // On branches of their own, so main keeps its commits.
+        git("switch", "--quiet", "--create", "smoke/merge-into");
+        commitFile(unticked, "before", "Before the merge");
+        git("switch", "--quiet", "--create", "smoke/merge-from");
+        commitFile(file, "merged", "On the branch the merge brings in");
+        const brought = commitOf("HEAD");
+        git("switch", "--quiet", "smoke/merge-into");
+        const base = commitOf("HEAD");
+        git("merge", "--quiet", "--no-ff", "--no-commit", "smoke/merge-from");
+        fs.writeFileSync(inRepository(unticked), "edited during the merge");
+
+        // What the merge brought and the edit come into the Active changelist, and so are ticked.
+        const tick = (path) => $(`[data-testid="commit-file"][data-path="${path}"] input`);
+        await (await idleRefresh()).click();
+        for (const path of [file, unticked]) {
+          await browser.waitUntil(async () => (await tick(path).isExisting()) && tick(path).isSelected(), {
+            timeout: 30000,
+            timeoutMsg: `${path} was not ticked`,
+          });
+        }
+        await tick(unticked).click();
+        await $('[data-testid="commit-message"]').setValue("Merge from the panel");
+        const check = $('[data-testid="commit-merge-check"]');
+        const leftOut = async () => {
+          const paths = [];
+          for (const item of await $$('[data-testid="commit-merge-check-file"]')) {
+            paths.push(await item.getAttribute("data-path"));
+          }
+          return paths;
+        };
+
+        const statusBefore = git("status", "--porcelain");
+        await $('[data-testid="commit-submit"]').click();
+        await check.waitForDisplayed({ timeout: 30000 });
+        const listed = await leftOut();
+        assert.ok(listed.includes(unticked), "the change left out is listed");
+        assert.ok(!listed.includes(file), "a ticked change is not left out");
+        await $('[data-testid="commit-merge-check-cancel"]').click();
+        await check.waitForDisplayed({ timeout: 30000, reverse: true });
+        assert.equal(commitOf("HEAD"), base, "nothing is committed on cancel");
+        assert.ok(hasRef("MERGE_HEAD"), "the merge stays in progress");
+        assert.equal(git("status", "--porcelain"), statusBefore, "cancelling changes nothing");
+
+        await $('[data-testid="commit-submit"]').click();
+        await check.waitForDisplayed({ timeout: 30000 });
+        await $('[data-testid="commit-merge-check-proceed"]').click();
+
+        await browser.waitUntil(() => commitOf("HEAD") !== base, { timeout: 30000, timeoutMsg: "the merge commit was not made" });
+        assert.equal(git("rev-parse", "HEAD^1", "HEAD^2"), `${base}\n${brought}\n`, "the commit is the merge commit");
+        assert.equal(hasRef("MERGE_HEAD"), false, "no merge is left in progress");
+        assert.equal(git("diff", "--name-only", "HEAD^1", "HEAD"), `${file}\n`, "the change left out stays out of the merge commit");
+        assert.equal(git("diff", "--name-only", "HEAD", "--", unticked), `${unticked}\n`, "the change left out stays a local change");
+      } finally {
+        // The next cases start from main, whatever this one left. main has no file left out, so its edit goes first.
+        if (hasRef("MERGE_HEAD")) {
+          await gitPastIndexLock("merge", "--abort");
+        }
+        if (fs.existsSync(inRepository(unticked))) {
+          await gitPastIndexLock("checkout", "HEAD", "--", unticked);
+        }
+        await endOperationAndReturnToMain("smoke/merge-into", "smoke/merge-from");
+        await stageAgain(staged);
+      }
+    });
+
+    // As in JetBrains, whose check looks only at the Repositories of the ticked changes of the Changelists.
+    it("does not ask before a commit from the panel with only Unversioned Files ticked during a merge", async () => {
+      const file = "merged alone.txt";
+      const unversioned = "unversioned during the merge.txt";
+      const staged = await unstageAll();
+      try {
+        // On branches of their own, so main keeps its commits.
+        git("switch", "--quiet", "--create", "smoke/merge-into");
+        git("switch", "--quiet", "--create", "smoke/merge-from");
+        // Without a line end, which `core.autocrlf` would change when the app's git writes the file.
+        fs.writeFileSync(inRepository(file), "merged");
+        git("add", "--", file);
+        commitStaged(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), "On the branch the merge brings in");
+        const brought = commitOf("HEAD");
+        git("switch", "--quiet", "smoke/merge-into");
+        const base = commitOf("HEAD");
+        git("merge", "--quiet", "--no-ff", "--no-commit", "smoke/merge-from");
+        fs.writeFileSync(inRepository(unversioned), "new");
+
+        const tick = (path) => $(`[data-testid="commit-file"][data-path="${path}"] input`);
+        await (await idleRefresh()).click();
+        await browser.waitUntil(async () => (await tick(file).isExisting()) && (await tick(unversioned).isExisting()), {
+          timeout: 30000,
+          timeoutMsg: "the panel did not show the merged file and the Unversioned File",
+        });
+        // Every change of the Changelists unticked. A click draws the panel again, so each box is looked for anew.
+        const tickedInChangelists = async () => {
+          for (const box of await $$('[data-testid="commit-changelist"] [data-testid="commit-file"] input')) {
+            if (await box.isSelected()) {
+              return box;
+            }
+          }
+          return null;
+        };
+        for (let box = await tickedInChangelists(), clicks = 0; box !== null; box = await tickedInChangelists(), clicks++) {
+          assert.ok(clicks < 100, "the changes of the Changelists could not be unticked");
+          await box.click();
+        }
+        await tick(unversioned).click();
+        await $('[data-testid="commit-message"]').setValue("Merge with the new file alone");
+
+        await $('[data-testid="commit-submit"]').click();
+
+        await browser.waitUntil(() => commitOf("HEAD") !== base, { timeout: 30000, timeoutMsg: "the merge commit was not made" });
+        assert.equal(await $('[data-testid="commit-merge-check"]').isDisplayed(), false, "the panel did not ask");
+        assert.equal(git("rev-parse", "HEAD^1", "HEAD^2"), `${base}\n${brought}\n`, "the commit is the merge commit");
+        assert.equal(git("diff", "--name-only", "HEAD^1", "HEAD"), `${unversioned}\n`, "the commit holds the Unversioned File alone");
+      } finally {
+        // The next cases start from main, whatever this one left. What the merge brought and the commit left out is staged.
+        if (hasRef("MERGE_HEAD")) {
+          await gitPastIndexLock("merge", "--abort");
+        }
+        await gitPastIndexLock("rm", "--cached", "--quiet", "--ignore-unmatch", "--", file);
+        fs.rmSync(inRepository(file), { force: true });
+        await endOperationAndReturnToMain("smoke/merge-into", "smoke/merge-from");
+        fs.rmSync(inRepository(unversioned), { force: true });
+        await stageAgain(staged);
+      }
+    });
+
     // A browser drops a click whose button was taken out of the page between the press and the
     // release. The status area reads again whenever the changes watcher sees the Repository change, as just
     // after a checkout, so a click on the branch there could be lost on its way (issue #154).
