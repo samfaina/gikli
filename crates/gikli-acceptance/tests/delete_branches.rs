@@ -1,31 +1,11 @@
 //! Delete: one or several local branches go, merged or not, and the notification that says so can
 //! bring them back, show the commits no other branch had, and delete the remote branch too.
 
-use gikli_acceptance::{Sandbox, TestRepository, opened_project};
+use gikli_acceptance::{Sandbox, TestRepository, opened_project, the_notification};
 use gikli_core::{
-    DeletedBranch, Event, Failure, Gikli, Notification, NotificationAction, NotificationKind,
+    DeletedBranch, Event, Failure, Notification, NotificationAction, NotificationKind,
     NotificationOutcome, RemoteBranch,
 };
-
-/// The local branches of `repository`, as git lists them.
-fn branches_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The one notification raised.
-fn the_notification(gikli: &Gikli) -> Notification {
-    let notifications = gikli.notifications();
-    assert_eq!(
-        notifications.len(),
-        1,
-        "one notification: {notifications:?}"
-    );
-    notifications[0].clone()
-}
 
 #[test]
 fn a_deleted_branch_goes_and_its_notification_offers_to_restore_it() {
@@ -42,7 +22,7 @@ fn a_deleted_branch_goes_and_its_notification_offers_to_restore_it() {
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
 
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
     let notification = the_notification(&gikli);
     assert_eq!(notification.project, project.folder);
     assert_eq!(
@@ -78,7 +58,7 @@ fn a_branch_that_is_not_merged_goes_too_and_restoring_brings_it_back_on_the_same
     gikli
         .delete_branches(&project.folder, &root, &["feature".to_owned()])
         .expect("delete the branch");
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
     let notification = the_notification(&gikli);
 
     let outcome = gikli
@@ -86,7 +66,7 @@ fn a_branch_that_is_not_merged_goes_too_and_restoring_brings_it_back_on_the_same
         .expect("restore the branch");
 
     assert_eq!(outcome, NotificationOutcome::BranchesChanged(root));
-    assert_eq!(branches_by_git(&work), vec!["feature", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature", "main"]);
     assert_eq!(work.commit_of("feature"), commit);
     assert_eq!(
         gikli.notifications(),
@@ -201,7 +181,7 @@ fn the_remote_branch_a_deleted_branch_followed_can_be_deleted_too() {
         .expect("delete the remote branch");
 
     assert_eq!(outcome, NotificationOutcome::BranchesChanged(root));
-    assert_eq!(branches_by_git(&remote), vec!["main"]);
+    assert_eq!(remote.branches_by_git(), vec!["main"]);
     assert!(
         !work.git_succeeds(&[
             "rev-parse",
@@ -260,7 +240,7 @@ fn several_branches_go_at_once_and_come_back_together() {
         )
         .expect("delete the branches");
 
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
     let notification = the_notification(&gikli);
     let NotificationKind::BranchesDeleted { branches, .. } = &notification.kind else {
         panic!("not a deletion: {notification:?}");
@@ -271,7 +251,7 @@ fn several_branches_go_at_once_and_come_back_together() {
         .act_on_notification(notification.id, &NotificationAction::RestoreBranches)
         .expect("restore the branches");
     assert_eq!(
-        branches_by_git(&work),
+        work.branches_by_git(),
         vec!["feature/a", "feature/b", "main"]
     );
 }
@@ -297,7 +277,7 @@ fn the_current_branch_is_not_deleted_and_neither_are_the_others_asked_with_it() 
             name: "main".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["feature", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature", "main"]);
     assert_eq!(gikli.notifications(), vec![]);
 }
 
@@ -322,7 +302,7 @@ fn a_branch_deleted_since_is_reported_and_nothing_goes() {
             revision: "gone".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["feature", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature", "main"]);
 }
 
 #[test]
@@ -352,7 +332,7 @@ fn a_branch_that_took_the_name_since_keeps_the_deleted_ones_from_coming_back() {
             name: "feature/b".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["feature/b", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature/b", "main"]);
     assert_eq!(
         gikli.notifications(),
         vec![notification],
@@ -406,7 +386,7 @@ fn a_branch_git_cannot_delete_stops_the_deletion_and_the_notification_tells_of_t
         deleted.is_err(),
         "git keeps a branch another worktree has checked out: {deleted:?}"
     );
-    assert_eq!(branches_by_git(&work), vec!["b", "c", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["b", "c", "main"]);
     let notification = the_notification(&gikli);
     let NotificationKind::BranchesDeleted { branches, .. } = &notification.kind else {
         panic!("not a deletion: {notification:?}");

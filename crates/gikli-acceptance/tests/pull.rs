@@ -64,16 +64,6 @@ fn source(remote: &str, branch: &str) -> PullSource {
     }
 }
 
-/// The parents of HEAD in `repository`, as git lists them.
-fn parents_of_head(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["rev-list", "--parents", "--max-count=1", "HEAD"])
-        .split_whitespace()
-        .skip(1)
-        .map(str::to_owned)
-        .collect()
-}
-
 /// Publishes a commit of `theirs` that changes `path` to `contents`, as someone else would.
 fn publish(theirs: &TestRepository, path: &str, contents: &str, message: &str) {
     theirs.write(path, contents);
@@ -127,7 +117,7 @@ fn pulling_merges_a_branch_that_parted_from_the_remote_one() {
         .expect("pull");
 
     assert_eq!(
-        parents_of_head(&mine),
+        mine.parents_of_head(),
         [mine_before, theirs.commit_of("main")],
         "git made a merge of both"
     );
@@ -162,7 +152,7 @@ fn pulling_with_rebase_puts_the_branch_s_own_commits_on_top_of_the_remote_ones()
         .expect("pull with rebase");
 
     assert_eq!(mine.subjects(), ["Mine", "Theirs", "First"]);
-    assert_eq!(parents_of_head(&mine), [theirs.commit_of("main")]);
+    assert_eq!(mine.parents_of_head(), [theirs.commit_of("main")]);
 }
 
 #[test]
@@ -184,7 +174,7 @@ fn pulling_merges_when_the_user_chose_to_even_if_git_is_configured_to_rebase() {
         .expect("pull");
 
     assert_eq!(
-        parents_of_head(&mine),
+        mine.parents_of_head(),
         [mine_before, theirs.commit_of("main")]
     );
 }
@@ -233,7 +223,7 @@ fn pulling_without_fast_forward_makes_a_merge_commit_anyway() {
         .expect("pull without fast-forward");
 
     assert_eq!(
-        parents_of_head(&mine),
+        mine.parents_of_head(),
         [mine_before, theirs.commit_of("main")]
     );
 }
@@ -323,7 +313,7 @@ fn pulling_without_verify_skips_the_hooks_of_the_merge() {
         .expect("pull without verify");
 
     assert_eq!(
-        parents_of_head(&mine),
+        mine.parents_of_head(),
         [mine_before, theirs.commit_of("main")]
     );
 }

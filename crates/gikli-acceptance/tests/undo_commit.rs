@@ -4,10 +4,9 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gikli_acceptance::{Sandbox, TestRepository, opened_project};
+use gikli_acceptance::{Sandbox, TestRepository, opened_project, the_notification};
 use gikli_core::{
-    ChangeSet, Failure, Gikli, Notification, NotificationAction, NotificationKind,
-    NotificationOutcome, Rewrite,
+    ChangeSet, Failure, NotificationAction, NotificationKind, NotificationOutcome, Rewrite,
 };
 
 /// A repository with two commits: the first holds `a.txt`, the last changes it and adds `b.txt`.
@@ -19,17 +18,6 @@ fn repository_with_a_last_commit(sandbox: &Sandbox) -> TestRepository {
     repository.write("b.txt", "b\n");
     repository.commit_all("Change a and add b");
     repository
-}
-
-/// The one notification gikli raised.
-fn the_notification(gikli: &Gikli) -> Notification {
-    let notifications = gikli.notifications();
-    assert_eq!(
-        notifications.len(),
-        1,
-        "one notification: {notifications:?}"
-    );
-    notifications[0].clone()
 }
 
 /// The paths of the changes in the Active changelist.

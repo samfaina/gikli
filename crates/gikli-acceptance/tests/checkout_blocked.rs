@@ -24,14 +24,6 @@ fn with_other_branch(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repos
     (work, root)
 }
 
-/// The branch HEAD of `repository` is on, as plain git names it.
-fn head_by_git(repository: &TestRepository) -> String {
-    repository
-        .git(&["symbolic-ref", "--short", "HEAD"])
-        .trim()
-        .to_owned()
-}
-
 #[test]
 fn a_checkout_local_changes_block_lists_the_files_that_block_it() {
     let sandbox = Sandbox::new();
@@ -53,7 +45,7 @@ fn a_checkout_local_changes_block_lists_the_files_that_block_it() {
         },
         "todo.txt is the same on both branches, so it does not block"
     );
-    assert_eq!(head_by_git(&work), "main");
+    assert_eq!(work.head_by_git(), "main");
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M todo.txt"]);
 }
 
@@ -78,7 +70,7 @@ fn a_checkout_untracked_files_block_lists_the_files_to_move_or_commit() {
         },
         "scratch.txt is in no branch, so it does not block"
     );
-    assert_eq!(head_by_git(&work), "main");
+    assert_eq!(work.head_by_git(), "main");
     assert_eq!(
         std::fs::read_to_string(work.root().join("plan.txt")).expect("read plan"),
         "my own plan\n"
@@ -174,7 +166,7 @@ fn discarding_files_other_than_those_that_block_now_discards_nothing_and_says_wh
             untracked_files: Vec::new(),
         }
     );
-    assert_eq!(head_by_git(&work), "main");
+    assert_eq!(work.head_by_git(), "main");
     assert_eq!(work.status_by_git(), vec![" M notes.txt", "A  plan.txt"]);
 }
 
@@ -197,7 +189,7 @@ fn discarding_a_new_file_that_blocks_removes_it() {
         )
         .expect("discard plan.txt and check out");
 
-    assert_eq!(head_by_git(&work), "other");
+    assert_eq!(work.head_by_git(), "other");
     assert_eq!(work.read("plan.txt"), "plan\n");
     assert_eq!(work.status_by_git(), Vec::<String>::new());
 }
@@ -270,7 +262,7 @@ second
         )
         .expect("save, check out and restore onto a conflict");
 
-    assert_eq!(head_by_git(&work), "other");
+    assert_eq!(work.head_by_git(), "other");
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
     assert_eq!(
         work.stashes_by_git(),
@@ -322,7 +314,7 @@ three
             untracked_files: path_bufs(&["plan.txt"]),
         }
     );
-    assert_eq!(head_by_git(&work), "main");
+    assert_eq!(work.head_by_git(), "main");
     assert_eq!(work.status_by_git(), vec![" M notes.txt", "?? plan.txt"]);
     assert_eq!(
         work.read("notes.txt"),

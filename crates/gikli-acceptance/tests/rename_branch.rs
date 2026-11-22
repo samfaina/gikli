@@ -3,15 +3,6 @@
 use gikli_acceptance::{Sandbox, TestRepository, opened};
 use gikli_core::{CurrentBranch, Failure};
 
-/// The local branches of `repository`, as git lists them.
-fn branches_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
 #[test]
 fn a_branch_that_is_not_checked_out_takes_its_new_name() {
     let sandbox = Sandbox::new();
@@ -33,7 +24,7 @@ fn a_branch_that_is_not_checked_out_takes_its_new_name() {
             upstream: None
         }
     );
-    assert_eq!(branches_by_git(&work), vec!["feature/login", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature/login", "main"]);
     assert_eq!(work.git(&["rev-parse", "feature/login"]), commit);
 }
 
@@ -65,7 +56,7 @@ fn renaming_the_current_branch_moves_head_along_and_keeps_its_upstream() {
         work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
         "trunk"
     );
-    assert_eq!(branches_by_git(&work), vec!["trunk"]);
+    assert_eq!(work.branches_by_git(), vec!["trunk"]);
     assert_eq!(
         work.upstream_by_git("trunk").as_deref(),
         Some("origin/main")
@@ -105,7 +96,7 @@ fn letting_go_of_an_upstream_a_branch_does_not_have_renames_it_all_the_same() {
         .rename_branch(&root, "main", "trunk", true)
         .expect("rename the branch");
 
-    assert_eq!(branches_by_git(&work), vec!["trunk"]);
+    assert_eq!(work.branches_by_git(), vec!["trunk"]);
 }
 
 #[test]
@@ -132,7 +123,7 @@ fn a_new_name_git_does_not_take_or_that_another_branch_has_is_refused() {
             name: "@{-1}".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["feature", "main"]);
+    assert_eq!(work.branches_by_git(), vec!["feature", "main"]);
 }
 
 #[test]
@@ -151,7 +142,7 @@ fn a_branch_deleted_since_is_not_renamed() {
             revision: "gone".to_owned()
         })
     );
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
 }
 
 /// The dialog opens on the branch's own name, so keeping it and unsetting the upstream is a rename
@@ -167,6 +158,6 @@ fn keeping_the_name_lets_go_of_the_upstream_alone() {
         .rename_branch(&root, "main", "main", true)
         .expect("unset the upstream");
 
-    assert_eq!(branches_by_git(&work), vec!["main"]);
+    assert_eq!(work.branches_by_git(), vec!["main"]);
     assert_eq!(work.upstream_by_git("main"), None);
 }

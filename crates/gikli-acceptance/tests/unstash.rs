@@ -169,15 +169,6 @@ THREE
     (work, root, hash)
 }
 
-/// The files of `repository` in conflict, as plain git lists them.
-fn conflicted_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["diff", "--name-only", "--diff-filter=U"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
 #[test]
 fn a_pop_that_conflicts_opens_conflict_resolution_and_keeps_the_stash() {
     let sandbox = Sandbox::new();
@@ -193,7 +184,7 @@ fn a_pop_that_conflicts_opens_conflict_resolution_and_keeps_the_stash() {
     assert_eq!(unstashed.stashes.entries[0].hash, hash);
     assert_eq!(work.stashes_by_git(), vec!["On main: Half done"]);
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
-    assert_eq!(conflicted_by_git(&work), vec!["notes.txt"]);
+    assert_eq!(work.conflicted_by_git(), vec!["notes.txt"]);
 }
 
 /// The notifications raised about a stash kept in `repository` after it conflicted.

@@ -1,8 +1,8 @@
 //! Commit and push: the commit goes through, and then the push dialog opens, or the push runs at
 //! once when the settings suppress the dialog.
 
-use gikli_acceptance::{Sandbox, TestRepository, opened};
-use gikli_core::{Failure, Gikli, PushAfterCommit, PushTarget, Repository};
+use gikli_acceptance::{Sandbox, TestRepository, opened, push_target};
+use gikli_core::{Failure, Gikli, PushAfterCommit, Repository};
 
 /// A bare remote whose `main` holds First, and a clone `mine` of it.
 fn remote_and_clone(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
@@ -13,13 +13,6 @@ fn remote_and_clone(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
     work.git(&["push", "--quiet", "origin", "main"]);
     let mine = sandbox.clone_of(&remote, "mine");
     (remote, mine)
-}
-
-fn target(remote: &str, branch: &str) -> PushTarget {
-    PushTarget {
-        remote: remote.to_owned(),
-        branch: branch.to_owned(),
-    }
 }
 
 /// Writes `notes.txt` in the working tree of `repository`, `working_tree`, and commits it as Add
@@ -57,7 +50,7 @@ fn commit_and_push_commits_and_then_opens_the_push_dialog() {
     let PushAfterCommit::Dialog { plan } = after else {
         panic!("the push dialog opens, not {after:?}");
     };
-    assert_eq!(plan.target, Some(target("origin", "main")));
+    assert_eq!(plan.target, Some(push_target("origin", "main")));
     let subjects: Vec<&str> = plan.commits.iter().map(|c| c.subject.as_str()).collect();
     assert_eq!(subjects, ["Add notes"], "the dialog shows the new commit");
     assert_eq!(
@@ -96,7 +89,7 @@ fn with_the_dialog_suppressed_commit_and_push_pushes_at_once() {
     assert_eq!(
         after,
         PushAfterCommit::Pushed {
-            target: target("origin", "main")
+            target: push_target("origin", "main")
         }
     );
     assert_eq!(
@@ -126,7 +119,7 @@ fn with_the_dialog_only_for_protected_branches_a_push_to_another_branch_runs_at_
     assert_eq!(
         after,
         PushAfterCommit::Pushed {
-            target: target("origin", "feature")
+            target: push_target("origin", "feature")
         }
     );
     assert_eq!(
@@ -162,7 +155,7 @@ fn with_the_dialog_only_for_protected_branches_a_push_to_main_or_master_opens_th
         let PushAfterCommit::Dialog { plan } = after else {
             panic!("a push to {protected} opens the dialog, not {after:?}");
         };
-        assert_eq!(plan.target, Some(target("origin", protected)));
+        assert_eq!(plan.target, Some(push_target("origin", protected)));
         assert_eq!(
             remote.git(&["for-each-ref"]),
             remote_branches,
@@ -187,7 +180,7 @@ fn a_protected_branch_is_one_whose_whole_name_is_main_or_master() {
     assert_eq!(
         after,
         PushAfterCommit::Pushed {
-            target: target("origin", "maintenance")
+            target: push_target("origin", "maintenance")
         }
     );
     assert!(remote.git_succeeds(&["rev-parse", "--verify", "--quiet", "maintenance"]));
@@ -287,7 +280,7 @@ fn with_the_dialog_off_a_push_to_a_protected_branch_runs_at_once_too() {
     assert_eq!(
         after,
         PushAfterCommit::Pushed {
-            target: target("origin", "main")
+            target: push_target("origin", "main")
         },
         "only for protected branches narrows the dialog, it does not bring it back"
     );
@@ -323,7 +316,7 @@ fn commit_and_push_follows_a_commit_of_what_is_staged() {
     assert_eq!(
         after,
         PushAfterCommit::Pushed {
-            target: target("origin", "main")
+            target: push_target("origin", "main")
         }
     );
     assert_eq!(last_subject_by_git(&remote, "main"), "Add staged notes");

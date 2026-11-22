@@ -7,16 +7,14 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
-use gikli_acceptance::{HttpRemote, Sandbox, TestRepository, as_git_writes_it, file_url};
+use gikli_acceptance::{
+    HttpRemote, Sandbox, TestRepository, as_git_writes_it, file_url, wait_until,
+};
 use gikli_core::{Event, ExplainedMessage, Failure, Repository};
 
 const USERNAME: &str = "ada-lovelace-1815";
 const PASSWORD: &str = "tr0ub4dor-and-3";
-
-/// How long anything here may take. Generous, for slow CI machines.
-const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Words of the trace, which nothing a test's hooks and git say holds.
 const TRACE_WORDS: [&str; 3] = ["\"event\"", "\"sid\"", "gikli-trace-"];
@@ -189,14 +187,6 @@ fn a_fetch_of_a_url_git_can_read_in_the_configuration_leaves_the_password_in_no_
 #[test]
 fn a_fetch_of_a_password_holding_a_slash_in_the_configuration_leaves_it_in_no_file() {
     assert_fetch_leaves_the_password_in_no_file(url_git_takes_for_a_path);
-}
-
-fn wait_until(what: &str, condition: impl Fn() -> bool) {
-    let give_up = Instant::now() + DEADLINE;
-    while !condition() {
-        assert!(Instant::now() < give_up, "waited in vain for {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// The program outlives the run and holds on to all it inherited from git. It waits for the test to

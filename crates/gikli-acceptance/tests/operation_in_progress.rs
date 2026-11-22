@@ -57,16 +57,6 @@ fn a_repository_where_nothing_is_half_done_has_no_operation_in_progress() {
     assert_eq!(operation, None);
 }
 
-/// The parents of HEAD in `repository`, as git lists them.
-fn parents_of_head(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["rev-list", "--parents", "--max-count=1", "HEAD"])
-        .split_whitespace()
-        .skip(1)
-        .map(str::to_owned)
-        .collect()
-}
-
 #[test]
 fn commit_merge_finishes_a_resolved_merge_with_the_message_git_prepared() {
     let sandbox = Sandbox::new();
@@ -84,7 +74,7 @@ fn commit_merge_finishes_a_resolved_merge_with_the_message_git_prepared() {
         .expect("commit the merge");
 
     assert_eq!(operation, None);
-    assert_eq!(parents_of_head(&work), vec![ours, theirs]);
+    assert_eq!(work.parents_of_head(), vec![ours, theirs]);
     assert_eq!(
         work.git(&["log", "--max-count=1", "--format=%s"]).trim(),
         "Merge branch 'other'"

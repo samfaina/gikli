@@ -11,6 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use gikli_core::{Gikli, HostEnvironment};
 use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
@@ -21,7 +22,7 @@ mod http_remote;
 
 pub use driving::{
     changelist, conflicts_left, log_subjects, opened, opened_project, path_bufs, paths, paths_in,
-    read_changes, upstream,
+    push_target, read_changes, the_notification, upstream,
 };
 pub use http_remote::HttpRemote;
 
@@ -48,6 +49,19 @@ pub const FIRST_MINUTE: i64 = 1_700_000_000;
 /// The moment `minute` minutes after [`FIRST_MINUTE`], in seconds since the epoch.
 pub fn minute_as_seconds(minute: i64) -> i64 {
     FIRST_MINUTE + minute * 60
+}
+
+/// How long anything a test waits for may take. Generous, for slow CI machines, and far below what
+/// a process left alive would take to end: never.
+pub const DEADLINE: Duration = Duration::from_secs(60);
+
+/// Waits for `condition` to hold, for at most [`DEADLINE`]. `what` says what the test waits for.
+pub fn wait_until(what: &str, condition: impl Fn() -> bool) {
+    let give_up = Instant::now() + DEADLINE;
+    while !condition() {
+        assert!(Instant::now() < give_up, "waited in vain for {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Whether the tests of speed check their budgets, which they do only when `GIKLI_CHECK_BUDGETS`
@@ -790,6 +804,41 @@ impl TestRepository {
     pub fn stashes_by_git(&self) -> Vec<String> {
         self.git(&["stash", "list", "--format=%gs"])
             .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The paths plain git lists as in conflict, once each.
+    pub fn conflicted_by_git(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .git(&["diff", "--name-only", "--diff-filter=U"])
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        paths.dedup();
+        paths
+    }
+
+    /// The branch HEAD is on, as plain git names it.
+    pub fn head_by_git(&self) -> String {
+        self.git(&["symbolic-ref", "--short", "HEAD"])
+            .trim()
+            .to_owned()
+    }
+
+    /// The local branches, as plain git lists them.
+    pub fn branches_by_git(&self) -> Vec<String> {
+        self.git(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The parents of HEAD, as plain git lists them: the first parent first.
+    pub fn parents_of_head(&self) -> Vec<String> {
+        self.git(&["rev-list", "--parents", "--max-count=1", "HEAD"])
+            .split_whitespace()
+            .skip(1)
             .map(str::to_owned)
             .collect()
     }

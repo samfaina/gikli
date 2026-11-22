@@ -1,10 +1,9 @@
 //! Push: what the push dialog shows will be published, and publishing it, creating the target
 //! branch when needed.
 
-use gikli_acceptance::{Sandbox, TestRepository, opened};
+use gikli_acceptance::{Sandbox, TestRepository, opened, push_target};
 use gikli_core::{
     Event, ExplainedMessage, Explanation, Failure, ListedCommit, LongOperation, NextStep, PushTags,
-    PushTarget,
 };
 
 /// A bare remote whose `main` holds First, and a clone `mine` of it.
@@ -16,13 +15,6 @@ fn remote_and_clone(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
     work.git(&["push", "--quiet", "origin", "main"]);
     let mine = sandbox.clone_of(&remote, "mine");
     (remote, mine)
-}
-
-fn target(remote: &str, branch: &str) -> PushTarget {
-    PushTarget {
-        remote: remote.to_owned(),
-        branch: branch.to_owned(),
-    }
 }
 
 /// The subjects of `commits`, in their order.
@@ -60,7 +52,7 @@ fn the_push_dialog_targets_the_upstream_with_the_outgoing_commits() {
     assert_eq!(plan.repository, root);
     assert_eq!(plan.branch, "main");
     assert_eq!(plan.remotes, ["origin"]);
-    assert_eq!(plan.target, Some(target("origin", "main")));
+    assert_eq!(plan.target, Some(push_target("origin", "main")));
     assert!(!plan.new_branch, "origin/main exists");
     assert_eq!(listed_subjects(&plan.commits), ["Third", "Second"]);
     assert_eq!(
@@ -79,7 +71,7 @@ fn pushing_sends_the_commits_to_the_target() {
     let root = opened(&gikli, &mine);
 
     gikli
-        .push(&root, &target("origin", "main"), PushTags::None)
+        .push(&root, &push_target("origin", "main"), PushTags::None)
         .expect("push");
 
     assert_eq!(
@@ -104,7 +96,7 @@ fn a_branch_without_an_upstream_goes_to_a_new_branch_of_the_same_name_with_its_o
     let plan = gikli.push_plan(&root, None).expect("plan the push");
 
     assert_eq!(plan.branch, "feature");
-    assert_eq!(plan.target, Some(target("origin", "feature")));
+    assert_eq!(plan.target, Some(push_target("origin", "feature")));
     assert!(plan.new_branch, "origin has no feature yet");
     assert_eq!(
         listed_subjects(&plan.commits),
@@ -128,7 +120,7 @@ fn pushing_to_a_new_branch_creates_it_and_sets_it_as_the_upstream() {
     let root = opened(&gikli, &mine);
 
     gikli
-        .push(&root, &target("origin", "feature"), PushTags::None)
+        .push(&root, &push_target("origin", "feature"), PushTags::None)
         .expect("push");
 
     assert_eq!(
@@ -157,9 +149,9 @@ fn a_changed_target_shows_the_commits_it_lacks_and_the_push_goes_there_alone() {
     let root = opened(&gikli, &mine);
 
     let plan = gikli
-        .push_plan(&root, Some(&target("origin", "release")))
+        .push_plan(&root, Some(&push_target("origin", "release")))
         .expect("plan the push");
-    assert_eq!(plan.target, Some(target("origin", "release")));
+    assert_eq!(plan.target, Some(push_target("origin", "release")));
     assert!(!plan.new_branch, "origin/release exists");
     assert_eq!(
         hashes(&plan.commits),
@@ -168,7 +160,7 @@ fn a_changed_target_shows_the_commits_it_lacks_and_the_push_goes_there_alone() {
     );
     assert_eq!(listed_subjects(&plan.commits), ["Third"]);
 
-    let rejected = gikli.push(&root, &target("origin", "release"), PushTags::None);
+    let rejected = gikli.push(&root, &push_target("origin", "release"), PushTags::None);
     assert_eq!(
         rejected,
         Err(Failure::PushFailed {
@@ -188,12 +180,16 @@ fn a_target_created_with_another_name_keeps_the_upstream_the_branch_has() {
     let root = opened(&gikli, &mine);
 
     let plan = gikli
-        .push_plan(&root, Some(&target("origin", "review/second")))
+        .push_plan(&root, Some(&push_target("origin", "review/second")))
         .expect("plan the push");
     assert!(plan.new_branch, "origin has no review/second yet");
     assert_eq!(listed_subjects(&plan.commits), ["Second"]);
     gikli
-        .push(&root, &target("origin", "review/second"), PushTags::None)
+        .push(
+            &root,
+            &push_target("origin", "review/second"),
+            PushTags::None,
+        )
         .expect("push");
 
     assert_eq!(
@@ -221,7 +217,7 @@ fn a_target_on_a_remote_the_repository_does_not_have_is_refused() {
     let path = elsewhere.root().to_string_lossy().into_owned();
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &mine);
-    let unknown = target(&path, "main");
+    let unknown = push_target(&path, "main");
 
     assert_eq!(
         gikli.push_plan(&root, Some(&unknown)),
@@ -247,7 +243,7 @@ fn a_target_whose_name_is_no_branch_name_is_refused() {
     let root = opened(&gikli, &mine);
 
     for name in ["@{-1}", "two words", "ends.lock", ""] {
-        let invalid = target("origin", name);
+        let invalid = push_target("origin", name);
         let refused = Failure::BranchNameInvalid {
             name: name.to_owned(),
         };
@@ -301,7 +297,7 @@ fn pushing_sends_no_tag_unless_asked() {
 
     assert_eq!(PushTags::default(), PushTags::None, "off by default");
     gikli
-        .push(&root, &target("origin", "main"), PushTags::default())
+        .push(&root, &push_target("origin", "main"), PushTags::default())
         .expect("push");
 
     assert_eq!(tags_by_git(&remote), Vec::<String>::new());
@@ -315,7 +311,7 @@ fn pushing_every_tag_sends_them_all() {
     let root = opened(&gikli, &mine);
 
     gikli
-        .push(&root, &target("origin", "main"), PushTags::All)
+        .push(&root, &push_target("origin", "main"), PushTags::All)
         .expect("push");
 
     assert_eq!(tags_by_git(&remote), ["aside", "light", "v1"]);
@@ -329,7 +325,11 @@ fn pushing_the_tags_of_the_current_branch_sends_its_annotated_tags_only() {
     let root = opened(&gikli, &mine);
 
     gikli
-        .push(&root, &target("origin", "main"), PushTags::CurrentBranch)
+        .push(
+            &root,
+            &push_target("origin", "main"),
+            PushTags::CurrentBranch,
+        )
         .expect("push");
 
     assert_eq!(
@@ -427,7 +427,7 @@ fn defining_a_remote_adds_it_and_fetches_it_at_once() {
     );
     let plan = gikli.push_plan(&root, None).expect("plan the push");
     assert_eq!(plan.remotes, ["upstream"]);
-    assert_eq!(plan.target, Some(target("upstream", "main")));
+    assert_eq!(plan.target, Some(push_target("upstream", "main")));
     assert!(plan.new_branch, "the remote has no main");
     assert_eq!(listed_subjects(&plan.commits), ["Mine"]);
 }
@@ -522,7 +522,7 @@ fn pushing_runs_as_a_long_operation_that_reports_its_progress() {
     let events = gikli.subscribe();
 
     gikli
-        .push(&root, &target("origin", "main"), PushTags::None)
+        .push(&root, &push_target("origin", "main"), PushTags::None)
         .expect("push");
 
     let received: Vec<Event> = events.try_iter().collect();
@@ -564,7 +564,7 @@ fn a_detached_head_has_no_branch_to_push() {
         Err(Failure::DetachedHeadNotPushed)
     );
     assert_eq!(
-        gikli.push(&root, &target("origin", "main"), PushTags::None),
+        gikli.push(&root, &push_target("origin", "main"), PushTags::None),
         Err(Failure::DetachedHeadNotPushed)
     );
 }
@@ -583,7 +583,7 @@ fn a_branch_without_commits_has_nothing_to_push() {
     };
     assert_eq!(gikli.push_plan(&root, None), Err(refused.clone()));
     assert_eq!(
-        gikli.push(&root, &target("origin", "main"), PushTags::None),
+        gikli.push(&root, &push_target("origin", "main"), PushTags::None),
         Err(refused)
     );
 }

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use gikli_core::{
-    ChangeSet, Changelist, Event, Gikli, IncomingOutgoing, LogRow, Project, Repository, Upstream,
+    ChangeSet, Changelist, Event, Gikli, IncomingOutgoing, LogRow, Notification, Project,
+    PushTarget, Repository, Upstream,
 };
 
 use crate::TestRepository;
@@ -72,6 +73,25 @@ pub fn paths_in(change_set: &ChangeSet, name: &str) -> Vec<String> {
 /// The subjects of the log's `rows`, in order.
 pub fn log_subjects(rows: &[LogRow]) -> Vec<&str> {
     rows.iter().map(|row| row.subject.as_str()).collect()
+}
+
+/// The one notification gikli raised. Panics if it raised none, or more than one.
+pub fn the_notification(gikli: &Gikli) -> Notification {
+    let notifications = gikli.notifications();
+    assert_eq!(
+        notifications.len(),
+        1,
+        "one notification: {notifications:?}"
+    );
+    notifications[0].clone()
+}
+
+/// The branch `branch` of the remote `remote`, as a push targets it.
+pub fn push_target(remote: &str, branch: &str) -> PushTarget {
+    PushTarget {
+        remote: remote.to_owned(),
+        branch: branch.to_owned(),
+    }
 }
 
 /// The upstream `name` of a branch, with `incoming` commits the branch does not have and
