@@ -2,28 +2,11 @@
 
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, opened};
 use gikli_core::{
     ChangeGrouping, ChangeNode, ChangeStatus, DiffContent, Difference, Failure, FileHistory,
-    FileRevision, Gikli, LineRange, LocalReadOnly, RefKind, RefLabel, Repository, TextDiff,
+    FileRevision, LineRange, LocalReadOnly, RefKind, RefLabel, TextDiff,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The full hash of `revision`, as git names it.
-fn hash_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", revision])
-        .trim_end()
-        .to_owned()
-}
 
 /// What a revision of the history says of the file: its commit's subject, the path the file has in
 /// it, the path it came from and how the commit changed it.
@@ -99,12 +82,12 @@ fn file_history_lists_the_revisions_of_the_file_newest_first_following_renames()
         hashes, by_git,
         "git follows the file through the same commits"
     );
-    assert_eq!(history.revisions[0].hash, hash_of(&repository, "HEAD"));
+    assert_eq!(history.revisions[0].hash, repository.commit_of("HEAD"));
     assert!(!history.more, "the history holds every revision");
 }
 
 /// The subjects of the revisions in `history`, newest first.
-fn subjects(history: &FileHistory) -> Vec<&str> {
+fn history_subjects(history: &FileHistory) -> Vec<&str> {
     history
         .revisions
         .iter()
@@ -156,10 +139,16 @@ fn file_history_reads_the_current_branch_or_the_branches_it_is_filtered_by() {
         .file_history(&root, "notes.txt", &[feature, main])
         .expect("read on both");
 
-    assert_eq!(subjects(&current), vec!["Notes on main", "Add notes"]);
-    assert_eq!(subjects(&on_feature), vec!["Notes on feature", "Add notes"]);
     assert_eq!(
-        subjects(&on_both),
+        history_subjects(&current),
+        vec!["Notes on main", "Add notes"]
+    );
+    assert_eq!(
+        history_subjects(&on_feature),
+        vec!["Notes on feature", "Add notes"]
+    );
+    assert_eq!(
+        history_subjects(&on_both),
         vec!["Notes on main", "Notes on feature", "Add notes"]
     );
     assert_eq!(
@@ -225,7 +214,7 @@ fn file_history_lists_at_most_the_row_limit_the_user_set_newest_first() {
     let history = gikli.file_history(&root, "notes.txt", &[]).expect("read");
 
     assert_eq!(settings.file_history_row_limit, 2);
-    assert_eq!(subjects(&history), vec!["three", "two"]);
+    assert_eq!(history_subjects(&history), vec!["three", "two"]);
     assert!(history.more, "the history says it left revisions out");
     assert_eq!(
         repository
@@ -273,7 +262,7 @@ fn a_revision_of_the_history_previews_what_it_changed_in_the_file() {
 
     assert_eq!(diff.repository, root);
     assert_eq!(diff.revision, extended.hash);
-    assert_eq!(diff.parent, Some(hash_of(&repository, "HEAD~1")));
+    assert_eq!(diff.parent, Some(repository.commit_of("HEAD~1")));
     assert_eq!(diff.path, PathBuf::from("notes.txt"));
     assert_eq!(diff.original_path, None);
     let text = text_of(&diff.content);
@@ -339,7 +328,7 @@ fn the_preview_of_the_revision_that_added_the_file_has_no_older_side() {
     repository.commit_all("Add notes");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let root_commit = hash_of(&repository, "HEAD");
+    let root_commit = repository.commit_of("HEAD");
 
     let diff = gikli
         .revision_file_diff(&root, &root_commit, "notes.txt")
@@ -542,7 +531,7 @@ fn get_a_file_version_of_the_revision_that_deleted_the_file_deletes_it() {
     repository.commit_all("Add notes again");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let deleted = hash_of(&repository, "HEAD~1");
+    let deleted = repository.commit_of("HEAD~1");
 
     gikli
         .get_file_version(&root, &deleted, "notes.txt", "notes.txt")
@@ -624,7 +613,7 @@ fn get_a_file_version_from_before_a_rename_converts_it_as_a_checkout_of_its_path
     repository.commit_all("Change docs");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let added = hash_of(&repository, "HEAD~2");
+    let added = repository.commit_of("HEAD~2");
 
     gikli
         .get_file_version(&root, &added, "notes.txt", "docs.txt")
@@ -655,8 +644,8 @@ fn get_a_file_version_of_the_revision_that_deleted_the_file_deletes_it_also_when
     repository.commit_all("Delete notes");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let added = hash_of(&repository, "HEAD~1");
-    let deleted = hash_of(&repository, "HEAD");
+    let added = repository.commit_of("HEAD~1");
+    let deleted = repository.commit_of("HEAD");
     gikli
         .get_file_version(&root, &added, "notes.txt", "notes.txt")
         .expect("get the version that has the file");
@@ -678,7 +667,7 @@ fn get_a_file_version_writes_nothing_outside_the_repository() {
     repository.commit_all("Add notes");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let head = hash_of(&repository, "HEAD");
+    let head = repository.commit_of("HEAD");
 
     let result = gikli.get_file_version(&root, &head, "notes.txt", "../outside.txt");
 

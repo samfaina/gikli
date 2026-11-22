@@ -4,19 +4,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened, paths};
 use gikli_core::{
     Change, ChangeSet, ChangeStatus, Event, Failure, Gikli, LongOperation, Repository,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository with one commit that holds `README.md` and ignores `*.log` and `build/`.
 fn committed_repository(sandbox: &Sandbox) -> TestRepository {
@@ -25,10 +16,6 @@ fn committed_repository(sandbox: &Sandbox) -> TestRepository {
     repository.write(".gitignore", "*.log\nbuild/\n");
     repository.commit_all("Initial commit");
     repository
-}
-
-fn paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|path| (*path).to_owned()).collect()
 }
 
 fn change(path: &str, status: ChangeStatus) -> Change {

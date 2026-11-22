@@ -1,20 +1,11 @@
 //! Operation in progress: a merge, rebase, revert or cherry-pick that is half done is always in
 //! view, with a way to continue or abort it, even when it was started outside gikli.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened};
 use gikli_core::{
     Failure, Gikli, Notification, NotificationAction, NotificationKind, NotificationOutcome,
     OperationAction, OperationInProgress, OperationKind, Repository,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository where `main` and `other` each changed the one line of `file.txt` differently since
 /// they parted, so combining them stops on a conflict.
@@ -76,17 +67,12 @@ fn parents_of_head(repository: &TestRepository) -> Vec<String> {
         .collect()
 }
 
-/// The commit `revision` names in `repository`.
-fn commit_of(repository: &TestRepository, revision: &str) -> String {
-    repository.git(&["rev-parse", revision]).trim().to_owned()
-}
-
 #[test]
 fn commit_merge_finishes_a_resolved_merge_with_the_message_git_prepared() {
     let sandbox = Sandbox::new();
     let work = diverged(&sandbox);
-    let ours = commit_of(&work, "main");
-    let theirs = commit_of(&work, "other");
+    let ours = work.commit_of("main");
+    let theirs = work.commit_of("other");
     assert!(!work.git_succeeds(&["merge", "--no-edit", "other"]));
     work.write("file.txt", "both\n");
     work.git(&["add", "file.txt"]);
@@ -110,7 +96,7 @@ fn commit_merge_finishes_a_resolved_merge_with_the_message_git_prepared() {
 fn aborting_a_merge_brings_back_head_and_the_files_as_they_were() {
     let sandbox = Sandbox::new();
     let work = diverged(&sandbox);
-    let ours = commit_of(&work, "main");
+    let ours = work.commit_of("main");
     assert!(!work.git_succeeds(&["merge", "--no-edit", "other"]));
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
@@ -120,7 +106,7 @@ fn aborting_a_merge_brings_back_head_and_the_files_as_they_were() {
         .expect("abort the merge");
 
     assert_eq!(operation, None);
-    assert_eq!(commit_of(&work, "HEAD"), ours);
+    assert_eq!(work.commit_of("HEAD"), ours);
     assert_eq!(work.status_by_git(), Vec::<String>::new());
 }
 
@@ -128,7 +114,7 @@ fn aborting_a_merge_brings_back_head_and_the_files_as_they_were() {
 fn an_operation_does_not_go_on_while_files_still_have_conflicts() {
     let sandbox = Sandbox::new();
     let work = diverged(&sandbox);
-    let ours = commit_of(&work, "main");
+    let ours = work.commit_of("main");
     assert!(!work.git_succeeds(&["merge", "--no-edit", "other"]));
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
@@ -136,7 +122,7 @@ fn an_operation_does_not_go_on_while_files_still_have_conflicts() {
     let result = gikli.take_operation_action(work.root(), &root, OperationAction::CommitMerge);
 
     assert_eq!(result, Err(Failure::ConflictsNotResolved));
-    assert_eq!(commit_of(&work, "HEAD"), ours);
+    assert_eq!(work.commit_of("HEAD"), ours);
     assert!(
         gikli
             .operation_in_progress(work.root(), &root)
@@ -192,15 +178,6 @@ fn diverged_twice(sandbox: &Sandbox) -> TestRepository {
     work
 }
 
-/// The subjects of the commits of `repository` from HEAD back, as git lists them.
-fn subjects(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["log", "--format=%s"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
 #[test]
 fn a_rebase_that_continues_and_stops_on_the_next_conflict_is_still_in_progress() {
     let sandbox = Sandbox::new();
@@ -219,7 +196,7 @@ fn a_rebase_that_continues_and_stops_on_the_next_conflict_is_still_in_progress()
         operation.map(|operation| operation.kind),
         Some(OperationKind::Rebase)
     );
-    assert_eq!(subjects(&work), vec!["Ours", "Theirs", "Base"]);
+    assert_eq!(work.subjects(), vec!["Ours", "Theirs", "Base"]);
 }
 
 #[test]
@@ -237,7 +214,7 @@ fn a_rebase_that_continues_to_its_end_moves_the_branch_and_is_over() {
         .expect("continue the rebase");
 
     assert_eq!(operation, None);
-    assert_eq!(subjects(&work), vec!["Ours", "Theirs", "Base"]);
+    assert_eq!(work.subjects(), vec!["Ours", "Theirs", "Base"]);
     assert_eq!(
         work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
         "main"
@@ -258,15 +235,15 @@ fn skipping_leaves_out_the_commit_the_rebase_stopped_on() {
         .expect("skip the commit");
 
     assert_eq!(operation, None);
-    assert_eq!(subjects(&work), vec!["Theirs", "Base"]);
-    assert_eq!(commit_of(&work, "main"), commit_of(&work, "other"));
+    assert_eq!(work.subjects(), vec!["Theirs", "Base"]);
+    assert_eq!(work.commit_of("main"), work.commit_of("other"));
 }
 
 #[test]
 fn aborting_a_rebase_brings_the_branch_back_to_where_it_was() {
     let sandbox = Sandbox::new();
     let work = diverged_twice(&sandbox);
-    let before = commit_of(&work, "main");
+    let before = work.commit_of("main");
     assert!(!work.git_succeeds(&["rebase", "other"]));
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
@@ -276,7 +253,7 @@ fn aborting_a_rebase_brings_the_branch_back_to_where_it_was() {
         .expect("abort the rebase");
 
     assert_eq!(operation, None);
-    assert_eq!(commit_of(&work, "main"), before);
+    assert_eq!(work.commit_of("main"), before);
     assert_eq!(
         work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
         "main"
@@ -346,7 +323,7 @@ fn a_stopped_rebase_raises_one_notification_that_offers_to_continue_or_abort() {
 fn abort_in_the_notification_aborts_the_rebase_and_the_notification_goes() {
     let sandbox = Sandbox::new();
     let work = diverged(&sandbox);
-    let before = commit_of(&work, "main");
+    let before = work.commit_of("main");
     assert!(!work.git_succeeds(&["rebase", "other"]));
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
@@ -360,7 +337,7 @@ fn abort_in_the_notification_aborts_the_rebase_and_the_notification_goes() {
         .expect("abort the rebase");
 
     assert_eq!(outcome, NotificationOutcome::HeadMoved(root.clone()));
-    assert_eq!(commit_of(&work, "main"), before);
+    assert_eq!(work.commit_of("main"), before);
     assert_eq!(rebase_notifications(&gikli, &root), vec![]);
 }
 
@@ -439,7 +416,7 @@ fn a_dismissed_notification_comes_back_for_the_next_rebase() {
 fn a_stopped_revert_offers_to_continue_skip_or_abort_and_can_be_aborted() {
     let sandbox = Sandbox::new();
     let work = diverged_twice(&sandbox);
-    let before = commit_of(&work, "HEAD");
+    let before = work.commit_of("HEAD");
     assert!(!work.git_succeeds(&["revert", "--no-edit", "HEAD~1"]));
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
@@ -463,7 +440,7 @@ fn a_stopped_revert_offers_to_continue_skip_or_abort_and_can_be_aborted() {
         .expect("abort the revert");
 
     assert_eq!(operation, None);
-    assert_eq!(commit_of(&work, "HEAD"), before);
+    assert_eq!(work.commit_of("HEAD"), before);
     assert_eq!(work.status_by_git(), Vec::<String>::new());
 }
 
@@ -543,7 +520,7 @@ fn continuing_a_cherry_pick_sequence_after_a_commit_in_its_middle_picks_the_rest
 
     assert_eq!(operation, None);
     assert_eq!(
-        subjects(&work),
+        work.subjects(),
         vec!["Three", "Two", "Theirs", "Ours", "Base"]
     );
 }
@@ -599,7 +576,7 @@ fn a_cherry_pick_stopped_on_a_commit_left_empty_can_skip_it_and_pick_the_rest() 
         .expect("skip the commit");
 
     assert_eq!(operation, None);
-    assert_eq!(subjects(&work), vec!["Three", "Two", "Ours", "Base"]);
+    assert_eq!(work.subjects(), vec!["Three", "Two", "Ours", "Base"]);
 }
 
 #[test]
@@ -618,7 +595,7 @@ fn continuing_a_resolved_revert_commits_it() {
 
     assert_eq!(operation, None);
     assert_eq!(
-        subjects(&work),
+        work.subjects(),
         vec!["Revert \"Ours\"", "Ours again", "Ours", "Base"]
     );
     assert_eq!(work.git(&["show", "HEAD:file.txt"]), "base again\n");
@@ -678,5 +655,5 @@ fn a_cherry_pick_that_continues_onto_a_commit_left_empty_is_still_in_progress() 
         operation.map(|operation| operation.kind),
         Some(OperationKind::CherryPick)
     );
-    assert_eq!(subjects(&work)[0], "Theirs");
+    assert_eq!(work.subjects()[0], "Theirs");
 }

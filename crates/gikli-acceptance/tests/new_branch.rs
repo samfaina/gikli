@@ -1,28 +1,10 @@
 //! New branch: a branch created from HEAD, the selected branch or a commit, and checked out when
 //! the user asks, with a name git takes as it is.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, opened};
 use gikli_core::{
-    CurrentBranch, Failure, Gikli, IncomingOutgoing, NewBranchBase, RefKind, RefLabel, Repository,
-    Upstream,
+    CurrentBranch, Failure, IncomingOutgoing, NewBranchBase, RefKind, RefLabel, Upstream,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The commit `revision` names in `repository`, as git resolves it.
-fn commit_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", &format!("{revision}^{{commit}}")])
-        .trim()
-        .to_owned()
-}
 
 fn on_branch(name: &str) -> CurrentBranch {
     CurrentBranch::Branch {
@@ -48,7 +30,7 @@ fn a_new_branch_from_head_stays_unchecked_out_unless_asked() {
         work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
         "main"
     );
-    assert_eq!(commit_of(&work, "feature/login"), commit_of(&work, "HEAD"));
+    assert_eq!(work.commit_of("feature/login"), work.commit_of("HEAD"));
 }
 
 /// The base goes by the whole reference, so a tag with the same name as the branch does not get in
@@ -84,8 +66,8 @@ fn a_new_branch_from_the_selected_branch_is_checked_out_when_asked() {
         "hotfix"
     );
     assert_eq!(
-        commit_of(&work, "hotfix"),
-        commit_of(&work, "refs/heads/release")
+        work.commit_of("hotfix"),
+        work.commit_of("refs/heads/release")
     );
 }
 
@@ -95,7 +77,7 @@ fn a_new_branch_from_a_commit_starts_at_that_commit() {
     let work = sandbox.repository("work");
     work.commit_at(1, "First");
     work.commit_at(2, "Second");
-    let first = commit_of(&work, "HEAD~1");
+    let first = work.commit_of("HEAD~1");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -115,7 +97,7 @@ fn a_new_branch_from_a_commit_starts_at_that_commit() {
         work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
         "from-first"
     );
-    assert_eq!(commit_of(&work, "from-first"), first);
+    assert_eq!(work.commit_of("from-first"), first);
 }
 
 #[test]
@@ -185,7 +167,7 @@ fn a_name_another_branch_has_is_taken() {
     work.commit_at(1, "First");
     work.git(&["branch", "taken"]);
     work.commit_at(2, "Second");
-    let taken = commit_of(&work, "taken");
+    let taken = work.commit_of("taken");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &work);
 
@@ -197,7 +179,7 @@ fn a_name_another_branch_has_is_taken() {
             })
         );
     }
-    assert_eq!(commit_of(&work, "taken"), taken);
+    assert_eq!(work.commit_of("taken"), taken);
     assert_eq!(
         work.git(&["symbolic-ref", "--short", "HEAD"]).trim(),
         "main"

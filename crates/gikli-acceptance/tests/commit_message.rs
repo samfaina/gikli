@@ -1,17 +1,8 @@
 //! What helps the user write a commit message, and what warns them before committing somewhere
 //! unexpected.
 
-use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it};
+use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, opened, paths};
 use gikli_core::{ChangeSet, CommitWarning, Gikli, MoveTarget, Repository};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository with one commit that holds `a.txt` and `b.txt`.
 fn committed_repository(sandbox: &Sandbox) -> TestRepository {
@@ -216,10 +207,6 @@ fn a_mailmap_does_not_hide_the_users_own_messages() {
         .expect("read messages");
 
     assert_eq!(messages, vec!["Initial commit"]);
-}
-
-fn paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|path| (*path).to_owned()).collect()
 }
 
 /// A repository where `a.txt` is a change in the Changelist Feature and `b.txt` one in Changes, the

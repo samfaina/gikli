@@ -2,19 +2,8 @@
 
 use std::path::Path;
 
-use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{
-    Change, Failure, Gikli, NotificationAction, NotificationKind, Repository, Rewrite,
-};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
+use gikli_acceptance::{Sandbox, TestRepository, opened, paths};
+use gikli_core::{Change, Failure, NotificationAction, NotificationKind, Rewrite};
 
 /// A repository with two commits: the first holds `a.txt` and `b.txt`, the last changes `a.txt`.
 fn repository_with_a_last_commit(sandbox: &Sandbox) -> TestRepository {
@@ -27,51 +16,8 @@ fn repository_with_a_last_commit(sandbox: &Sandbox) -> TestRepository {
     repository
 }
 
-/// Each Backup git holds, as `reference commit`.
-fn backups_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&[
-            "for-each-ref",
-            "--format=%(refname) %(objectname)",
-            "refs/gikli/backups/",
-        ])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The full hash of the commit `revision` names in `repository`, as git resolves it.
-fn commit_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", "--verify", revision])
-        .trim_end()
-        .to_owned()
-}
-
-fn paths(paths: &[&str]) -> Vec<String> {
-    paths.iter().map(|path| (*path).to_owned()).collect()
-}
-
 fn paths_of(changes: &[Change]) -> Vec<&Path> {
     changes.iter().map(|change| change.path.as_path()).collect()
-}
-
-/// The message of the last commit, as git stores it.
-fn last_message(repository: &TestRepository) -> String {
-    repository.git(&["log", "-1", "--format=%B"])
-}
-
-fn commit_count(repository: &TestRepository) -> String {
-    repository.git(&["rev-list", "--count", "HEAD"])
-}
-
-/// The paths the last commit touched, one `status path` entry each.
-fn last_commit_files(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["show", "--format=", "--name-status", "--no-renames", "HEAD"])
-        .lines()
-        .map(|line| line.replace('\t', " "))
-        .collect()
 }
 
 #[test]
@@ -94,9 +40,9 @@ fn a_selected_file_goes_into_the_last_commit_and_the_others_stay_changed() {
         )
         .expect("amend");
 
-    assert_eq!(commit_count(&repository), "2\n");
-    assert_eq!(last_message(&repository), "Change a and b\n\n");
-    assert_eq!(last_commit_files(&repository), vec!["M a.txt", "M b.txt"]);
+    assert_eq!(repository.commit_count(), "2\n");
+    assert_eq!(repository.last_message(), "Change a and b\n\n");
+    assert_eq!(repository.last_commit_files(), vec!["M a.txt", "M b.txt"]);
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a changed\n");
     assert_eq!(
         repository.status_by_git(),
@@ -168,8 +114,8 @@ fn the_root_commit_can_be_amended() {
         )
         .expect("amend");
 
-    assert_eq!(commit_count(&repository), "1\n");
-    assert_eq!(last_message(&repository), "The first commit\n\n");
+    assert_eq!(repository.commit_count(), "1\n");
+    assert_eq!(repository.last_message(), "The first commit\n\n");
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a fixed\n");
     assert_eq!(repository.git(&["show", "HEAD:new.txt"]), "new\n");
     assert_eq!(repository.status_by_git(), Vec::<String>::new());
@@ -209,8 +155,8 @@ fn an_empty_root_commit_takes_the_selected_changes() {
         )
         .expect("amend");
 
-    assert_eq!(commit_count(&repository), "1\n");
-    assert_eq!(last_message(&repository), "Start of the project\n\n");
+    assert_eq!(repository.commit_count(), "1\n");
+    assert_eq!(repository.last_message(), "Start of the project\n\n");
     assert_eq!(repository.git(&["show", "HEAD:a.txt"]), "a\n");
 }
 
@@ -336,7 +282,7 @@ fn a_selected_unversioned_file_goes_back_to_unversioned_when_the_amend_fails() {
 fn an_amend_saves_a_backup_of_the_commit_it_replaces_and_the_notification_offers_undo() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_last_commit(&sandbox);
-    let replaced = commit_of(&repository, "HEAD");
+    let replaced = repository.commit_of("HEAD");
     repository.write(
         "b.txt",
         "b changed
@@ -354,8 +300,8 @@ fn an_amend_saves_a_backup_of_the_commit_it_replaces_and_the_notification_offers
         )
         .expect("amend");
 
-    let amended = commit_of(&repository, "HEAD");
-    let backups = backups_by_git(&repository);
+    let amended = repository.commit_of("HEAD");
+    let backups = repository.backups_by_git();
     assert_eq!(backups.len(), 1, "one Backup: {backups:?}");
     assert!(
         backups[0].ends_with(&format!("/main {replaced}")),
@@ -389,7 +335,7 @@ fn an_amend_saves_a_backup_of_the_commit_it_replaces_and_the_notification_offers
 fn undo_of_an_amend_brings_back_the_commit_it_replaced_and_leaves_what_it_added_uncommitted() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_last_commit(&sandbox);
-    let replaced = commit_of(&repository, "HEAD");
+    let replaced = repository.commit_of("HEAD");
     repository.write(
         "b.txt",
         "b changed
@@ -411,9 +357,9 @@ fn undo_of_an_amend_brings_back_the_commit_it_replaced_and_leaves_what_it_added_
         .act_on_notification(notification.id, &NotificationAction::RestoreBackup)
         .expect("undo the amend");
 
-    assert_eq!(commit_of(&repository, "HEAD"), replaced);
+    assert_eq!(repository.commit_of("HEAD"), replaced);
     assert_eq!(
-        last_message(&repository),
+        repository.last_message(),
         "Change a
 
 "
@@ -442,7 +388,7 @@ fn each_amend_saves_a_backup_of_its_own() {
             .expect("amend");
     }
 
-    assert_eq!(backups_by_git(&repository).len(), 3);
+    assert_eq!(repository.backups_by_git().len(), 3);
     assert_eq!(gikli.notifications().len(), 3);
 }
 
@@ -462,7 +408,7 @@ fn an_amend_that_fails_leaves_no_backup() {
     let result = gikli.amend_last_commit(repository.root(), &root, &paths(&["b.txt"]), "Hooked");
 
     assert!(result.is_err(), "the hook stops the amend: {result:?}");
-    assert_eq!(backups_by_git(&repository), Vec::<String>::new());
+    assert_eq!(repository.backups_by_git(), Vec::<String>::new());
     assert_eq!(gikli.notifications(), vec![]);
 }
 
@@ -470,7 +416,7 @@ fn an_amend_that_fails_leaves_no_backup() {
 fn an_amend_in_detached_head_saves_a_backup_of_head_that_undo_brings_back() {
     let sandbox = Sandbox::new();
     let repository = repository_with_a_last_commit(&sandbox);
-    let replaced = commit_of(&repository, "HEAD");
+    let replaced = repository.commit_of("HEAD");
     repository.git(&["switch", "--quiet", "--detach", "HEAD"]);
     repository.write("b.txt", "b changed\n");
     let gikli = sandbox.gikli();
@@ -478,7 +424,7 @@ fn an_amend_in_detached_head_saves_a_backup_of_head_that_undo_brings_back() {
     gikli
         .amend_last_commit(repository.root(), &root, &paths(&["b.txt"]), "Detached")
         .expect("amend");
-    let backups = backups_by_git(&repository);
+    let backups = repository.backups_by_git();
     assert_eq!(backups.len(), 1, "one Backup: {backups:?}");
     assert!(backups[0].ends_with(&format!("/HEAD {replaced}")));
     let notification = gikli.notifications()[0].clone();
@@ -487,7 +433,7 @@ fn an_amend_in_detached_head_saves_a_backup_of_head_that_undo_brings_back() {
         .act_on_notification(notification.id, &NotificationAction::RestoreBackup)
         .expect("undo the amend");
 
-    assert_eq!(commit_of(&repository, "HEAD"), replaced);
-    assert_eq!(commit_of(&repository, "main"), replaced);
+    assert_eq!(repository.commit_of("HEAD"), replaced);
+    assert_eq!(repository.commit_of("main"), replaced);
     assert!(!repository.git_succeeds(&["symbolic-ref", "--quiet", "HEAD"]));
 }

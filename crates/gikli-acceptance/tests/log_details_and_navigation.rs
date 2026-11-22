@@ -1,28 +1,13 @@
 //! The log's details and navigation: the user finds a commit, sees what it did and where it lives,
 //! and acts on it from the log.
 
-use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository, minute_as_seconds};
+use gikli_acceptance::{
+    ImportedHistory, Sandbox, TestRepository, log_subjects, minute_as_seconds, opened,
+};
 use gikli_core::{
     ChangeGrouping, ChangeNode, Failure, Gikli, LOG_SEARCH_BATCH, LogFilter, LogRow, RefKind,
     RefLabel, Repository, TextSearch,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The full hash of `revision`, as git names it.
-fn hash_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", revision])
-        .trim_end()
-        .to_owned()
-}
 
 #[test]
 fn commit_details_show_the_message_hash_author_with_email_and_date() {
@@ -43,14 +28,14 @@ fn commit_details_show_the_message_hash_author_with_email_and_date() {
     );
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let hash = hash_of(&repository, "HEAD");
+    let hash = repository.commit_of("HEAD");
 
     let details = gikli
         .commit_details(&root, &hash)
         .expect("read the details");
 
     assert_eq!(details.hash, hash);
-    assert_eq!(details.parents, vec![hash_of(&repository, "HEAD~1")]);
+    assert_eq!(details.parents, vec![repository.commit_of("HEAD~1")]);
     assert_eq!(details.author, "Ada Lovelace");
     assert_eq!(details.author_email, "ada@example.com");
     assert_eq!(details.authored_at, minute_as_seconds(2));
@@ -76,9 +61,9 @@ fn hashes_of_commits_in_a_message_link_to_those_commits() {
     let sandbox = Sandbox::new();
     let repository = sandbox.repository("app");
     repository.commit_at(1, "Base");
-    let base = hash_of(&repository, "HEAD");
+    let base = repository.commit_of("HEAD");
     repository.commit_at(2, "Middle");
-    let middle = hash_of(&repository, "HEAD");
+    let middle = repository.commit_of("HEAD");
     let short_base = &base[..10];
     let message = format!("Revert {middle}.\n\nIt broke {short_base}, unlike deadbeef0 or 12-34.");
     repository.commit_at(3, &message);
@@ -86,7 +71,7 @@ fn hashes_of_commits_in_a_message_link_to_those_commits() {
     let root = opened(&gikli, &repository);
 
     let details = gikli
-        .commit_details(&root, &hash_of(&repository, "HEAD"))
+        .commit_details(&root, &repository.commit_of("HEAD"))
         .expect("read the details");
 
     let parts: Vec<(&str, Option<&str>)> = details
@@ -115,7 +100,7 @@ fn commit_details_list_every_branch_that_contains_the_commit() {
     repository.add_remote("origin", &remote);
     repository.commit_at(1, "Base");
     repository.commit_at(2, "Shared");
-    let shared = hash_of(&repository, "HEAD");
+    let shared = repository.commit_of("HEAD");
     repository.git(&["push", "--quiet", "origin", "main"]);
     repository.git(&["remote", "set-head", "origin", "main"]);
     repository.git(&["branch", "feature"]);
@@ -210,14 +195,14 @@ fn a_commits_changed_files_show_as_a_tree_or_a_list() {
     repository.commit_all("Change things");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let hash = hash_of(&repository, "HEAD");
+    let hash = repository.commit_of("HEAD");
 
     let changes = gikli
         .commit_changes(&root, &hash)
         .expect("read the changes");
 
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].parent, Some(hash_of(&repository, "HEAD~1")));
+    assert_eq!(changes[0].parent, Some(repository.commit_of("HEAD~1")));
     assert_eq!(
         shown(&changes[0].group.nodes),
         vec![
@@ -282,7 +267,7 @@ fn a_merge_commit_shows_its_changed_files_against_each_parent() {
         .expect("show a list");
 
     let changes = gikli
-        .commit_changes(&root, &hash_of(&repository, "HEAD"))
+        .commit_changes(&root, &repository.commit_of("HEAD"))
         .expect("read the changes");
 
     let per_parent: Vec<(Option<String>, Vec<String>)> = changes
@@ -293,11 +278,11 @@ fn a_merge_commit_shows_its_changed_files_against_each_parent() {
         per_parent,
         vec![
             (
-                Some(hash_of(&repository, "HEAD^1")),
+                Some(repository.commit_of("HEAD^1")),
                 vec!["Modified b.txt".to_owned()]
             ),
             (
-                Some(hash_of(&repository, "HEAD^2")),
+                Some(repository.commit_of("HEAD^2")),
                 vec!["Modified a.txt".to_owned()]
             ),
         ]
@@ -356,28 +341,25 @@ fn the_user_goes_to_a_hash_a_branch_or_a_tag() {
     repository.commit_at(3, "Main");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let head = hash_of(&repository, "HEAD");
+    let head = repository.commit_of("HEAD");
 
     assert_eq!(
         gikli.go_to(&root, "feature"),
-        Ok(hash_of(&repository, "feature"))
+        Ok(repository.commit_of("feature"))
     );
     assert_eq!(
         gikli.go_to(&root, "origin/main"),
-        Ok(hash_of(&repository, "origin/main"))
+        Ok(repository.commit_of("origin/main"))
     );
-    assert_eq!(
-        gikli.go_to(&root, "v1"),
-        Ok(hash_of(&repository, "v1^{commit}"))
-    );
+    assert_eq!(gikli.go_to(&root, "v1"), Ok(repository.commit_of("v1")));
     assert_eq!(gikli.go_to(&root, &head), Ok(head.clone()));
     assert_eq!(
         gikli.go_to(&root, &format!(" {} ", &head[..8])),
         Ok(head.clone())
     );
     assert_ne!(
-        hash_of(&repository, "v1"),
-        hash_of(&repository, "v1^{commit}"),
+        repository.git(&["rev-parse", "v1"]),
+        repository.git(&["rev-parse", "v1^{commit}"]),
         "git agrees the annotated tag is an object of its own"
     );
 }
@@ -412,10 +394,10 @@ fn a_sha256_repository_takes_its_64_character_hashes() {
     repository.git(&["init", "--quiet", "--object-format=sha256"]);
     repository.write("a.txt", "a\n");
     repository.commit_all("First");
-    repository.commit_at(2, &format!("After {}", hash_of(&repository, "HEAD")));
+    repository.commit_at(2, &format!("After {}", repository.commit_of("HEAD")));
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
-    let first = hash_of(&repository, "HEAD~1");
+    let first = repository.commit_of("HEAD~1");
     assert_eq!(first.len(), 64);
 
     assert_eq!(gikli.go_to(&root, &first), Ok(first.clone()));
@@ -493,11 +475,6 @@ fn going_to_a_branch_or_tag_suggests_the_names_that_match() {
             .any(|name| name == "refs/remotes/origin/HEAD"),
         "git has origin/HEAD, which only repeats origin/feature/Login"
     );
-}
-
-/// The subjects of `rows`, in order.
-fn subjects(rows: &[LogRow]) -> Vec<&str> {
-    rows.iter().map(|row| row.subject.as_str()).collect()
 }
 
 /// The hashes and parents of the commits plain git lists from `revisions`, in the log's order.
@@ -580,7 +557,7 @@ fn the_log_filtered_by_branch_shows_only_the_commits_of_those_branches() {
     let rows = filtered_rows(&gikli, &root, &filter, 2);
 
     assert_eq!(
-        subjects(&rows),
+        log_subjects(&rows),
         vec!["Published", "Feature two", "Feature one", "Base"]
     );
     assert_eq!(
@@ -753,7 +730,7 @@ fn going_to_a_commit_tells_a_match_by_the_rules_of_the_search() {
         ],
     );
     repository.commit_at(3, "Later");
-    let target = hash_of(&repository, "HEAD~1");
+    let target = repository.commit_of("HEAD~1");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
     let with = |text: &str, regex: bool, match_case: bool| TextSearch {
@@ -923,14 +900,14 @@ fn text_search_matches_the_message_the_author_or_the_hash() {
     );
     repository.commit_at(4, "Not this one");
     repository.commit_at(5, "Nor this");
-    let target = hash_of(&repository, "HEAD~1");
+    let target = repository.commit_of("HEAD~1");
     let gikli = sandbox.gikli();
     let root = opened(&gikli, &repository);
 
     let by_text = filtered_rows(&gikli, &root, &search("lex"), 1);
     let by_hash = filtered_rows(&gikli, &root, &search(&target[..9].to_uppercase()), 50);
 
-    assert_eq!(subjects(&by_text), vec!["Unrelated", "Fix the parser"]);
+    assert_eq!(log_subjects(&by_text), vec!["Unrelated", "Fix the parser"]);
     assert!(by_text.iter().all(|row| row.on_current_branch));
     assert!(
         by_text.iter().all(|row| row.graph.column == 0
@@ -938,7 +915,7 @@ fn text_search_matches_the_message_the_author_or_the_hash() {
             && row.graph.below.is_empty()),
         "a search shows the commits without their graph"
     );
-    assert_eq!(subjects(&by_hash), vec!["Not this one"]);
+    assert_eq!(log_subjects(&by_hash), vec!["Not this one"]);
     assert_eq!(
         repository.git(&["log", "--format=%s", "-i", "--grep=lex"]),
         "Fix the parser\n",
@@ -976,12 +953,12 @@ fn text_search_can_match_case_and_take_a_regular_expression() {
     let not_regex = filtered_rows(&gikli, &root, &with(r"issue \d+", false, false), 50);
 
     assert_eq!(
-        subjects(&any_case),
+        log_subjects(&any_case),
         vec!["Prefix things", "fix the build", "Fix issue 12"]
     );
-    assert_eq!(subjects(&same_case), vec!["Fix issue 12"]);
-    assert_eq!(subjects(&regex), vec!["fix the build", "Fix issue 12"]);
-    assert_eq!(subjects(&regex_same_case), vec!["Fix issue 12"]);
+    assert_eq!(log_subjects(&same_case), vec!["Fix issue 12"]);
+    assert_eq!(log_subjects(&regex), vec!["fix the build", "Fix issue 12"]);
+    assert_eq!(log_subjects(&regex_same_case), vec!["Fix issue 12"]);
     assert!(not_regex.is_empty());
     // `\b` is a GNU extension that the regular expressions of macOS lack, so git is asked the
     // same in plain POSIX.
@@ -1167,7 +1144,7 @@ fn a_search_keeps_to_the_branches_the_log_is_filtered_by() {
 
     let rows = filtered_rows(&gikli, &root, &filter, 50);
 
-    assert_eq!(subjects(&rows), vec!["Feature work", "Base work"]);
+    assert_eq!(log_subjects(&rows), vec!["Feature work", "Base work"]);
     assert_eq!(
         repository.git(&["log", "--format=%s", "--grep=work", "feature"]),
         "Feature work\nBase work\n"
@@ -1212,7 +1189,7 @@ fn a_search_that_finds_little_comes_in_short_pages_so_the_log_stays_responsive()
         "the first page went through no match"
     );
     assert!(first.next.is_some(), "the search goes on");
-    assert_eq!(subjects(&rows), vec!["Commit 1 on main"]);
+    assert_eq!(log_subjects(&rows), vec!["Commit 1 on main"]);
     assert_eq!(
         repository.git(&[
             "log",

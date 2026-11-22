@@ -1,19 +1,9 @@
 //! A shallow clone: the log shows where its history is cut, and gikli fetches the rest.
 
-use gikli_acceptance::{Sandbox, TestRepository, file_url, minute_as_seconds};
+use gikli_acceptance::{Sandbox, TestRepository, file_url, minute_as_seconds, opened};
 use gikli_core::{
-    Event, ExplainedMessage, Explanation, Failure, Gikli, LogRow, LongOperation, NextStep, RefKind,
-    Repository,
+    Event, ExplainedMessage, Explanation, Failure, LogRow, LongOperation, NextStep, RefKind,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A bare remote whose `main` holds the commits First, Second and Third, one a minute, and whose
 /// `side` branches off Second with On side.

@@ -1,0 +1,95 @@
+//! Shortcuts for the steps many tests take through gikli's application interface before they get
+//! to what they are about, and for reading what gikli answers.
+
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
+
+use gikli_core::{
+    ChangeSet, Changelist, Event, Gikli, IncomingOutgoing, LogRow, Project, Repository, Upstream,
+};
+
+use crate::{Sandbox, TestRepository};
+
+/// Opens the repository's folder as a Project and returns its Repository.
+pub fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
+    opened_project(gikli, repository).1
+}
+
+/// Opens the repository's folder as a Project and returns it with its Repository.
+pub fn opened_project(gikli: &Gikli, repository: &TestRepository) -> (Project, Repository) {
+    let project = gikli.open_project(repository.root()).expect("open project");
+    let root = project.repositories[0].clone();
+    (project, root)
+}
+
+/// Opens the repository's folder as a Project and reads the changes of its Repository.
+pub fn read_changes(gikli: &Gikli, repository: &TestRepository) -> ChangeSet {
+    gikli
+        .read_changes(&opened(gikli, repository))
+        .expect("read changes")
+}
+
+/// The Repositories the events received so far said an operation left with files in conflict.
+pub fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
+    events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::ConflictsLeft { repository } => Some(repository),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `paths`, relative to the Repository root, as the core names files in what it is asked to do.
+pub fn paths(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|path| (*path).to_owned()).collect()
+}
+
+/// `paths`, relative to the Repository root, as the core names files in what it reports.
+pub fn path_bufs(paths: &[&str]) -> Vec<PathBuf> {
+    paths.iter().map(PathBuf::from).collect()
+}
+
+/// The Changelist called `name` in `change_set`. Panics if there is none.
+pub fn changelist<'a>(change_set: &'a ChangeSet, name: &str) -> &'a Changelist {
+    change_set
+        .changelists
+        .iter()
+        .find(|list| list.name == name)
+        .expect("the Changelist exists")
+}
+
+/// The paths of the changes in the Changelist called `name`.
+pub fn paths_in(change_set: &ChangeSet, name: &str) -> Vec<String> {
+    changelist(change_set, name)
+        .group
+        .changes
+        .iter()
+        .map(|change| change.path.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The subjects of the log's `rows`, in order.
+pub fn log_subjects(rows: &[LogRow]) -> Vec<&str> {
+    rows.iter().map(|row| row.subject.as_str()).collect()
+}
+
+/// The upstream `name` of a branch, with `incoming` commits the branch does not have and
+/// `outgoing` ones it does not have.
+pub fn upstream(name: &str, incoming: usize, outgoing: usize) -> Option<Upstream> {
+    Some(Upstream {
+        name: name.to_owned(),
+        commits: Some(IncomingOutgoing { incoming, outgoing }),
+    })
+}
+
+/// Checks with plain git that the clone at `target` holds what `remote` holds: its HEAD is the
+/// commit of `remote`'s `main`.
+pub fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
+    assert_eq!(
+        sandbox
+            .existing_repository(target)
+            .git(&["rev-parse", "HEAD"]),
+        remote.git(&["rev-parse", "main"])
+    );
+}

@@ -6,10 +6,12 @@
 //! there from inside the run and again after it.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{HttpRemote, Sandbox, TestRepository, as_git_writes_it, file_url};
+use gikli_acceptance::{
+    HttpRemote, Sandbox, TestRepository, as_git_writes_it, assert_cloned, file_url,
+};
 use gikli_core::{Event, ExplainedMessage, Failure, Repository};
 
 const USERNAME: &str = "ada-lovelace-1815";
@@ -115,16 +117,6 @@ impl TraceWatch {
             assert!(!after.contains(PASSWORD), "after the run: {after}");
         }
     }
-}
-
-/// Checks with plain git that `target` holds what `remote` holds.
-fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
-    assert_eq!(
-        sandbox
-            .existing_repository(target)
-            .git(&["rev-parse", "HEAD"]),
-        remote.git(&["rev-parse", "main"])
-    );
 }
 
 /// The name of the hook `result` says failed, and what it wrote.

@@ -3,20 +3,11 @@
 
 use std::path::PathBuf;
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, conflicts_left, opened};
 use gikli_core::{
-    ConflictSide, ConflictedFile, Event, Failure, Gikli, Notification, NotificationAction,
+    ConflictSide, ConflictedFile, Failure, Gikli, Notification, NotificationAction,
     NotificationKind, NotificationOutcome, OperationAction, Repository, SideChange,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository where `main` and `other` each changed the one line of `file.txt` differently since
 /// they parted, so combining them stops on a conflict.
@@ -372,17 +363,6 @@ fn diverged_twice(sandbox: &Sandbox) -> TestRepository {
     work.write("file.txt", "ours again\n");
     work.commit_all("Ours again");
     work
-}
-
-/// The Repositories the events received so far said an operation left in conflict.
-fn conflicts_left(events: &std::sync::mpsc::Receiver<Event>) -> Vec<Repository> {
-    events
-        .try_iter()
-        .filter_map(|event| match event {
-            Event::ConflictsLeft { repository } => Some(repository),
-            _ => None,
-        })
-        .collect()
 }
 
 #[test]

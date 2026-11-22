@@ -7,7 +7,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use gikli_acceptance::{
-    Sandbox, TestRepository, WslRepository, as_git_writes_it, askpass, speaking,
+    Sandbox, TestRepository, WslRepository, as_git_writes_it, askpass, assert_cloned, speaking,
 };
 use gikli_core::{
     Event, ExplainedMessage, Explanation, Failure, Gikli, NextStep, Prompt, PromptKind, Repository,
@@ -51,15 +51,6 @@ fn credential_helper(sandbox: &Sandbox, on_get: &str) -> PathBuf {
 
 fn knows_the_credentials() -> String {
     format!("echo username={USERNAME}; echo password={PASSWORD}")
-}
-
-fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
-    assert_eq!(
-        sandbox
-            .existing_repository(target)
-            .git(&["rev-parse", "HEAD"]),
-        remote.git(&["rev-parse", "main"])
-    );
 }
 
 #[test]

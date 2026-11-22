@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use gikli_acceptance::{Sandbox, TestRepository, askpass, fake_git, file_url};
+use gikli_acceptance::{Sandbox, TestRepository, askpass, assert_cloned, fake_git, file_url};
 use gikli_core::{
     Event, ExplainedMessage, Explanation, Failure, Gikli, LongOperation, NextStep,
     OperationLogEntry, Progress, PromptKind,
@@ -68,16 +68,6 @@ fn logged_run(gikli: &Gikli, argument: &str) -> OperationLogEntry {
         .into_iter()
         .find(|entry| entry.args.iter().any(|arg| arg == argument))
         .expect("the command is logged")
-}
-
-/// Checks with plain git that `target` holds what `remote` holds.
-fn assert_cloned(sandbox: &Sandbox, remote: &TestRepository, target: &Path) {
-    assert_eq!(
-        sandbox
-            .existing_repository(target)
-            .git(&["rev-parse", "HEAD"]),
-        remote.git(&["rev-parse", "main"])
-    );
 }
 
 /// Checks with plain git that the clone in `target` has `url` as its remote.

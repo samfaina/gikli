@@ -3,19 +3,8 @@
 
 use std::fs;
 
-use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, file_url};
-use gikli_core::{
-    ExplainedMessage, Explanation, Failure, Gikli, NextStep, RefKind, RefLabel, Repository,
-};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
+use gikli_acceptance::{Sandbox, TestRepository, as_git_writes_it, file_url, opened};
+use gikli_core::{ExplainedMessage, Explanation, Failure, NextStep, RefKind, RefLabel};
 
 /// A working repository with one commit and the remote `origin`, a bare remote it pushed to.
 fn work_with_origin(sandbox: &Sandbox) -> (TestRepository, TestRepository) {

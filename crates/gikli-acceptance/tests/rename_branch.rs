@@ -1,16 +1,7 @@
 //! Rename: a local branch takes a new name, and can let go of its upstream on the way.
 
-use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{CurrentBranch, Failure, Gikli, Repository};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
+use gikli_acceptance::{Sandbox, TestRepository, opened};
+use gikli_core::{CurrentBranch, Failure};
 
 /// The local branches of `repository`, as git lists them.
 fn branches_by_git(repository: &TestRepository) -> Vec<String> {
@@ -19,17 +10,6 @@ fn branches_by_git(repository: &TestRepository) -> Vec<String> {
         .lines()
         .map(str::to_owned)
         .collect()
-}
-
-/// The upstream of `branch` in `repository`, as git names it, if it has one.
-fn upstream_by_git(repository: &TestRepository, branch: &str) -> Option<String> {
-    let upstream = repository.git(&[
-        "for-each-ref",
-        "--format=%(upstream:short)",
-        &format!("refs/heads/{branch}"),
-    ]);
-    let upstream = upstream.trim();
-    (!upstream.is_empty()).then(|| upstream.to_owned())
 }
 
 #[test]
@@ -87,7 +67,7 @@ fn renaming_the_current_branch_moves_head_along_and_keeps_its_upstream() {
     );
     assert_eq!(branches_by_git(&work), vec!["trunk"]);
     assert_eq!(
-        upstream_by_git(&work, "trunk").as_deref(),
+        work.upstream_by_git("trunk").as_deref(),
         Some("origin/main")
     );
 }
@@ -110,7 +90,7 @@ fn a_renamed_branch_can_let_go_of_its_upstream() {
             upstream: None
         }
     );
-    assert_eq!(upstream_by_git(&work, "mine"), None);
+    assert_eq!(work.upstream_by_git("mine"), None);
 }
 
 #[test]
@@ -188,5 +168,5 @@ fn keeping_the_name_lets_go_of_the_upstream_alone() {
         .expect("unset the upstream");
 
     assert_eq!(branches_by_git(&work), vec!["main"]);
-    assert_eq!(upstream_by_git(&work, "main"), None);
+    assert_eq!(work.upstream_by_git("main"), None);
 }

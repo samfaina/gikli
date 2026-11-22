@@ -1,28 +1,9 @@
 //! Saved local changes: an operation that needs a clean working tree puts the user's changes aside
 //! in a stash and restores them afterwards, in their original Changelists.
 
-use gikli_acceptance::{Sandbox, TestRepository};
-use std::sync::mpsc::Receiver;
+use gikli_acceptance::{Sandbox, TestRepository, conflicts_left, opened, paths_in};
 
-use gikli_core::{ChangeSet, Event, Failure, Gikli, MoveTarget, Repository, StashUnavailable};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The stashes of `repository` as plain git lists them, newest first: the subject of each.
-fn stashes_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["stash", "list", "--format=%gs"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
+use gikli_core::{Failure, Gikli, MoveTarget, Repository, StashUnavailable};
 
 /// A repository whose one commit holds `notes.txt` and `todo.txt`, opened as a Project.
 fn with_two_files(sandbox: &Sandbox, gikli: &Gikli) -> (TestRepository, Repository) {
@@ -44,7 +25,7 @@ fn saving_puts_the_changes_aside_in_a_stash_and_restoring_brings_them_back() {
     let saved = gikli.save_local_changes(&root).expect("save local changes");
 
     assert_eq!(work.status_by_git(), Vec::<String>::new());
-    assert_eq!(stashes_by_git(&work).len(), 1);
+    assert_eq!(work.stashes_by_git().len(), 1);
 
     let restored = gikli
         .restore_local_changes(work.root(), &saved)
@@ -56,21 +37,7 @@ fn saving_puts_the_changes_aside_in_a_stash_and_restoring_brings_them_back() {
         std::fs::read_to_string(work.root().join("notes.txt")).expect("read notes"),
         "one\ntwo\nthree\n"
     );
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
-}
-
-/// The paths of the changes in the Changelist called `name`.
-fn paths_in(change_set: &ChangeSet, name: &str) -> Vec<String> {
-    change_set
-        .changelists
-        .iter()
-        .find(|list| list.name == name)
-        .expect("the Changelist exists")
-        .group
-        .changes
-        .iter()
-        .map(|change| change.path.to_string_lossy().into_owned())
-        .collect()
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 /// Moves the change at `path` to a new Changelist called Feature, which does not become active.
@@ -155,7 +122,7 @@ fn when_nothing_was_saved_nothing_is_restored() {
 
     assert!(!restored.conflicts_left);
     assert_eq!(work.status_by_git(), Vec::<String>::new());
-    assert_eq!(stashes_by_git(&work), vec!["On main: The user's own"]);
+    assert_eq!(work.stashes_by_git(), vec!["On main: The user's own"]);
 }
 
 #[test]
@@ -169,7 +136,7 @@ fn files_git_does_not_track_are_not_saved() {
 
     assert_eq!(saved.stash, None);
     assert_eq!(work.status_by_git(), vec!["?? new.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -187,18 +154,7 @@ fn only_what_this_operation_saved_is_restored() {
         .expect("restore local changes");
 
     assert_eq!(work.status_by_git(), vec![" M notes.txt"]);
-    assert_eq!(stashes_by_git(&work), vec!["On main: Made meanwhile"]);
-}
-
-/// The Repositories the events received so far said an operation left in conflict.
-fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
-    events
-        .try_iter()
-        .filter_map(|event| match event {
-            Event::ConflictsLeft { repository } => Some(repository),
-            _ => None,
-        })
-        .collect()
+    assert_eq!(work.stashes_by_git(), vec!["On main: Made meanwhile"]);
 }
 
 #[test]
@@ -221,7 +177,7 @@ fn a_restore_that_conflicts_keeps_the_saved_changes_and_opens_conflict_resolutio
     assert!(restored.conflicts_left);
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
     assert_eq!(
-        stashes_by_git(&work),
+        work.stashes_by_git(),
         vec!["On main: Local changes saved by gikli"]
     );
     let changes = gikli.read_changes(&root).expect("read changes");

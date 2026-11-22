@@ -2,23 +2,11 @@
 //! A merge that stops on a conflict leads to the conflicts dialog, and one that local changes block
 //! says which, for the user to save them, merge and restore them through Saved local changes.
 
-use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
-
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, conflicts_left, opened, path_bufs, paths_in};
 use gikli_core::{
-    ChangeSet, ConflictSide, Event, Failure, Gikli, MoveTarget, OperationAction, OperationKind,
-    RefKind, RefLabel, Repository,
+    ConflictSide, Failure, Gikli, MoveTarget, OperationAction, OperationKind, RefKind, RefLabel,
+    Repository,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A repository whose `main` holds `notes.txt` and `todo.txt`, and whose branch `other` changes
 /// `notes.txt` and adds `plan.txt` while `main` changes `todo.txt`, opened as a Project on `main`.
@@ -46,11 +34,6 @@ fn local(name: &str) -> RefLabel {
     }
 }
 
-/// What the file at `path` of `repository` holds on disk.
-fn read(repository: &TestRepository, path: &str) -> String {
-    std::fs::read_to_string(repository.root().join(path)).expect("read the file")
-}
-
 #[test]
 fn merge_into_current_merges_the_selected_branch_with_the_message_git_writes() {
     let sandbox = Sandbox::new();
@@ -71,20 +54,9 @@ fn merge_into_current_merges_the_selected_branch_with_the_message_git_writes() {
         work.git(&["rev-parse", "other"]),
         "the merge commit has other as its second parent"
     );
-    assert_eq!(read(&work, "notes.txt"), "zero\none\ntwo\n");
-    assert_eq!(read(&work, "todo.txt"), "first\nsecond\n");
+    assert_eq!(work.read("notes.txt"), "zero\none\ntwo\n");
+    assert_eq!(work.read("todo.txt"), "first\nsecond\n");
     assert!(work.status_by_git().is_empty());
-}
-
-/// The Repositories the events received so far said an operation left in conflict.
-fn conflicts_left(events: &Receiver<Event>) -> Vec<Repository> {
-    events
-        .try_iter()
-        .filter_map(|event| match event {
-            Event::ConflictsLeft { repository } => Some(repository),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The paths of the files in conflict in `repository` of the Project at `project`, as the
@@ -119,11 +91,6 @@ fn a_merge_that_stops_on_a_conflict_leads_to_the_conflicts_dialog() {
     assert_eq!(conflicted(&gikli, &work, &root), vec!["notes.txt"]);
 }
 
-/// `paths`, relative to the Repository root, as the core names files.
-fn paths(paths: &[&str]) -> Vec<PathBuf> {
-    paths.iter().map(PathBuf::from).collect()
-}
-
 #[test]
 fn a_merge_local_changes_block_lists_the_files_that_block_it_with_nothing_changed() {
     let sandbox = Sandbox::new();
@@ -141,36 +108,13 @@ fn a_merge_local_changes_block_lists_the_files_that_block_it_with_nothing_change
         failure,
         Failure::MergeBlocked {
             folder: root.root.clone(),
-            local_changes: paths(&["notes.txt"]),
+            local_changes: path_bufs(&["notes.txt"]),
             untracked_files: Vec::new(),
         },
         "other does not change todo.txt, so it does not block"
     );
     assert_eq!(work.git(&["rev-parse", "HEAD"]), head);
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M todo.txt"]);
-}
-
-/// The stashes of `repository`, as plain git lists them.
-fn stashes_by_git(repository: &TestRepository) -> Vec<String> {
-    repository
-        .git(&["stash", "list", "--format=%gs"])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The paths of the changes in the Changelist called `name`.
-fn paths_in(change_set: &ChangeSet, name: &str) -> Vec<String> {
-    change_set
-        .changelists
-        .iter()
-        .find(|list| list.name == name)
-        .expect("the Changelist exists")
-        .group
-        .changes
-        .iter()
-        .map(|change| change.path.to_string_lossy().into_owned())
-        .collect()
 }
 
 /// Changes `notes.txt`, which `other` changes too, and `todo.txt`, in the Changelist `Feature`.
@@ -205,10 +149,10 @@ fn saving_merging_and_restoring_brings_the_local_changes_back_in_their_changelis
         work.git(&["log", "-1", "--format=%s"]).trim(),
         "Merge branch 'other'"
     );
-    assert_eq!(read(&work, "notes.txt"), "zero\none\ntwo\nthree\n");
-    assert_eq!(read(&work, "todo.txt"), "first\nsecond\nthird\n");
+    assert_eq!(work.read("notes.txt"), "zero\none\ntwo\nthree\n");
+    assert_eq!(work.read("todo.txt"), "first\nsecond\nthird\n");
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M todo.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
     let changes = gikli.read_changes(&root).expect("read changes");
     assert_eq!(paths_in(&changes, "Feature"), vec!["todo.txt"]);
     assert_eq!(paths_in(&changes, "Changes"), vec!["notes.txt"]);
@@ -240,11 +184,11 @@ fn a_merge_over_local_changes_that_stops_on_a_conflict_keeps_them_saved() {
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
     assert_eq!(conflicted(&gikli, &work, &root), vec!["notes.txt"]);
     assert_eq!(
-        stashes_by_git(&work),
+        work.stashes_by_git(),
         vec!["On main: Local changes saved by gikli"]
     );
     assert_eq!(
-        read(&work, "todo.txt"),
+        work.read("todo.txt"),
         "first\nsecond\n",
         "todo.txt waits saved"
     );
@@ -268,10 +212,10 @@ fn aborting_the_merge_restores_the_local_changes_in_their_changelists() {
 
     assert_eq!(in_progress, None);
     assert_eq!(work.git(&["rev-parse", "HEAD"]), head);
-    assert_eq!(read(&work, "notes.txt"), "one\ntwo\nthree\n");
-    assert_eq!(read(&work, "todo.txt"), "first\nsecond\nthird\n");
+    assert_eq!(work.read("notes.txt"), "one\ntwo\nthree\n");
+    assert_eq!(work.read("todo.txt"), "first\nsecond\nthird\n");
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M todo.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
     let changes = gikli.read_changes(&root).expect("read changes");
     assert_eq!(paths_in(&changes, "Feature"), vec!["todo.txt"]);
     assert_eq!(paths_in(&changes, "Changes"), vec!["notes.txt"]);
@@ -305,10 +249,10 @@ fn committing_the_merge_once_resolved_restores_the_local_changes_in_their_change
         work.git(&["log", "-1", "--format=%s"]).trim(),
         "Merge branch 'other'"
     );
-    assert_eq!(read(&work, "notes.txt"), "one\ntwo\nthree\n");
-    assert_eq!(read(&work, "todo.txt"), "first\nsecond\nthird\n");
+    assert_eq!(work.read("notes.txt"), "one\ntwo\nthree\n");
+    assert_eq!(work.read("todo.txt"), "first\nsecond\nthird\n");
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M todo.txt"]);
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
     let changes = gikli.read_changes(&root).expect("read changes");
     assert_eq!(paths_in(&changes, "Feature"), vec!["todo.txt"]);
 }
@@ -324,8 +268,8 @@ fn a_merge_untracked_files_block_lists_them_and_still_does_after_saving_the_chan
     work.write("scratch.txt", "scratch\n");
     let blocked = |local_changes: &[&str]| Failure::MergeBlocked {
         folder: root.root.clone(),
-        local_changes: paths(local_changes),
-        untracked_files: paths(&["plan.txt"]),
+        local_changes: path_bufs(local_changes),
+        untracked_files: path_bufs(&["plan.txt"]),
     };
 
     assert_eq!(
@@ -340,13 +284,13 @@ fn a_merge_untracked_files_block_lists_them_and_still_does_after_saving_the_chan
     );
 
     assert_eq!(work.git(&["rev-parse", "HEAD"]), head);
-    assert_eq!(read(&work, "notes.txt"), "one\ntwo\nthree\n");
-    assert_eq!(read(&work, "plan.txt"), "my own plan\n");
+    assert_eq!(work.read("notes.txt"), "one\ntwo\nthree\n");
+    assert_eq!(work.read("plan.txt"), "my own plan\n");
     assert_eq!(
         work.status_by_git(),
         vec![" M notes.txt", "?? plan.txt", "?? scratch.txt"]
     );
-    assert_eq!(stashes_by_git(&work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
 }
 
 #[test]
@@ -365,7 +309,7 @@ fn a_staged_change_blocks_a_merge_that_combines_both_sides() {
         failure,
         Failure::MergeBlocked {
             folder: root.root.clone(),
-            local_changes: paths(&["todo.txt"]),
+            local_changes: path_bufs(&["todo.txt"]),
             untracked_files: Vec::new(),
         }
     );
@@ -386,7 +330,7 @@ fn a_merge_that_fast_forwards_takes_along_the_changes_the_branch_does_not_touch(
         gikli.merge_into_current(work.root(), &root, &local("other")),
         Err(Failure::MergeBlocked {
             folder: root.root.clone(),
-            local_changes: paths(&["notes.txt"]),
+            local_changes: path_bufs(&["notes.txt"]),
             untracked_files: Vec::new(),
         }),
         "a fast-forward checks other out, which the staged todo.txt does not block"
@@ -441,7 +385,7 @@ fn merge_into_current_merges_a_remote_branch() {
         work.git(&["log", "-1", "--format=%s"]).trim(),
         "Merge remote-tracking branch 'origin/other'"
     );
-    assert_eq!(read(&work, "plan.txt"), "plan\n");
+    assert_eq!(work.read("plan.txt"), "plan\n");
 }
 
 #[test]
@@ -461,10 +405,10 @@ fn a_branch_that_no_longer_exists_says_so() {
 /// Asserts that the local changes of `change_notes_and_todo_in_feature` are back in `work`, onto
 /// HEAD as it is, in their Changelists, with no stash left.
 fn assert_local_changes_back(gikli: &Gikli, work: &TestRepository, root: &Repository) {
-    assert_eq!(read(work, "notes.txt"), "one\ntwo\nthree\n");
-    assert_eq!(read(work, "todo.txt"), "first\nsecond\nthird\n");
+    assert_eq!(work.read("notes.txt"), "one\ntwo\nthree\n");
+    assert_eq!(work.read("todo.txt"), "first\nsecond\nthird\n");
     assert_eq!(work.status_by_git(), vec![" M notes.txt", " M todo.txt"]);
-    assert_eq!(stashes_by_git(work), Vec::<String>::new());
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
     let changes = gikli.read_changes(root).expect("read changes");
     assert_eq!(paths_in(&changes, "Feature"), vec!["todo.txt"]);
 }
@@ -489,7 +433,7 @@ fn a_merge_a_hook_stops_keeps_the_local_changes_saved_until_it_is_aborted() {
         "git leaves the merge to commit"
     );
     assert_eq!(
-        stashes_by_git(&work),
+        work.stashes_by_git(),
         vec!["On main: Local changes saved by gikli"],
         "the changes do not come back onto the merge half done"
     );
@@ -568,7 +512,7 @@ fn with_merge_ff_false_a_staged_change_blocks_a_merge_that_could_fast_forward() 
         gikli.merge_into_current(work.root(), &root, &local("other")),
         Err(Failure::MergeBlocked {
             folder: root.root.clone(),
-            local_changes: paths(&["todo.txt"]),
+            local_changes: path_bufs(&["todo.txt"]),
             untracked_files: Vec::new(),
         })
     );
@@ -622,7 +566,7 @@ fn local_changes_that_conflict_with_the_merge_committed_stay_saved_and_open_conf
     assert_eq!(conflicts_left(&events), vec![root.clone()]);
     assert_eq!(conflicted(&gikli, &work, &root), vec!["notes.txt"]);
     assert_eq!(
-        stashes_by_git(&work),
+        work.stashes_by_git(),
         vec!["On main: Local changes saved by gikli"],
         "the stash stays until the user drops it"
     );

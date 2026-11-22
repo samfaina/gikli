@@ -1,20 +1,11 @@
 //! Push: what the push dialog shows will be published, and publishing it, creating the target
 //! branch when needed.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened};
 use gikli_core::{
-    Event, ExplainedMessage, Explanation, Failure, Gikli, ListedCommit, LongOperation, NextStep,
-    PushTags, PushTarget, Repository,
+    Event, ExplainedMessage, Explanation, Failure, ListedCommit, LongOperation, NextStep, PushTags,
+    PushTarget,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A bare remote whose `main` holds First, and a clone `mine` of it.
 fn remote_and_clone(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
@@ -35,7 +26,7 @@ fn target(remote: &str, branch: &str) -> PushTarget {
 }
 
 /// The subjects of `commits`, in their order.
-fn subjects(commits: &[ListedCommit]) -> Vec<&str> {
+fn listed_subjects(commits: &[ListedCommit]) -> Vec<&str> {
     commits
         .iter()
         .map(|commit| commit.subject.as_str())
@@ -71,7 +62,7 @@ fn the_push_dialog_targets_the_upstream_with_the_outgoing_commits() {
     assert_eq!(plan.remotes, ["origin"]);
     assert_eq!(plan.target, Some(target("origin", "main")));
     assert!(!plan.new_branch, "origin/main exists");
-    assert_eq!(subjects(&plan.commits), ["Third", "Second"]);
+    assert_eq!(listed_subjects(&plan.commits), ["Third", "Second"]);
     assert_eq!(
         hashes(&plan.commits),
         hashes_by_git(&mine, &["origin/main..main"]),
@@ -116,7 +107,7 @@ fn a_branch_without_an_upstream_goes_to_a_new_branch_of_the_same_name_with_its_o
     assert_eq!(plan.target, Some(target("origin", "feature")));
     assert!(plan.new_branch, "origin has no feature yet");
     assert_eq!(
-        subjects(&plan.commits),
+        listed_subjects(&plan.commits),
         ["On feature", "On main"],
         "every commit no branch of origin has"
     );
@@ -175,7 +166,7 @@ fn a_changed_target_shows_the_commits_it_lacks_and_the_push_goes_there_alone() {
         hashes_by_git(&mine, &["origin/release..main"]),
         "git lists the same commits"
     );
-    assert_eq!(subjects(&plan.commits), ["Third"]);
+    assert_eq!(listed_subjects(&plan.commits), ["Third"]);
 
     let rejected = gikli.push(&root, &target("origin", "release"), PushTags::None);
     assert_eq!(
@@ -200,7 +191,7 @@ fn a_target_created_with_another_name_keeps_the_upstream_the_branch_has() {
         .push_plan(&root, Some(&target("origin", "review/second")))
         .expect("plan the push");
     assert!(plan.new_branch, "origin has no review/second yet");
-    assert_eq!(subjects(&plan.commits), ["Second"]);
+    assert_eq!(listed_subjects(&plan.commits), ["Second"]);
     gikli
         .push(&root, &target("origin", "review/second"), PushTags::None)
         .expect("push");
@@ -438,7 +429,7 @@ fn defining_a_remote_adds_it_and_fetches_it_at_once() {
     assert_eq!(plan.remotes, ["upstream"]);
     assert_eq!(plan.target, Some(target("upstream", "main")));
     assert!(plan.new_branch, "the remote has no main");
-    assert_eq!(subjects(&plan.commits), ["Mine"]);
+    assert_eq!(listed_subjects(&plan.commits), ["Mine"]);
 }
 
 #[test]
@@ -617,7 +608,7 @@ fn a_new_target_on_a_remote_with_its_own_mapping_leaves_out_what_the_remote_hold
 
     assert!(plan.new_branch, "origin has no feature");
     assert_eq!(
-        subjects(&plan.commits),
+        listed_subjects(&plan.commits),
         ["On feature"],
         "First is on refs/remotes/mirror/main, where origin's branches go"
     );

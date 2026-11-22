@@ -1,25 +1,8 @@
 //! The log is quick to read: references are labeled, the current branch stands out, and gikli's
 //! own refs stay out of sight.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened};
 use gikli_core::{Gikli, LogRow, RefKind, Repository};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
-
-/// The full hash of `revision`, as git names it.
-fn hash_of(repository: &TestRepository, revision: &str) -> String {
-    repository
-        .git(&["rev-parse", revision])
-        .trim_end()
-        .to_owned()
-}
 
 /// Every row of the log of `root`, read in one page.
 fn rows_of(gikli: &Gikli, root: &Repository) -> Vec<LogRow> {
@@ -131,7 +114,7 @@ fn stashes_and_gikli_refs_label_no_commit() {
     repository.commit_all("Base");
     repository.write("a.txt", "a changed\n");
     repository.git(&["stash", "push", "--quiet", "--message", "Saved work"]);
-    let base = hash_of(&repository, "HEAD");
+    let base = repository.commit_of("HEAD");
     repository.git(&["update-ref", "refs/gikli/backups/one", &base]);
     repository.git(&["update-ref", "refs/gikli/other", &base]);
     let gikli = sandbox.gikli();
@@ -405,7 +388,7 @@ fn each_commit_leads_to_its_parents_and_children_with_the_child_on_its_line_firs
             ("Base", vec![], vec!["Main work", "Side work"]),
         ]
     );
-    let base = hash_of(&repository, "main~2");
+    let base = repository.commit_of("main~2");
     let by_git = repository.git(&["rev-list", "--children", "--date-order", "main"]);
     let mut children_by_git: Vec<&str> = by_git
         .lines()
@@ -438,7 +421,7 @@ fn a_commit_knows_its_children_on_pages_before_its_own() {
         .expect("read a page");
 
     assert_eq!(last.rows[0].subject, "Base");
-    assert_eq!(last.rows[0].children, vec![hash_of(&repository, "HEAD~1")]);
+    assert_eq!(last.rows[0].children, vec![repository.commit_of("HEAD~1")]);
     assert_eq!(
         repository.git(&["rev-parse", "HEAD~1^"]),
         format!("{}\n", last.rows[0].hash),
@@ -547,7 +530,7 @@ fn a_long_edge_is_cut_into_two_arrows_that_lead_to_each_other_and_frees_its_lane
             .all(|row| row.1 == 0 && row.2.len() <= 1 && row.3.len() == 1),
         "main keeps one lane to itself"
     );
-    assert_eq!(rows[0].parents, vec![hash_of(&repository, "main~40")]);
+    assert_eq!(rows[0].parents, vec![repository.commit_of("main~40")]);
     assert_git_lists(&repository, &rows);
 }
 
@@ -637,13 +620,13 @@ fn a_sha256_repository_shows_its_64_character_hashes() {
 
     let merge = row(&rows, "Merge");
     let base = row(&rows, "Base");
-    assert_eq!(merge.hash, hash_of(&repository, "HEAD"));
+    assert_eq!(merge.hash, repository.commit_of("HEAD"));
     assert_eq!(merge.hash.len(), 64);
     assert_eq!(
         merge.parents,
         vec![
-            hash_of(&repository, "HEAD^1"),
-            hash_of(&repository, "HEAD^2")
+            repository.commit_of("HEAD^1"),
+            repository.commit_of("HEAD^2")
         ]
     );
     assert_eq!(base.children.len(), 2);

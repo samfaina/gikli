@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use gikli_acceptance::{ImportedHistory, Sandbox, TestRepository, checks_budgets};
+use gikli_acceptance::{ImportedHistory, Sandbox, checks_budgets, opened};
 use gikli_core::{Gikli, LogPage, Repository};
 
 /// The commits of the generated history.
@@ -21,15 +21,6 @@ const LATER_PAGE_BUDGET: Duration = Duration::from_millis(200);
 const PAGE_SIZE: usize = 200;
 /// The later pages measured.
 const LATER_PAGES: usize = 25;
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// Reads a page of the log through the application interface, and how long it took to arrive.
 fn timed_read(

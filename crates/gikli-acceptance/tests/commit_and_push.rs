@@ -1,17 +1,8 @@
 //! Commit and push: the commit goes through, and then the push dialog opens, or the push runs at
 //! once when the settings suppress the dialog.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened};
 use gikli_core::{Failure, Gikli, PushAfterCommit, PushTarget, Repository};
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A bare remote whose `main` holds First, and a clone `mine` of it.
 fn remote_and_clone(sandbox: &Sandbox) -> (TestRepository, TestRepository) {

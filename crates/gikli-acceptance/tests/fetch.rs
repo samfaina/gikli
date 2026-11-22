@@ -1,20 +1,11 @@
 //! Fetch from the remotes, and how far each branch is from its upstream, which the status area
 //! shows for the current branch.
 
-use gikli_acceptance::{Sandbox, TestRepository};
+use gikli_acceptance::{Sandbox, TestRepository, opened, upstream};
 use gikli_core::{
-    CurrentBranch, Event, ExplainedMessage, Explanation, Failure, Gikli, IncomingOutgoing,
-    LocalBranch, LongOperation, NextStep, Progress, RefKind, RefLabel, Repository, Upstream,
+    CurrentBranch, Event, ExplainedMessage, Explanation, Failure, LocalBranch, LongOperation,
+    NextStep, Progress, RefKind, RefLabel, Upstream,
 };
-
-/// Opens the repository's folder as a Project and returns its Repository.
-fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
-    gikli
-        .open_project(repository.root())
-        .expect("open project")
-        .repositories[0]
-        .clone()
-}
 
 /// A bare remote whose `main` holds First, pushed from the returned `work`, where others commit.
 fn remote_with_work(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
@@ -24,15 +15,6 @@ fn remote_with_work(sandbox: &Sandbox) -> (TestRepository, TestRepository) {
     work.add_remote("origin", &remote);
     work.git(&["push", "--quiet", "--set-upstream", "origin", "main"]);
     (remote, work)
-}
-
-/// The upstream `name` of a branch, with `incoming` commits the branch does not have and
-/// `outgoing` ones it does not have.
-fn upstream(name: &str, incoming: usize, outgoing: usize) -> Option<Upstream> {
-    Some(Upstream {
-        name: name.to_owned(),
-        commits: Some(IncomingOutgoing { incoming, outgoing }),
-    })
 }
 
 /// The incoming and outgoing commits of `branch` against `upstream`, as plain git counts them.
