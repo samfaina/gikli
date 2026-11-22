@@ -363,8 +363,10 @@ pub enum Failure {
     NothingToCommit,
     /// The Repository has no commit yet, so there is nothing to amend.
     NothingToAmend,
-    /// `operation`, a merge or a cherry-pick stopped on a commit, is half done in the Repository,
-    /// and git does not amend the last commit in the middle of one. Nothing changed.
+    /// `operation`, a merge, a cherry-pick stopped on a commit, or a rebase that stopped on a merge,
+    /// is half done in the Repository, and git does not amend the last commit in the middle of one.
+    /// A rebase is refused only when it stopped on a merge: git amends during its other stops.
+    /// Nothing changed.
     AmendDuringOperation {
         operation: OperationKind,
     },
@@ -1974,10 +1976,10 @@ impl Gikli {
     /// Replaces the last commit of `repository` with one that also holds the changes at `paths`, as
     /// they are in the working tree, and has `message` as written, and returns the changes after
     /// that. It saves a Backup of the commit it replaces first, and raises a notification about the
-    /// Project at `project` that offers to undo the amend. In the middle of a merge or of a
-    /// cherry-pick stopped on a commit, which git does not amend in, it returns
-    /// [`Failure::AmendDuringOperation`] before reading the changes, and nothing changes. Everything
-    /// else works as in [`Self::commit_files`].
+    /// Project at `project` that offers to undo the amend. In the middle of a merge, of a
+    /// cherry-pick stopped on a commit, or of a rebase stopped on a merge, which git does not amend
+    /// in, it returns [`Failure::AmendDuringOperation`] before reading the changes, and nothing
+    /// changes. Everything else works as in [`Self::commit_files`].
     pub fn amend_last_commit(
         &self,
         project: &Path,
@@ -2004,9 +2006,10 @@ impl Gikli {
 
     /// Replaces the last commit of `repository` with one that also holds what is staged, and has
     /// `message` as written, and returns the changes after that. It saves a Backup and raises a
-    /// notification as [`Self::amend_last_commit`] does. In the middle of a merge or of a
-    /// cherry-pick stopped on a commit it returns [`Failure::AmendDuringOperation`], as that does,
-    /// even with nothing staged. Everything else works as in [`Self::commit_staged`].
+    /// notification as [`Self::amend_last_commit`] does. In the middle of a merge, of a cherry-pick
+    /// stopped on a commit, or of a rebase stopped on a merge it returns
+    /// [`Failure::AmendDuringOperation`], as that does, even with nothing staged. Everything else
+    /// works as in [`Self::commit_staged`].
     pub fn amend_with_staged(
         &self,
         project: &Path,

@@ -2259,6 +2259,10 @@ function describeFailure(failure: Failure): string {
     case "nothingToAmend":
       return t("failureNothingToAmend");
     case "amendDuringOperation":
+      // git amends during most of a rebase, so one is refused only when it stopped on a merge, and says so.
+      if (failure.operation === "rebase") {
+        return t("failureAmendDuringRebaseStoppedOnMerge");
+      }
       return t("failureAmendDuringOperation", { operation: describeOperationKind(failure.operation) });
     case "commitFailed":
       return t("failureCommitFailed", { folder: failure.folder });

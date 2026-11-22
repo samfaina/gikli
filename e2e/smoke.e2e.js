@@ -1007,6 +1007,16 @@ describe("gikli", () => {
     const commitOf = (revision) => git("rev-parse", revision).trim();
 
     /**
+     * Commits `name` holding `text` in the smoke test's repository, without a line end, which `core.autocrlf` would change when
+     * the app's git writes the file.
+     */
+    const commitFileHolding = (name, text, message) => {
+      fs.writeFileSync(inRepository(name), text);
+      git("add", "--", name);
+      commitStaged(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), message);
+    };
+
+    /**
      * Unstages what the cases before left staged, and returns its paths, for {@link stageAgain} to
      * stage once the case is over: git cherry-picks only onto an index that matches HEAD, and gikli
      * reverts only then, as aborting the revert would lose what is staged. The files stay on disk
@@ -1186,19 +1196,13 @@ describe("gikli", () => {
     it("asks before a commit from the panel leaves changes out of a merge in progress, and commits the merge once confirmed", async () => {
       const file = "merged.txt";
       const unticked = "left out of the merge.txt";
-      /** Commits `path` holding `text`, without a line end, which `core.autocrlf` would change when the app's git writes the file. */
-      const commitFile = (path, text, message) => {
-        fs.writeFileSync(inRepository(path), text);
-        git("add", "--", path);
-        commitStaged(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), message);
-      };
       const staged = await unstageAll();
       try {
         // On branches of their own, so main keeps its commits.
         git("switch", "--quiet", "--create", "smoke/merge-into");
-        commitFile(unticked, "before", "Before the merge");
+        commitFileHolding(unticked, "before", "Before the merge");
         git("switch", "--quiet", "--create", "smoke/merge-from");
-        commitFile(file, "merged", "On the branch the merge brings in");
+        commitFileHolding(file, "merged", "On the branch the merge brings in");
         const brought = commitOf("HEAD");
         git("switch", "--quiet", "smoke/merge-into");
         const base = commitOf("HEAD");
@@ -1315,6 +1319,73 @@ describe("gikli", () => {
         fs.rmSync(inRepository(file), { force: true });
         await endOperationAndReturnToMain("smoke/merge-into", "smoke/merge-from");
         fs.rmSync(inRepository(unversioned), { force: true });
+        await stageAgain(staged);
+      }
+    });
+
+    it("says why an amend from the panel is refused during a rebase stopped on a merge", async () => {
+      const file = "rebased merge.txt";
+      /** Whether git keeps a rebase in `rebase-merge` in the smoke test's repository, as it does for one with `--rebase-merges`. */
+      const rebasing = () => fs.existsSync(path.resolve(process.env.GIKLI_E2E_REPOSITORY, git("rev-parse", "--git-path", "rebase-merge").trim()));
+      const amend = $('[data-testid="commit-amend"]');
+      const staged = await unstageAll();
+      try {
+        // On branches of their own, so main keeps its commits: a merge resolved by hand, and a branch to rebase it onto.
+        git("switch", "--quiet", "--create", "smoke/rebase-main");
+        commitFileHolding(file, "base", "Before the rebased merge");
+        git("switch", "--quiet", "--create", "smoke/rebase-side");
+        commitFileHolding(file, "side", "The side of the rebased merge");
+        git("switch", "--quiet", "smoke/rebase-main");
+        commitFileHolding(file, "main", "The main of the rebased merge");
+        assert.throws(() => git("merge", "--quiet", "--no-edit", "smoke/rebase-side"), /failed/, "git stops on a conflict");
+        commitFileHolding(file, "both", "Merge the side");
+        git("switch", "--quiet", "--create", "smoke/rebase-onto", "HEAD~2");
+        commitFileHolding("rebased onto.txt", "onto", "Unrelated to the merge");
+        git("switch", "--quiet", "smoke/rebase-main");
+        // The cases before leave local changes, which the rebase keeps aside until it ends.
+        assert.throws(
+          () => git(...FIXTURE_IDENTITY, "-c", "rebase.autoStash=true", "rebase", "--quiet", "--rebase-merges", "smoke/rebase-onto"),
+          /failed/,
+          "git stops on the conflict of the merge",
+        );
+        assert.ok(rebasing() && hasRef("MERGE_HEAD"), "the rebase stopped on the merge");
+        fs.writeFileSync(inRepository(file), "both");
+        git("add", "--", file);
+        const head = commitOf("HEAD");
+
+        const tick = $(`[data-testid="commit-file"][data-path="${file}"] input`);
+        await (await idleRefresh()).click();
+        await tick.waitForExist({ timeout: 30000 });
+        if (!(await tick.isSelected())) {
+          await tick.click();
+        }
+        await amend.click();
+        await $('[data-testid="commit-message"]').setValue("The main, amended with the merge");
+        await $('[data-testid="commit-submit"]').click();
+        // Committing during a rebase asks first.
+        await $('[data-testid="commit-warning"]').waitForDisplayed({ timeout: 30000 });
+        await $('[data-testid="commit-warning-proceed"]').click();
+
+        const result = $('[data-testid="commit-result"]');
+        await browser.waitUntil(async () => (await result.getProperty("textContent")) !== "", {
+          timeout: 30000,
+          timeoutMsg: "the panel did not say why the amend was refused",
+        });
+        assert.match(
+          await result.getProperty("textContent"),
+          /The rebase in this Repository stopped on a merge, and git does not amend the last commit until that merge is committed\./,
+        );
+        assert.equal(commitOf("HEAD"), head, "nothing is amended");
+        assert.ok(rebasing() && hasRef("MERGE_HEAD"), "the rebase stays stopped on the merge");
+      } finally {
+        // The next cases start from main, with the local changes the rebase kept aside, and Amend unticked.
+        if (await amend.isSelected()) {
+          await amend.click().catch((error) => console.warn(`unticking Amend failed: ${error.message}`));
+        }
+        if (rebasing()) {
+          await gitPastIndexLock("rebase", "--abort");
+        }
+        await endOperationAndReturnToMain("smoke/rebase-main", "smoke/rebase-side", "smoke/rebase-onto");
         await stageAgain(staged);
       }
     });

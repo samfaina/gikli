@@ -1,6 +1,7 @@
 //! Committing from the commit panel in Changelist mode while an Operation in progress is there: the
 //! selected changes go through the index, as git refuses `git commit --only` during a merge or a
-//! cherry-pick. An amend in the middle of either is refused before git runs, as git refuses it.
+//! cherry-pick. An amend in the middle of either, or of a rebase that stopped on a merge, is refused
+//! before git runs, as git refuses it.
 
 use gikli_acceptance::{Sandbox, TestRepository};
 use gikli_core::{ChangeSet, Changelist, Failure, Gikli, MoveTarget, OperationKind, Repository};
@@ -447,6 +448,99 @@ fn an_amend_during_a_rebase_stopped_at_a_commit_to_edit_amends_that_commit() {
     assert_eq!(commit_count(&work), "2\n");
     assert_eq!(last_subject(&work), "Edit, with a todo\n");
     assert_eq!(last_commit_files(&work), vec!["M notes.txt", "A todo.txt"]);
+    assert_eq!(
+        in_progress(&gikli, &work, &root),
+        Some(OperationKind::Rebase)
+    );
+}
+
+/// A repository whose `main` holds `Base`, then `Main` and `Side`, which both change `f.txt`, and a
+/// merge of `Side` resolved by hand. git, run with `--rebase-merges` from `main` onto a branch with
+/// an unrelated commit on `Base`, replayed `Main` and `Side` and stopped on the conflict of the
+/// merge in `f.txt`, which the user resolved.
+fn rebase_stopped_on_a_merge_resolved(sandbox: &Sandbox) -> TestRepository {
+    let work = sandbox.repository("work");
+    work.write("f.txt", "base\n");
+    work.commit_all("Base");
+    work.git(&["switch", "--quiet", "--create", "side"]);
+    work.write("f.txt", "side\n");
+    work.commit_all("Side");
+    work.git(&["switch", "--quiet", "main"]);
+    work.write("f.txt", "main\n");
+    work.commit_all("Main");
+    assert!(
+        !work.git_succeeds(&["merge", "--no-edit", "side"]),
+        "git stops on a conflict"
+    );
+    work.write("f.txt", "both\n");
+    work.commit_all("Merge side");
+    work.git(&["switch", "--quiet", "--create", "onto", "HEAD~2"]);
+    work.write("other.txt", "other\n");
+    work.commit_all("Unrelated");
+    work.git(&["switch", "--quiet", "main"]);
+    assert!(
+        !work.git_succeeds(&["rebase", "--quiet", "--rebase-merges", "onto"]),
+        "git stops on the conflict of the merge"
+    );
+    work.write("f.txt", "both\n");
+    work.git(&["add", "--", "f.txt"]);
+    work
+}
+
+#[test]
+fn an_amend_of_the_files_of_a_rebase_stopped_on_a_merge_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let work = rebase_stopped_on_a_merge_resolved(&sandbox);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+    let head_before = work.git(&["rev-parse", "HEAD"]);
+    let status_before = work.status_by_git();
+
+    let result = gikli.amend_last_commit(
+        work.root(),
+        &root,
+        &paths(&["f.txt"]),
+        "Main, and the merge",
+    );
+
+    assert_refused_during(
+        result,
+        OperationKind::Rebase,
+        &gikli,
+        &work,
+        &root,
+        &head_before,
+        &status_before,
+    );
+}
+
+#[test]
+fn an_amend_with_what_a_rebase_stopped_on_a_merge_staged_is_refused_and_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let work = rebase_stopped_on_a_merge_resolved(&sandbox);
+
+    assert_staged_amend_refused(&sandbox, &work, OperationKind::Rebase);
+}
+
+#[test]
+fn an_amend_during_a_rebase_stopped_on_a_resolved_conflict_of_a_pick_amends_the_last_commit() {
+    let sandbox = Sandbox::new();
+    let work = resolved_after(&sandbox, &["rebase", "--quiet"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &work);
+
+    gikli
+        .amend_last_commit(
+            work.root(),
+            &root,
+            &paths(&["notes.txt"]),
+            "Theirs, with ours",
+        )
+        .expect("amend");
+
+    assert_eq!(commit_count(&work), "2\n");
+    assert_eq!(last_subject(&work), "Theirs, with ours\n");
+    assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "both\n");
     assert_eq!(
         in_progress(&gikli, &work, &root),
         Some(OperationKind::Rebase)
