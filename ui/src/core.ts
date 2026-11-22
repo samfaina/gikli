@@ -337,7 +337,10 @@ export type Failure =
   | { kind: "nothingToCommit" }
   /** The Repository has no commit yet. */
   | { kind: "nothingToAmend" }
-  /** `operation`, a merge or a cherry-pick stopped on a commit, is half done, and git does not amend in the middle of it. */
+  /**
+   * `operation`, a merge, a cherry-pick stopped on a commit, or a rebase stopped on a merge, is half done, and git does not amend in
+   * the middle of it. A rebase is refused only when it stopped on a merge.
+   */
   | { kind: "amendDuringOperation"; operation: OperationKind }
   | { kind: "commitFailed"; folder: string }
   /** Undo commit takes only the last commit of the current branch, and `commit` is not that one, or HEAD is on no branch. */

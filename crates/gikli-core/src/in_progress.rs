@@ -82,31 +82,44 @@ pub(crate) fn read(
     repository: &Repository,
 ) -> Result<Option<OperationInProgress>, Failure> {
     let git_dir = git_dir(runner, repository)?;
-    // A rebase that stops on a merge leaves what the merge left too, so it is looked for first.
-    let kind = if is_rebasing(&git_dir) {
-        Some(OperationKind::Rebase)
-    } else if is_merging(&git_dir) {
-        Some(OperationKind::Merge)
-    } else {
-        picking(runner, repository, &git_dir)?
-    };
+    let kind = operation_kind(runner, repository, &git_dir)?;
     Ok(kind.map(|kind| OperationInProgress {
         kind,
         actions: kind.actions(),
     }))
 }
 
+/// The kind of the operation half done in `repository`, whose git directory is `git_dir`, if one
+/// is.
+fn operation_kind(
+    runner: &GitRunner,
+    repository: &Repository,
+    git_dir: &Path,
+) -> Result<Option<OperationKind>, Failure> {
+    // A rebase that stops on a merge leaves what the merge left too, so it is looked for first.
+    if is_rebasing(git_dir) {
+        Ok(Some(OperationKind::Rebase))
+    } else if is_merging(git_dir) {
+        Ok(Some(OperationKind::Merge))
+    } else {
+        picking(runner, repository, git_dir)
+    }
+}
+
 /// The operation half done in `repository` in the middle of which git does not amend the last
-/// commit, if one is: a merge, or a cherry-pick stopped on a commit. A rebase that stopped on a
-/// merge reads as a rebase, as [`read`] reads it. git does amend in the middle of a cherry-pick of
-/// several once the user committed the one it stopped on, which takes its `CHERRY_PICK_HEAD` away.
+/// commit, if one is: a merge, a cherry-pick stopped on a commit, or a rebase that stopped on a
+/// merge, which reads as a rebase, as [`read`] reads it. git does amend during every other stop of
+/// a rebase, and in the middle of a cherry-pick of several once the user committed the one it
+/// stopped on, which takes its `CHERRY_PICK_HEAD` away.
 pub(crate) fn operation_refusing_amend(
     runner: &GitRunner,
     repository: &Repository,
 ) -> Result<Option<OperationKind>, Failure> {
-    let kind = read(runner, repository)?.map(|operation| operation.kind);
+    let git_dir = git_dir(runner, repository)?;
+    let kind = operation_kind(runner, repository, &git_dir)?;
     let refusing = match kind {
         Some(OperationKind::Merge) => kind,
+        Some(OperationKind::Rebase) if is_merging(&git_dir) => kind,
         Some(OperationKind::CherryPick)
             if commit_named(runner, repository, "CHERRY_PICK_HEAD")?.is_some() =>
         {
