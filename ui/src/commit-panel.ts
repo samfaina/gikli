@@ -167,7 +167,9 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
 
   /** Starts the message from the last commit when amending, or else from what the ticked files call for, unless the user has written one. */
   async function prefillMessage(): Promise<void> {
-    if (shownChanges === null || message.value !== prefilled) {
+    // A read while a commit goes on can show the committed files gone before the commit is over: the message stays the one
+    // being committed, and the commit decides what comes after it.
+    if (shownChanges === null || committing || message.value !== prefilled) {
       return;
     }
     // Staging mode commits no Changelist, so no comment of one starts the message.
@@ -181,7 +183,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     const request = ++prefillRequests;
     try {
       const text = await (amend.checked ? lastCommitMessage(host.repository) : prefilledCommitMessage(host.repository, paths));
-      if (request === prefillRequests && message.value === prefilled) {
+      if (request === prefillRequests && !committing && message.value === prefilled) {
         message.value = text ?? "";
         // Read back, as the box gives its line ends its own way.
         prefilled = message.value;
@@ -359,7 +361,8 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
 
   /**
    * The changes of the Changelists the commit leaves out while a merge is in progress, none otherwise. Staging mode commits what
-   * the user staged, and a cherry-pick, a revert or a rebase is no merge commit, so they ask nothing.
+   * the user staged, and a cherry-pick, a revert or a rebase is no merge commit, so they ask nothing. As in JetBrains, only a commit
+   * with a change of the Changelists ticked asks: one of Unversioned Files alone does not.
    */
   async function changesLeftOutOfMerge(): Promise<Change[]> {
     const project = host.project();
@@ -368,7 +371,7 @@ export function createCommitPanel(host: CommitPanelHost): CommitPanel {
     }
     const changes = shownChanges.changelists.flatMap((list) => list.group.changes);
     const leftOut = changes.filter((change) => !ticked.has(change.path));
-    if (leftOut.length === 0) {
+    if (leftOut.length === 0 || leftOut.length === changes.length) {
       return [];
     }
     const operation = await operationInProgress(project, host.repository);

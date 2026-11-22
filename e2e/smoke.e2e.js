@@ -1259,6 +1259,66 @@ describe("gikli", () => {
       }
     });
 
+    // As in JetBrains, whose check looks only at the Repositories of the ticked changes of the Changelists.
+    it("does not ask before a commit from the panel with only Unversioned Files ticked during a merge", async () => {
+      const file = "merged alone.txt";
+      const unversioned = "unversioned during the merge.txt";
+      const staged = await unstageAll();
+      try {
+        // On branches of their own, so main keeps its commits.
+        git("switch", "--quiet", "--create", "smoke/merge-into");
+        git("switch", "--quiet", "--create", "smoke/merge-from");
+        // Without a line end, which `core.autocrlf` would change when the app's git writes the file.
+        fs.writeFileSync(inRepository(file), "merged");
+        git("add", "--", file);
+        commitStaged(process.env.GIKLI_E2E_REPOSITORY, sandboxGitconfig(process.env.GIKLI_E2E_SANDBOX), "On the branch the merge brings in");
+        const brought = commitOf("HEAD");
+        git("switch", "--quiet", "smoke/merge-into");
+        const base = commitOf("HEAD");
+        git("merge", "--quiet", "--no-ff", "--no-commit", "smoke/merge-from");
+        fs.writeFileSync(inRepository(unversioned), "new");
+
+        const tick = (path) => $(`[data-testid="commit-file"][data-path="${path}"] input`);
+        await (await idleRefresh()).click();
+        await browser.waitUntil(async () => (await tick(file).isExisting()) && (await tick(unversioned).isExisting()), {
+          timeout: 30000,
+          timeoutMsg: "the panel did not show the merged file and the Unversioned File",
+        });
+        // Every change of the Changelists unticked. A click draws the panel again, so each box is looked for anew.
+        const tickedInChangelists = async () => {
+          for (const box of await $$('[data-testid="commit-changelist"] [data-testid="commit-file"] input')) {
+            if (await box.isSelected()) {
+              return box;
+            }
+          }
+          return null;
+        };
+        for (let box = await tickedInChangelists(), clicks = 0; box !== null; box = await tickedInChangelists(), clicks++) {
+          assert.ok(clicks < 100, "the changes of the Changelists could not be unticked");
+          await box.click();
+        }
+        await tick(unversioned).click();
+        await $('[data-testid="commit-message"]').setValue("Merge with the new file alone");
+
+        await $('[data-testid="commit-submit"]').click();
+
+        await browser.waitUntil(() => commitOf("HEAD") !== base, { timeout: 30000, timeoutMsg: "the merge commit was not made" });
+        assert.equal(await $('[data-testid="commit-merge-check"]').isDisplayed(), false, "the panel did not ask");
+        assert.equal(git("rev-parse", "HEAD^1", "HEAD^2"), `${base}\n${brought}\n`, "the commit is the merge commit");
+        assert.equal(git("diff", "--name-only", "HEAD^1", "HEAD"), `${unversioned}\n`, "the commit holds the Unversioned File alone");
+      } finally {
+        // The next cases start from main, whatever this one left. What the merge brought and the commit left out is staged.
+        if (hasRef("MERGE_HEAD")) {
+          await gitPastIndexLock("merge", "--abort");
+        }
+        await gitPastIndexLock("rm", "--cached", "--quiet", "--ignore-unmatch", "--", file);
+        fs.rmSync(inRepository(file), { force: true });
+        await endOperationAndReturnToMain("smoke/merge-into", "smoke/merge-from");
+        fs.rmSync(inRepository(unversioned), { force: true });
+        await stageAgain(staged);
+      }
+    });
+
     // A browser drops a click whose button was taken out of the page between the press and the
     // release. The status area reads again whenever the changes watcher sees the Repository change, as just
     // after a checkout, so a click on the branch there could be lost on its way (issue #154).
