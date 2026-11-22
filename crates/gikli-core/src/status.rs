@@ -587,6 +587,13 @@ impl Status {
 }
 
 impl Status {
+    /// Whether a Conflict is left in the working tree.
+    pub fn has_conflicts(&self) -> bool {
+        self.changes
+            .iter()
+            .any(|change| change.status == ChangeStatus::Conflicted)
+    }
+
     /// The paths among `paths` that have something staged, each staged move with the path it came
     /// from, as it is two changes to git.
     pub fn staged_paths(&self, paths: &[String]) -> Vec<String> {

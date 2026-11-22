@@ -27,6 +27,9 @@ pub(crate) struct Selection {
     /// Paths with something staged that the user did not select. It stays out of the commit, and
     /// is staged again after it.
     pub left_out: Vec<String>,
+    /// The selected files added with `--intent-to-add`. The index holds no content for them, so
+    /// the tree of the index before the commit leaves them out.
+    pub intended: Vec<String>,
 }
 
 impl Selection {
@@ -41,8 +44,17 @@ impl Selection {
             .filter(|change| paths.iter().any(|path| Path::new(path) == change.path));
         let mut committed = Vec::new();
         let mut cleared = Vec::new();
+        let mut intended = Vec::new();
         for change in chosen {
             committed.push(text_of(&change.path));
+            // The working tree side says added only for a file added with `--intent-to-add`.
+            let is_intended = status
+                .unstaged
+                .iter()
+                .any(|file| file.path == change.path && file.status == ChangeStatus::Added);
+            if is_intended {
+                intended.push(text_of(&change.path));
+            }
             // A move is two changes to git: leaving out one would leave it staged. Unless something
             // new sits at the old path, as git would add that from the working tree instead.
             committed.extend(
@@ -71,6 +83,7 @@ impl Selection {
             committed,
             cleared,
             left_out,
+            intended,
         }
     }
 }
@@ -120,8 +133,9 @@ pub(crate) struct CommitInput {
     folder: PathBuf,
     /// The same folder, relative to the root of the Repository, as git gets it.
     folder_for_git: String,
-    has_committed_paths: bool,
-    has_left_out_paths: bool,
+    /// The files of paths that hold any. git takes an empty list of paths for the whole
+    /// Repository, so a command on one of the others does not run.
+    with_paths: Vec<&'static str>,
 }
 
 const MESSAGE: &str = "message";
@@ -131,6 +145,8 @@ const PATHS: &str = "paths";
 const TAKEN_OUT_PATHS: &str = "taken-out-paths";
 /// The paths whose staged content a commit of a selection stages again after it.
 const LEFT_OUT_PATHS: &str = "left-out-paths";
+/// The selected files added with `--intent-to-add`.
+const INTENDED_PATHS: &str = "intended-paths";
 
 impl CommitInput {
     /// Writes what git reads to commit `selection` with `message`, under the git directory at
@@ -144,19 +160,14 @@ impl CommitInput {
         let name = trace::new_run_name();
         let folder = root.join(git_dir).join("gikli").join(&name);
         fs::create_dir_all(&folder)?;
-        let input = Self {
+        let mut input = Self {
             folder,
             folder_for_git: format!("{git_dir}/gikli/{name}"),
-            has_committed_paths: !selection.committed.is_empty(),
-            has_left_out_paths: !selection.left_out.is_empty(),
+            with_paths: Vec::new(),
         };
         // git would take a last line without an end as it is, and other tools do not expect that.
         let line_end = if message.ends_with('\n') { "" } else { "\n" };
         fs::write(input.folder.join(MESSAGE), format!("{message}{line_end}"))?;
-        fs::write(
-            input.folder.join(PATHS),
-            nul_separated(&selection.committed),
-        )?;
         let taken_out: Vec<String> = [
             &selection.committed,
             &selection.cleared,
@@ -166,15 +177,20 @@ impl CommitInput {
         .flatten()
         .cloned()
         .collect();
-        fs::write(
-            input.folder.join(TAKEN_OUT_PATHS),
-            nul_separated(&taken_out),
-        )?;
-        fs::write(
-            input.folder.join(LEFT_OUT_PATHS),
-            nul_separated(&selection.left_out),
-        )?;
+        input.write_paths(PATHS, &selection.committed)?;
+        input.write_paths(TAKEN_OUT_PATHS, &taken_out)?;
+        input.write_paths(LEFT_OUT_PATHS, &selection.left_out)?;
+        input.write_paths(INTENDED_PATHS, &selection.intended)?;
         Ok(input)
+    }
+
+    /// Writes `paths` to the file `name`.
+    fn write_paths(&mut self, name: &'static str, paths: &[String]) -> io::Result<()> {
+        fs::write(self.folder.join(name), nul_separated(paths))?;
+        if !paths.is_empty() {
+            self.with_paths.push(name);
+        }
+        Ok(())
     }
 
     /// The arguments after `git` that write the index as a tree and print its name, for what a
@@ -186,34 +202,34 @@ impl CommitInput {
     /// The arguments after `git` that take what is staged at every path a commit of a selection
     /// touches out of the index, leaving the working tree, when it touches any. `git reset` needs
     /// no commit to reset to: on none it takes the paths out.
-    ///
-    /// Each command on paths here runs only when there are paths, as git takes an empty list for
-    /// the whole Repository.
     pub fn take_out_command(&self) -> Option<Vec<String>> {
-        self.has_committed_paths
-            .then(|| self.command_on(TAKEN_OUT_PATHS, &["reset", "--quiet"]))
+        self.command_on_any(TAKEN_OUT_PATHS, &["reset", "--quiet"])
     }
 
     /// The arguments after `git` that stage the paths a commit of a selection records as they are
     /// in the working tree, removals and Unversioned Files too.
     pub fn add_command(&self) -> Option<Vec<String>> {
-        self.has_committed_paths
-            .then(|| self.command_on(PATHS, &["add", "--all"]))
+        self.command_on_any(PATHS, &["add", "--all"])
     }
 
     /// The arguments after `git` that stage again what a commit of a selection left out, as it was
     /// in `tree`, the index before the commit, when it left out anything.
     pub fn stage_again_command(&self, tree: &str) -> Option<Vec<String>> {
-        self.has_left_out_paths
-            .then(|| self.command_on(LEFT_OUT_PATHS, &["reset", "--quiet", tree]))
+        self.command_on_any(LEFT_OUT_PATHS, &["reset", "--quiet", tree])
     }
 
-    /// The arguments after `git` that put the index back at every path a commit of a selection
-    /// touches as it was in `tree`, the index before the commit, when the commit fails. A selected
-    /// Unversioned File is not in it, so it goes back to being unversioned.
-    pub fn put_back_command(&self, tree: &str) -> Option<Vec<String>> {
-        self.has_committed_paths
-            .then(|| self.command_on(TAKEN_OUT_PATHS, &["reset", "--quiet", tree]))
+    /// The arguments after `git` of each command that puts the index back at every path a commit
+    /// of a selection touches as it was in `tree`, the index before the commit, when the commit
+    /// fails. A selected Unversioned File is not in it, so it goes back to being unversioned, and a
+    /// file added with `--intent-to-add` is added that way again.
+    pub fn put_back_commands(&self, tree: &str) -> Vec<Vec<String>> {
+        [
+            self.command_on_any(TAKEN_OUT_PATHS, &["reset", "--quiet", tree]),
+            self.command_on_any(INTENDED_PATHS, &["add", "--intent-to-add"]),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     /// The arguments after `git` that take the paths out of the index and leave the working tree.
@@ -239,6 +255,13 @@ impl CommitInput {
         }
         command.push(format!("--file={}/{MESSAGE}", self.folder_for_git));
         command
+    }
+
+    /// [`Self::command_on`], when the file `paths` holds any.
+    fn command_on_any(&self, paths: &'static str, command: &[&str]) -> Option<Vec<String>> {
+        self.with_paths
+            .contains(&paths)
+            .then(|| self.command_on(paths, command))
     }
 
     /// `git` with `command` on the paths in the file `paths`, taken literally.

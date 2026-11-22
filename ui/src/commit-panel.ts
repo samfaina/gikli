@@ -544,35 +544,48 @@ function listedPaths(changeSet: ChangeSet): Set<string> {
   );
 }
 
-/** Says where a commit would go and lets the user go on with it or leave it. */
-function warningForm(proceed: () => void): { view: HTMLElement; ask: (found: CommitWarning) => void; close: () => void } {
+/** A form that asks before a commit, with `content` above its buttons, and lets the user commit anyway or leave it. */
+function askingForm(testId: string, content: HTMLElement[], proceed: () => void): { view: HTMLElement; open: () => void; close: () => void } {
   const view = document.createElement("div");
   view.className = "changelist-form";
-  view.dataset.testid = "commit-warning";
+  view.dataset.testid = testId;
   view.setAttribute("role", "alert");
   view.hidden = true;
-  const text = document.createElement("p");
-  text.dataset.testid = "commit-warning-text";
 
   const close = (): void => {
     view.hidden = true;
   };
-  const button = (testId: string, label: string, clicked: () => void): HTMLButtonElement => {
+  const button = (suffix: string, label: string, clicked: () => void): HTMLButtonElement => {
     const element = document.createElement("button");
     element.type = "button";
-    element.dataset.testid = testId;
+    element.dataset.testid = `${testId}-${suffix}`;
     element.textContent = label;
     element.addEventListener("click", clicked);
     return element;
   };
-  view.append(text, button("commit-warning-proceed", t("commitWarningProceed"), proceed), button("commit-warning-cancel", t("commitWarningCancel"), close));
+  view.append(...content, button("proceed", t("commitWarningProceed"), proceed), button("cancel", t("commitWarningCancel"), close));
 
   return {
     view,
     close,
+    open: () => {
+      view.hidden = false;
+    },
+  };
+}
+
+/** Says where a commit would go and lets the user go on with it or leave it. */
+function warningForm(proceed: () => void): { view: HTMLElement; ask: (found: CommitWarning) => void; close: () => void } {
+  const text = document.createElement("p");
+  text.dataset.testid = "commit-warning-text";
+  const form = askingForm("commit-warning", [text], proceed);
+
+  return {
+    view: form.view,
+    close: form.close,
     ask: (found) => {
       text.textContent = t(found === "rebase" ? "commitWarningRebase" : "commitWarningDetachedHead");
-      view.hidden = false;
+      form.open();
     },
   };
 }
@@ -582,37 +595,15 @@ function mergeCheckForm(
   describeChange: CommitPanelHost["describeChange"],
   proceed: () => void,
 ): { view: HTMLElement; ask: (leftOut: Change[]) => void; close: () => void } {
-  const view = document.createElement("div");
-  view.className = "changelist-form";
-  view.dataset.testid = "commit-merge-check";
-  view.setAttribute("role", "alert");
-  view.hidden = true;
   const text = document.createElement("p");
   text.textContent = t("commitMergeLeavesOut");
   const list = document.createElement("ul");
   list.dataset.testid = "commit-merge-check-files";
-
-  const close = (): void => {
-    view.hidden = true;
-  };
-  const button = (testId: string, label: string, clicked: () => void): HTMLButtonElement => {
-    const element = document.createElement("button");
-    element.type = "button";
-    element.dataset.testid = testId;
-    element.textContent = label;
-    element.addEventListener("click", clicked);
-    return element;
-  };
-  view.append(
-    text,
-    list,
-    button("commit-merge-check-proceed", t("commitMergeLeavesOutProceed"), proceed),
-    button("commit-merge-check-cancel", t("commitMergeLeavesOutCancel"), close),
-  );
+  const form = askingForm("commit-merge-check", [text, list], proceed);
 
   return {
-    view,
-    close,
+    view: form.view,
+    close: form.close,
     ask: (leftOut) => {
       list.replaceChildren(
         ...leftOut.map((change) => {
@@ -623,7 +614,7 @@ function mergeCheckForm(
           return item;
         }),
       );
-      view.hidden = false;
+      form.open();
     },
   };
 }

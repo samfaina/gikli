@@ -3,7 +3,7 @@
 //! cherry-pick.
 
 use gikli_acceptance::{Sandbox, TestRepository};
-use gikli_core::{ChangeSet, Failure, Gikli, MoveTarget, OperationKind, Repository};
+use gikli_core::{ChangeSet, Changelist, Failure, Gikli, MoveTarget, OperationKind, Repository};
 
 /// Opens the repository's folder as a Project and returns its Repository.
 fn opened(gikli: &Gikli, repository: &TestRepository) -> Repository {
@@ -39,10 +39,11 @@ fn in_progress(
         .map(|operation| operation.kind)
 }
 
-/// A repository whose `main` holds `notes.txt`, and whose branch `other` changes it and adds
-/// `plan.txt` in its last commit, while `main` changed `notes.txt` too. A cherry-pick of `other`
-/// onto `main` stopped on the conflict in `notes.txt`, which the user resolved.
-fn cherry_pick_resolved(sandbox: &Sandbox) -> TestRepository {
+/// A repository whose `main` holds `notes.txt` and `todo.txt`, and whose branch `other` changes
+/// `notes.txt` and adds `plan.txt` in one commit, while `main` changed `notes.txt` too. git, run
+/// with `operation` on `other` from `main`, stopped on the conflict in `notes.txt`, which the user
+/// resolved.
+fn resolved_after(sandbox: &Sandbox, operation: &[&str]) -> TestRepository {
     let work = sandbox.repository("work");
     work.write("notes.txt", "notes\n");
     work.write("todo.txt", "todo\n");
@@ -54,13 +55,22 @@ fn cherry_pick_resolved(sandbox: &Sandbox) -> TestRepository {
     work.git(&["switch", "--quiet", "main"]);
     work.write("notes.txt", "ours\n");
     work.commit_all("Ours");
-    assert!(
-        !work.git_succeeds(&["cherry-pick", "other"]),
-        "the cherry-pick stops on a conflict"
-    );
+    let mut args = operation.to_vec();
+    args.push("other");
+    assert!(!work.git_succeeds(&args), "git stops on a conflict");
     work.write("notes.txt", "both\n");
     work.git(&["add", "--", "notes.txt"]);
     work
+}
+
+/// [`resolved_after`] a cherry-pick.
+fn cherry_pick_resolved(sandbox: &Sandbox) -> TestRepository {
+    resolved_after(sandbox, &["cherry-pick"])
+}
+
+/// [`resolved_after`] a merge.
+fn merge_resolved(sandbox: &Sandbox) -> TestRepository {
+    resolved_after(sandbox, &["merge", "--no-edit"])
 }
 
 #[test]
@@ -78,30 +88,6 @@ fn committing_the_files_of_a_cherry_pick_stopped_on_a_resolved_conflict_conclude
     assert_eq!(work.git(&["show", "HEAD:notes.txt"]), "both\n");
     assert_eq!(in_progress(&gikli, &work, &root), None);
     assert!(work.status_by_git().is_empty());
-}
-
-/// A repository whose `main` holds `notes.txt` and `todo.txt`, and whose branch `other` changes
-/// `notes.txt` and adds `plan.txt`, while `main` changed `notes.txt` too. A merge of `other` into
-/// `main` stopped on the conflict in `notes.txt`, which the user resolved.
-fn merge_resolved(sandbox: &Sandbox) -> TestRepository {
-    let work = sandbox.repository("work");
-    work.write("notes.txt", "notes\n");
-    work.write("todo.txt", "todo\n");
-    work.commit_all("Base");
-    work.git(&["switch", "--quiet", "--create", "other"]);
-    work.write("notes.txt", "theirs\n");
-    work.write("plan.txt", "plan\n");
-    work.commit_all("Theirs");
-    work.git(&["switch", "--quiet", "main"]);
-    work.write("notes.txt", "ours\n");
-    work.commit_all("Ours");
-    assert!(
-        !work.git_succeeds(&["merge", "--no-edit", "other"]),
-        "the merge stops on a conflict"
-    );
-    work.write("notes.txt", "both\n");
-    work.git(&["add", "--", "notes.txt"]);
-    work
 }
 
 #[test]
@@ -126,13 +112,18 @@ fn committing_the_files_of_a_merge_stopped_on_a_resolved_conflict_makes_the_merg
     assert!(work.status_by_git().is_empty());
 }
 
-/// The paths in the Changelist called `name`.
-fn changelist_paths(changes: &ChangeSet, name: &str) -> Vec<String> {
-    changes
+/// The Changelist called `name`.
+fn list<'a>(change_set: &'a ChangeSet, name: &str) -> &'a Changelist {
+    change_set
         .changelists
         .iter()
         .find(|list| list.name == name)
-        .expect("the changelist is there")
+        .expect("the Changelist exists")
+}
+
+/// The paths of the changes in the Changelist called `name`.
+fn paths_in(change_set: &ChangeSet, name: &str) -> Vec<String> {
+    list(change_set, name)
         .group
         .changes
         .iter()
@@ -146,13 +137,7 @@ fn todo_edited_in_its_own_changelist(gikli: &Gikli, work: &TestRepository, root:
     let changes = gikli
         .create_changelist(root, "Other", None)
         .expect("create Other");
-    let other = changes
-        .changelists
-        .iter()
-        .find(|list| list.name == "Other")
-        .expect("Other is there")
-        .id
-        .clone();
+    let other = list(&changes, "Other").id.clone();
     gikli
         .move_changes(
             root,
@@ -177,7 +162,7 @@ fn an_unticked_local_edit_stays_out_of_the_merge_commit_and_in_its_changelist() 
 
     assert_eq!(work.git(&["show", "HEAD:todo.txt"]), "todo\n");
     assert_eq!(work.status_by_git(), vec![" M todo.txt"]);
-    assert_eq!(changelist_paths(&changes, "Other"), vec!["todo.txt"]);
+    assert_eq!(paths_in(&changes, "Other"), vec!["todo.txt"]);
 }
 
 #[test]
@@ -194,7 +179,7 @@ fn an_unticked_local_edit_stays_out_of_the_commit_of_a_cherry_pick_and_in_its_ch
 
     assert_eq!(last_commit_files(&work), vec!["M notes.txt", "A plan.txt"]);
     assert_eq!(work.status_by_git(), vec![" M todo.txt"]);
-    assert_eq!(changelist_paths(&changes, "Other"), vec!["todo.txt"]);
+    assert_eq!(paths_in(&changes, "Other"), vec!["todo.txt"]);
     assert_eq!(in_progress(&gikli, &work, &root), None);
 }
 

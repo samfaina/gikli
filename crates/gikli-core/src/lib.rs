@@ -2026,11 +2026,7 @@ impl Gikli {
         let runner = self.commit_runner(repository, message, kind)?;
         let status = read_status(&runner, repository, true)?;
         // git commits no index with a Conflict left in it.
-        if status
-            .changes
-            .iter()
-            .any(|change| change.status == ChangeStatus::Conflicted)
-        {
+        if status.has_conflicts() {
             return Err(Failure::ConflictsNotResolved);
         }
         let selection = commit::Selection::of(&status, paths);
@@ -2164,23 +2160,26 @@ impl Gikli {
                     let committed = git(&input.commit_command(kind))?;
                     return Ok((!committed.success).then_some(committed));
                 }
-                let listed = git(&commit::CommitInput::index_tree_command())?;
-                if !listed.success {
-                    return Ok(Some(listed));
+                let written = git(&commit::CommitInput::index_tree_command())?;
+                if !written.success {
+                    return Ok(Some(written));
                 }
-                let tree = listed.stdout_text().trim().to_owned();
-                let failed = commit_through_index(&input, kind, git);
-                let back = match &failed {
-                    Ok(None) => input.stage_again_command(&tree),
-                    _ => input.put_back_command(&tree),
+                let index_before = written.stdout_text().trim().to_owned();
+                let outcome = commit_through_index(&input, kind, git);
+                let restoring = match &outcome {
+                    Ok(None) => input
+                        .stage_again_command(&index_before)
+                        .into_iter()
+                        .collect(),
+                    _ => input.put_back_commands(&index_before),
                 };
-                if let Some(back) = back {
+                for command in restoring {
                     // Not as part of the operation: a cancelled one would end this at once. When
                     // it fails, as when a cancelled run left the lock of the index, the index stays
                     // as the commit left it, and the operation log says why.
-                    let _ = runner.run(root, &as_args(&back));
+                    let _ = runner.run(root, &as_args(&command));
                 }
-                failed
+                outcome
             })
             .map_err(git_failed_to_start);
         let failure = match failed {

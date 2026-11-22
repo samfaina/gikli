@@ -219,8 +219,6 @@ export const en = {
   commitWarningProceed: "Commit Anyway",
   commitWarningCancel: "Cancel",
   commitMergeLeavesOut: "A merge is in progress, and these changes are not ticked. The merge commit will keep them out, and they stay local changes. Commit anyway?",
-  commitMergeLeavesOutProceed: "Commit Anyway",
-  commitMergeLeavesOutCancel: "Cancel",
   commitIdentityExplanation: "git has no name or email to write in your commits. Say which to use.",
   commitIdentityName: "Name",
   commitIdentityEmail: "Email",

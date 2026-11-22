@@ -1225,6 +1225,7 @@ describe("gikli", () => {
           return paths;
         };
 
+        const statusBefore = git("status", "--porcelain");
         await $('[data-testid="commit-submit"]').click();
         await check.waitForDisplayed({ timeout: 30000 });
         const listed = await leftOut();
@@ -1234,6 +1235,7 @@ describe("gikli", () => {
         await check.waitForDisplayed({ timeout: 30000, reverse: true });
         assert.equal(commitOf("HEAD"), base, "nothing is committed on cancel");
         assert.ok(hasRef("MERGE_HEAD"), "the merge stays in progress");
+        assert.equal(git("status", "--porcelain"), statusBefore, "cancelling changes nothing");
 
         await $('[data-testid="commit-submit"]').click();
         await check.waitForDisplayed({ timeout: 30000 });

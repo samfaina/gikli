@@ -662,3 +662,54 @@ fn a_hook_that_refuses_leaves_the_index_as_it_was() {
     assert_eq!(repository.git(&["ls-files", "--stage"]), index_before);
     assert_eq!(repository.status_by_git(), status_before);
 }
+
+#[test]
+fn a_hook_that_refuses_leaves_a_file_added_with_intent_to_add_as_it_was() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    sandbox.hook("pre-commit", "exit 1");
+    repository.write("planned.txt", "planned\n");
+    repository.git(&["add", "--intent-to-add", "--", "planned.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let result = gikli.commit_files(&root, &paths(&["planned.txt"]), "Add the plan");
+
+    assert!(result.is_err(), "the hook refuses the commit");
+    assert_eq!(repository.status_by_git(), vec![" A planned.txt"]);
+}
+
+#[test]
+fn the_first_commit_of_a_repository_leaves_out_what_is_staged_elsewhere() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    repository.write("a.txt", "a\n");
+    repository.write("b.txt", "b\n");
+    repository.git(&["add", "--", "a.txt", "b.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    gikli
+        .commit_files(&root, &paths(&["a.txt"]), "Add a")
+        .expect("commit");
+
+    assert_eq!(last_commit_files(&repository), vec!["A a.txt"]);
+    assert_eq!(repository.status_by_git(), vec!["A  b.txt"]);
+}
+
+#[test]
+fn a_hook_that_refuses_the_first_commit_leaves_the_index_as_it_was() {
+    let sandbox = Sandbox::new();
+    let repository = sandbox.repository("app");
+    sandbox.hook("pre-commit", "exit 1");
+    repository.write("a.txt", "a\n");
+    repository.write("b.txt", "b\n");
+    repository.git(&["add", "--", "b.txt"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let result = gikli.commit_files(&root, &paths(&["a.txt"]), "Add a");
+
+    assert!(result.is_err(), "the hook refuses the commit");
+    assert_eq!(repository.status_by_git(), vec!["A  b.txt", "?? a.txt"]);
+}
