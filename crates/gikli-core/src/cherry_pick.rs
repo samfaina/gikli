@@ -1,13 +1,9 @@
 //! The integration engine's cherry-pick: commits the user selected in the log, brought onto the
 //! current branch in order.
 
-use std::io;
-use std::path::{Path, PathBuf};
-
 use serde::{Deserialize, Serialize};
 
 use crate::git::GitRunner;
-use crate::project::{take_once, write_at_once};
 use crate::{Failure, Repository, details, git_failed_to_start, undo_commit};
 
 /// The commits `revisions` of `repository` name, by their full hashes, in the same order, once
@@ -90,37 +86,4 @@ pub(crate) fn runs(
         }
     }
     Ok(runs)
-}
-
-/// Where the runs of a cherry-pick that wait for the one git stopped on are kept, in the git
-/// directory of the worktree, so whoever continues it from gikli picks them after it.
-pub(crate) struct LeftToPick {
-    file: PathBuf,
-}
-
-impl LeftToPick {
-    /// The store in `git_dir`, which is the git directory of the worktree.
-    pub fn in_git_dir(git_dir: &Path) -> Self {
-        Self {
-            file: git_dir.join("gikli").join("left-to-pick.json"),
-        }
-    }
-
-    /// Keeps `runs`, in place of what waited before.
-    pub fn keep(&self, runs: &[Run]) -> Result<(), Failure> {
-        let json = serde_json::to_vec_pretty(runs).map_err(io::Error::other);
-        json.and_then(|json| write_at_once(&self.file, &json))
-            .map_err(|error| Failure::CommitsToPickNotKept {
-                file: self.file.clone(),
-                message: error.to_string(),
-            })
-    }
-
-    /// Takes what waits, so that one continue alone picks it. Nothing waits when nothing can be
-    /// read.
-    pub fn take(&self) -> Vec<Run> {
-        take_once(&self.file)
-            .and_then(|json| serde_json::from_slice(&json).ok())
-            .unwrap_or_default()
-    }
 }
