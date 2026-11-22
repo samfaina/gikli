@@ -551,8 +551,8 @@ fn repository_with_a_hook_that_holds_the_commit(sandbox: &Sandbox) -> (TestRepos
     (repository, holding)
 }
 
-/// git holds the lock of the index while the hook runs, so the file it was given stays added until
-/// the user has removed the lock.
+/// The commit goes through the index, which git does not hold locked while the hook runs, so the
+/// file it was given goes back to being unversioned.
 #[test]
 fn a_commit_is_a_long_operation_the_user_can_cancel_and_commits_nothing() {
     let sandbox = Sandbox::new();
@@ -578,22 +578,19 @@ fn a_commit_is_a_long_operation_the_user_can_cancel_and_commits_nothing() {
         commit.join().expect("the commit ends")
     });
 
-    let Err(Failure::OperationCancelled {
-        left_behind: Some(explanation),
-    }) = result
-    else {
-        panic!("the cancelled run left the lock of the index: {result:?}");
-    };
-    assert!(matches!(
-        explanation.message,
-        ExplainedMessage::IndexLocked { .. }
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(Failure::OperationCancelled { left_behind: None })
+        ),
+        "the cancelled run left nothing behind: {result:?}"
+    );
     assert_eq!(commit_count(&repository), "1\n");
-    assert_eq!(repository.status_by_git(), vec!["A  new.txt"]);
+    assert_eq!(repository.status_by_git(), vec!["?? new.txt"]);
 }
 
-/// `git commit --only` takes a path from the working tree, so committing the old path of the move
-/// would commit a file nobody selected.
+/// git adds a path from the working tree, so committing the old path of the move would commit a
+/// file nobody selected.
 #[test]
 fn a_selected_rename_leaves_out_a_new_file_at_its_old_path() {
     let sandbox = Sandbox::new();
@@ -641,4 +638,27 @@ fn the_answer_about_the_identity_is_saved_without_the_spaces_around_it() {
         repository.git(&["config", "--local", "user.name"]),
         "Ada Lovelace\n"
     );
+}
+
+#[test]
+fn a_hook_that_refuses_leaves_the_index_as_it_was() {
+    let sandbox = Sandbox::new();
+    let repository = committed_repository(&sandbox);
+    sandbox.hook("pre-commit", "exit 1");
+    repository.write("a.txt", "a staged\n");
+    repository.write("b.txt", "b staged\n");
+    repository.git(&["add", "--", "a.txt", "b.txt"]);
+    repository.write("a.txt", "a in the working tree\n");
+    repository.write("b.txt", "b in the working tree\n");
+    repository.git(&["mv", "--", "b.txt", "c.txt"]);
+    let index_before = repository.git(&["ls-files", "--stage"]);
+    let status_before = repository.status_by_git();
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &repository);
+
+    let result = gikli.commit_files(&root, &paths(&["a.txt"]), "Change a");
+
+    assert!(result.is_err(), "the hook refuses the commit");
+    assert_eq!(repository.git(&["ls-files", "--stage"]), index_before);
+    assert_eq!(repository.status_by_git(), status_before);
 }

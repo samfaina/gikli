@@ -84,7 +84,7 @@ The 14 catalog sections fall into four working areas; the MVP needs pieces from 
 | Pre-commit checks | Reformat, optimize imports, analyze code, check TODOs, run tests or an external tool; option to run them after the commit | **\[IDE\]**; standalone: only "run an external command" | 4 |
 | AI message | Generate or improve the message with AI; AI self-review of changes | out of scope for the base product | 4 |
 | Unusual state warning | Warns when committing in detached HEAD or during a rebase | detached HEAD or rebase in progress | 1 |
-| Commit during a merge | A partial commit is impossible during a merge [git]. gikli hides selection checkboxes while a merge is in progress (gikli) | `git commit --only` is refused | 2 |
+| Commit during a merge | A partial commit is impossible during a merge [git], so JetBrains commits a selection through the index (`GitCheckinEnvironment.stageAndCommit`) [src]: it takes out of the index what is staged at unselected paths, adds the selected ones, commits and stages again what it took out. Leaving any change out of a merge commit asks for confirmation first, listing those changes (`GitUnresolvedMergeCheckProvider`) [src]. gikli does the same, for a cherry-pick too, which does not ask (gikli, ADR 0010) | `git commit` with no paths after `git reset` and `git add --all` of the paths; `git commit --only` is refused | 2 |
 | Inline commit | Commit one change from the gutter, with optional amend [doc] | same as partial commit | 3 |
 | Large file warning | Warns when committing files above a size, on by default at 50 MB [src] | none | 2 |
 | File name warning | Warns about names that may cause problems on other systems, on by default [src] | none | 2 |
@@ -439,7 +439,7 @@ Observed on 4 November 2026 with git 2.43.0 on Linux, on real repositories. Wind
 - A tracked stash does not unblock a checkout stopped by an untracked file. `stash -u` does, but `stash pop` on a target branch holding that file exits 1 and keeps the entry.
 - `stash pop` with a conflict exits 1 and keeps the entry.
 - `git commit -F` keeps lines starting with `#`, and `--cleanup=strip` removes them.
-- `git commit --only` keeps other staged paths and fails during a merge.
+- `git commit --only` keeps other staged paths and fails during a merge or a cherry-pick; `git commit` with no paths concludes either.
 - `git fetch --all --prune --prune-tags` deleted a tag present on only one of two remotes.
 - `git fetch <remote> <remote-branch>:<local-branch>` fails when the branch is checked out in a worktree.
 - `git clone --depth 1` tracks a single branch, and `git fetch --unshallow` keeps it that way; `--no-single-branch` tracks them all.
