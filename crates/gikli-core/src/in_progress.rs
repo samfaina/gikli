@@ -100,19 +100,21 @@ pub(crate) fn read(
 /// commit, if one is: a merge, or a cherry-pick stopped on a commit. A rebase that stopped on a
 /// merge reads as a rebase, as [`read`] reads it. git does amend in the middle of a cherry-pick of
 /// several once the user committed the one it stopped on, which takes its `CHERRY_PICK_HEAD` away.
-pub(crate) fn refusing_amend(
+pub(crate) fn operation_refusing_amend(
     runner: &GitRunner,
     repository: &Repository,
 ) -> Result<Option<OperationKind>, Failure> {
     let kind = read(runner, repository)?.map(|operation| operation.kind);
     let refusing = match kind {
-        Some(OperationKind::Merge) => true,
-        Some(OperationKind::CherryPick) => {
-            commit_named(runner, repository, "CHERRY_PICK_HEAD")?.is_some()
+        Some(OperationKind::Merge) => kind,
+        Some(OperationKind::CherryPick)
+            if commit_named(runner, repository, "CHERRY_PICK_HEAD")?.is_some() =>
+        {
+            kind
         }
-        _ => false,
+        _ => None,
     };
-    Ok(kind.filter(|_| refusing))
+    Ok(refusing)
 }
 
 /// The git directory of the worktree `repository` is, where git keeps what it has half done there.

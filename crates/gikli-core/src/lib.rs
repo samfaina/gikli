@@ -2004,9 +2004,9 @@ impl Gikli {
 
     /// Replaces the last commit of `repository` with one that also holds what is staged, and has
     /// `message` as written, and returns the changes after that. It saves a Backup and raises a
-    /// notification as [`Self::amend_last_commit`] does, and is refused in the middle of a merge or
-    /// of a cherry-pick as it is, even with nothing staged. Everything else works as in
-    /// [`Self::commit_staged`].
+    /// notification as [`Self::amend_last_commit`] does. In the middle of a merge or of a
+    /// cherry-pick stopped on a commit it returns [`Failure::AmendDuringOperation`], as that does,
+    /// even with nothing staged. Everything else works as in [`Self::commit_staged`].
     pub fn amend_with_staged(
         &self,
         project: &Path,
@@ -2097,7 +2097,7 @@ impl Gikli {
             if !commit::has_commits(&runner, &repository.root)? {
                 return Err(Failure::NothingToAmend);
             }
-            if let Some(operation) = in_progress::refusing_amend(&runner, repository)? {
+            if let Some(operation) = in_progress::operation_refusing_amend(&runner, repository)? {
                 return Err(Failure::AmendDuringOperation { operation });
             }
         }

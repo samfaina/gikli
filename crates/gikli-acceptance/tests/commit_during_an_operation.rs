@@ -410,6 +410,7 @@ fn last_subject(repository: &TestRepository) -> String {
     repository.git(&["log", "-1", "--format=%s"])
 }
 
+/// How many commits HEAD holds, as plain git counts them.
 fn commit_count(repository: &TestRepository) -> String {
     repository.git(&["rev-list", "--count", "HEAD"])
 }
