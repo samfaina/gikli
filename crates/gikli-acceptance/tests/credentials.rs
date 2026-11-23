@@ -2,7 +2,9 @@
 //! prompts reach the user inside gikli, and gikli stores none of the answers.
 
 use std::fs;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -81,17 +83,34 @@ fn answering_prompts<T: Send>(
     answer: impl Fn(&Prompt) -> Option<String>,
     operation: impl FnOnce() -> T + Send,
 ) -> (T, Vec<Prompt>, Vec<Event>) {
+    answering_prompts_until(
+        gikli,
+        |elapsed| elapsed >= Duration::from_secs(60),
+        answer,
+        operation,
+    )
+}
+
+/// [`answering_prompts`], failing once `deadline_passed` says so of the time since `operation`
+/// started while it still runs.
+fn answering_prompts_until<T: Send>(
+    gikli: &Gikli,
+    deadline_passed: impl Fn(Duration) -> bool,
+    answer: impl Fn(&Prompt) -> Option<String>,
+    operation: impl FnOnce() -> T + Send,
+) -> (T, Vec<Prompt>, Vec<Event>) {
     let events = gikli.subscribe();
     std::thread::scope(|scope| {
         let running = scope.spawn(operation);
         let mut prompts = Vec::new();
         let mut seen = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut handled = Vec::new();
+        let started = Instant::now();
         while !running.is_finished() {
-            assert!(
-                Instant::now() < deadline,
-                "the operation still runs, after these prompts: {prompts:?}"
-            );
+            let elapsed = started.elapsed();
+            if deadline_passed(elapsed) {
+                panic!("{}", still_running(gikli, elapsed, &prompts, &handled));
+            }
             let Ok(event) = events.recv_timeout(Duration::from_millis(20)) else {
                 continue;
             };
@@ -101,10 +120,16 @@ fn answering_prompts<T: Send>(
                     "a window that opens now shows it too"
                 );
                 match answer(prompt) {
-                    Some(text) => gikli
-                        .answer_prompt(prompt.id, &text)
-                        .expect("answer the prompt"),
-                    None => gikli.cancel_prompt(prompt.id).expect("cancel the prompt"),
+                    Some(text) => {
+                        gikli
+                            .answer_prompt(prompt.id, &text)
+                            .expect("answer the prompt");
+                        handled.push("answered");
+                    }
+                    None => {
+                        gikli.cancel_prompt(prompt.id).expect("cancel the prompt");
+                        handled.push("cancelled");
+                    }
                 }
                 prompts.push(prompt.clone());
             }
@@ -113,6 +138,32 @@ fn answering_prompts<T: Send>(
         seen.extend(events.try_iter());
         (running.join().expect("the operation ends"), prompts, seen)
     })
+}
+
+/// How many of the last finished git commands [`still_running`] shows.
+const LAST_COMMANDS: usize = 5;
+
+/// Why an operation that still runs at its deadline failed, with what tells a slow operation from
+/// a stuck one: how long it ran, what the test did with each prompt it saw, the prompts still
+/// waiting (one the test never saw is a lost event), and how far git got. It holds none of the
+/// answers the test gave.
+fn still_running(gikli: &Gikli, elapsed: Duration, prompts: &[Prompt], handled: &[&str]) -> String {
+    let mut message = format!("the operation still runs after {elapsed:.1?}\nprompts seen:");
+    for (prompt, done) in prompts.iter().zip(handled) {
+        message.push_str(&format!("\n  {prompt:?}: {done}"));
+    }
+    message.push_str(&format!("\npending prompts: {:?}", gikli.pending_prompts()));
+    message.push_str("\nlast finished git commands:");
+    let log = gikli.operation_log();
+    for entry in &log[log.len().saturating_sub(LAST_COMMANDS)..] {
+        message.push_str(&format!(
+            "\n  git {}: exit {:?}\n    stderr: {:?}",
+            entry.args.join(" "),
+            entry.exit_code,
+            entry.stderr,
+        ));
+    }
+    message
 }
 
 /// The answers the user gives when git asks for a username and a password.
@@ -184,6 +235,53 @@ fn username_and_password_prompts_reach_the_user_and_gikli_keeps_neither_answer()
     result.expect("clone again, answering again");
     sandbox.assert_cloned(&remote, &second);
     assert_eq!(prompts.len(), 2, "gikli remembers no answer: {prompts:?}");
+}
+
+#[test]
+fn an_operation_that_outlives_the_deadline_tells_how_far_it_got_and_none_of_the_answers() {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_a_commit(&sandbox);
+    let server = sandbox.http_remote(&remote, USERNAME, PASSWORD);
+    let target = sandbox.root().join("clone");
+    let gikli = sandbox.gikli_with_prompts(askpass!());
+    let cloned = AtomicBool::new(false);
+    let gave_up = AtomicBool::new(false);
+
+    let failure = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        answering_prompts_until(
+            &gikli,
+            |_| {
+                let passed = cloned.load(Ordering::SeqCst);
+                gave_up.store(passed, Ordering::SeqCst);
+                passed
+            },
+            the_right_credentials,
+            || {
+                let result = gikli.clone_repository(&server.url(), &target);
+                cloned.store(true, Ordering::SeqCst);
+                while !gave_up.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result
+            },
+        )
+    }))
+    .expect_err("the deadline passes while the operation still runs");
+
+    let message = failure
+        .downcast_ref::<String>()
+        .expect("the failure says why");
+    assert!(
+        message.contains("the operation still runs after "),
+        "{message}"
+    );
+    assert!(message.contains("Username"), "{message}");
+    assert!(message.contains("Password"), "{message}");
+    assert_eq!(message.matches("answered").count(), 2, "{message}");
+    assert!(message.contains("pending prompts: []"), "{message}");
+    assert!(message.contains("clone"), "{message}");
+    assert!(message.contains("exit Some(0)"), "{message}");
+    assert!(!message.contains(PASSWORD), "{message}");
 }
 
 #[test]
