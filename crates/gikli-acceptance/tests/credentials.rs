@@ -2,6 +2,7 @@
 //! prompts reach the user inside gikli, and gikli stores none of the answers.
 
 use std::fs;
+use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -103,7 +104,12 @@ fn answering_prompts_until<T: Send>(
         while !running.is_finished() {
             let elapsed = started.elapsed();
             if deadline_passed(elapsed) {
-                panic!("{}", still_running(gikli, elapsed, &prompts));
+                let message = still_running(gikli, elapsed, &prompts);
+                // The scope waits for the operation before the panic leaves it, and cargo shows
+                // what a test prints only once the test ends: an operation that never ends would
+                // hide the message. Written straight to stderr, it shows at once.
+                let _ = writeln!(std::io::stderr(), "{message}");
+                panic!("{message}");
             }
             let Ok(event) = events.recv_timeout(Duration::from_millis(20)) else {
                 continue;
