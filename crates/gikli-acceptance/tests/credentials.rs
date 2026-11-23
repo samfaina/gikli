@@ -9,7 +9,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use gikli_acceptance::{
-    Sandbox, TestRepository, WslRepository, as_git_writes_it, askpass, speaking,
+    DEADLINE, Sandbox, TestRepository, WslRepository, as_git_writes_it, askpass, speaking,
 };
 use gikli_core::{
     Event, ExplainedMessage, Explanation, Failure, Gikli, NextStep, Prompt, PromptKind, Repository,
@@ -83,12 +83,7 @@ fn answering_prompts<T: Send>(
     answer: impl Fn(&Prompt) -> Option<String>,
     operation: impl FnOnce() -> T + Send,
 ) -> (T, Vec<Prompt>, Vec<Event>) {
-    answering_prompts_until(
-        gikli,
-        |elapsed| elapsed >= Duration::from_secs(60),
-        answer,
-        operation,
-    )
+    answering_prompts_until(gikli, |elapsed| elapsed >= DEADLINE, answer, operation)
 }
 
 /// [`answering_prompts`], failing once `deadline_passed` says so of the time since `operation`
@@ -104,12 +99,11 @@ fn answering_prompts_until<T: Send>(
         let running = scope.spawn(operation);
         let mut prompts = Vec::new();
         let mut seen = Vec::new();
-        let mut handled = Vec::new();
         let started = Instant::now();
         while !running.is_finished() {
             let elapsed = started.elapsed();
             if deadline_passed(elapsed) {
-                panic!("{}", still_running(gikli, elapsed, &prompts, &handled));
+                panic!("{}", still_running(gikli, elapsed, &prompts));
             }
             let Ok(event) = events.recv_timeout(Duration::from_millis(20)) else {
                 continue;
@@ -119,23 +113,24 @@ fn answering_prompts_until<T: Send>(
                     gikli.pending_prompts().contains(prompt),
                     "a window that opens now shows it too"
                 );
-                match answer(prompt) {
+                let done = match answer(prompt) {
                     Some(text) => {
                         gikli
                             .answer_prompt(prompt.id, &text)
                             .expect("answer the prompt");
-                        handled.push("answered");
+                        "answered"
                     }
                     None => {
                         gikli.cancel_prompt(prompt.id).expect("cancel the prompt");
-                        handled.push("cancelled");
+                        "cancelled"
                     }
-                }
-                prompts.push(prompt.clone());
+                };
+                prompts.push((prompt.clone(), done));
             }
             seen.push(event);
         }
         seen.extend(events.try_iter());
+        let prompts = prompts.into_iter().map(|(prompt, _)| prompt).collect();
         (running.join().expect("the operation ends"), prompts, seen)
     })
 }
@@ -145,11 +140,11 @@ const LAST_COMMANDS: usize = 5;
 
 /// Why an operation that still runs at its deadline failed, with what tells a slow operation from
 /// a stuck one: how long it ran, what the test did with each prompt it saw, the prompts still
-/// waiting (one the test never saw is a lost event), and how far git got. It holds none of the
-/// answers the test gave.
-fn still_running(gikli: &Gikli, elapsed: Duration, prompts: &[Prompt], handled: &[&str]) -> String {
+/// waiting (one the test never saw is a lost event), and how far git got. It holds no password
+/// the test gave; git names the user when it asks for the password, so the username can show.
+fn still_running(gikli: &Gikli, elapsed: Duration, prompts: &[(Prompt, &str)]) -> String {
     let mut message = format!("the operation still runs after {elapsed:.1?}\nprompts seen:");
-    for (prompt, done) in prompts.iter().zip(handled) {
+    for (prompt, done) in prompts {
         message.push_str(&format!("\n  {prompt:?}: {done}"));
     }
     message.push_str(&format!("\npending prompts: {:?}", gikli.pending_prompts()));
@@ -157,9 +152,11 @@ fn still_running(gikli: &Gikli, elapsed: Duration, prompts: &[Prompt], handled: 
     let log = gikli.operation_log();
     for entry in &log[log.len().saturating_sub(LAST_COMMANDS)..] {
         message.push_str(&format!(
-            "\n  git {}: exit {:?}\n    stderr: {:?}",
+            "\n  git {}: exit {:?}, could not start: {:?}, cancelled: {}\n    stderr: {:?}",
             entry.args.join(" "),
             entry.exit_code,
+            entry.error,
+            entry.cancelled,
             entry.stderr,
         ));
     }
@@ -275,11 +272,17 @@ fn an_operation_that_outlives_the_deadline_tells_how_far_it_got_and_none_of_the_
         message.contains("the operation still runs after "),
         "{message}"
     );
-    assert!(message.contains("Username"), "{message}");
-    assert!(message.contains("Password"), "{message}");
-    assert_eq!(message.matches("answered").count(), 2, "{message}");
+    let answered = |kind: &str| {
+        message
+            .lines()
+            .position(|line| {
+                line.contains(&format!("kind: {kind},")) && line.ends_with(": answered")
+            })
+            .unwrap_or_else(|| panic!("the {kind} prompt shows as answered: {message}"))
+    };
+    assert!(answered("Username") < answered("Password"), "{message}");
     assert!(message.contains("pending prompts: []"), "{message}");
-    assert!(message.contains("clone"), "{message}");
+    assert!(message.contains(" clone --progress"), "{message}");
     assert!(message.contains("exit Some(0)"), "{message}");
     assert!(!message.contains(PASSWORD), "{message}");
 }
