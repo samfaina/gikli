@@ -84,14 +84,28 @@ fn answering_prompts<T: Send>(
     answer: impl Fn(&Prompt) -> Option<String>,
     operation: impl FnOnce() -> T + Send,
 ) -> (T, Vec<Prompt>, Vec<Event>) {
-    answering_prompts_until(gikli, |elapsed| elapsed >= DEADLINE, answer, operation)
+    answering_prompts_until(
+        gikli,
+        |elapsed| elapsed >= DEADLINE,
+        tell_at_once,
+        answer,
+        operation,
+    )
+}
+
+/// Writes `message` straight to stderr, where it shows at once. The scope waits for the operation
+/// before a panic leaves it, and cargo shows what a test prints only once the test ends, so an
+/// operation that never ends would hide the message of its panic.
+fn tell_at_once(message: &str) {
+    let _ = writeln!(std::io::stderr(), "{message}");
 }
 
 /// [`answering_prompts`], failing once `deadline_passed` says so of the time since `operation`
-/// started while it still runs.
+/// started while it still runs. It gives the message of that failure to `on_deadline` first.
 fn answering_prompts_until<T: Send>(
     gikli: &Gikli,
     deadline_passed: impl Fn(Duration) -> bool,
+    on_deadline: impl Fn(&str),
     answer: impl Fn(&Prompt) -> Option<String>,
     operation: impl FnOnce() -> T + Send,
 ) -> (T, Vec<Prompt>, Vec<Event>) {
@@ -105,10 +119,7 @@ fn answering_prompts_until<T: Send>(
             let elapsed = started.elapsed();
             if deadline_passed(elapsed) {
                 let message = still_running(gikli, elapsed, &prompts);
-                // The scope waits for the operation before the panic leaves it, and cargo shows
-                // what a test prints only once the test ends: an operation that never ends would
-                // hide the message. Written straight to stderr, it shows at once.
-                let _ = writeln!(std::io::stderr(), "{message}");
+                on_deadline(&message);
                 panic!("{message}");
             }
             let Ok(event) = events.recv_timeout(Duration::from_millis(20)) else {
@@ -258,6 +269,9 @@ fn an_operation_that_outlives_the_deadline_tells_how_far_it_got_and_none_of_the_
                 gave_up.store(passed, Ordering::SeqCst);
                 passed
             },
+            // The deadline passes on purpose here: the message would only be noise in a run that
+            // passes.
+            |_| {},
             the_right_credentials,
             || {
                 let result = gikli.clone_repository(&server.url(), &target);
