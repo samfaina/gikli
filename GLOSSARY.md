@@ -5,12 +5,24 @@ gikli is a standalone desktop Git client that reproduces the behavior of the Git
 ## Workspace
 
 **Project**:
-The folder the user opens in gikli. It holds one or more Repositories and is the scope of every view.
+The folder the user opens in gikli, shown in a Project tab of its own. It holds one or more Repositories.
 _Avoid_: Workspace, solution
+
+**Project tab**:
+The tab of the window that shows one open Project. Switching Projects means switching tabs.
+_Avoid_: Repository tab, workspace
+
+**Repository selector**:
+The list in the Project tab of a Project with several Repositories that chooses which one the views show, and offers the Repositories gikli found in its folder that are not added yet.
+_Avoid_: Repo picker, project switcher
 
 **Repository**:
 One git repository inside a Project, identified by its root folder.
 _Avoid_: Root, repo (in UI text)
+
+**Navigation bar**:
+The column of icons at the left of the window that switches between the views: those of the Repository in view, and the Operation Log and Settings.
+_Avoid_: Sidebar, app menu, left menu
 
 ## Organizing changes
 
@@ -65,7 +77,7 @@ The commits of the local branch that its upstream does not have yet: what a push
 _Avoid_: Ahead (git's word for it), unpushed
 
 **Status area**:
-The strip at the foot of every window that always shows what HEAD of each Repository is on, with the incoming and outgoing commits of the current branch and the Operation in progress there.
+The strip at the foot of every window that always shows what HEAD of the Repository in view is on, with the incoming and outgoing commits of the current branch and the Operation in progress there.
 _Avoid_: Status bar, footer
 
 **Cut history**:
