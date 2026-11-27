@@ -1,0 +1,591 @@
+<!doctype html>
+<!--
+  PROTOTIPO DESECHABLE (rediseño de la UI, Q12 del grilling).
+  Preguntas: Q12 (formularios: se eligió B, modal) y Q11 (pestaña = Project, menú +, selector de Repository).
+  Tres variantes en esta misma página, por ?variant=A|B|C. Datos falsos, nada toca el backend.
+  Abrir: npm run dev:ui  →  http://localhost:1420/prototype-forms.html
+  No se fusiona en main: vive en una rama desechable cuando se decida.
+-->
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PROTOTIPO · formularios</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f4f4f5; --panel: #ffffff; --panel-2: #fafafa; --hover: #f0f0f2; --selected: #e8f2ef;
+  --border: #e3e3e7; --border-strong: #d0d0d6;
+  --text: #18181b; --muted: #6b6b75; --faint: #74747e;
+  --accent: #2f6f5e; --accent-text: #ffffff; --accent-soft: #e3f0ec;
+  --danger: #c4262e; --danger-soft: #fdecec; --warning: #b35c00;
+  --modified: #1f5fbf; --untracked: #b35c00; --added: #2a7a2a; --deleted: #9b3d6b;
+  --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 8px 24px rgb(0 0 0 / .08);
+  --shadow-lg: 0 2px 6px rgb(0 0 0 / .06), 0 24px 64px rgb(0 0 0 / .18);
+  --r: 10px; --r-sm: 7px;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+}
+:root[data-theme="dark"], :root:not([data-theme="light"]) { }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --dark: 1; } }
+:root[data-theme="dark"] { --dark: 1; }
+:root[data-theme="dark"],
+:root:not([data-theme]) {
+}
+.dark-vars, :root[data-theme="dark"] {
+  --bg: #161618; --panel: #1e1e21; --panel-2: #232327; --hover: #2a2a2f; --selected: #213530;
+  --border: #2c2c31; --border-strong: #3a3a40;
+  --text: #ececef; --muted: #a0a0a9; --faint: #8b8b95;
+  --accent: #5fb89f; --accent-text: #0f1f1a; --accent-soft: #1f3a33;
+  --danger: #ff7b72; --danger-soft: #3a1f1f; --warning: #f0a050;
+  --modified: #6ea8ff; --untracked: #f0a050; --added: #6cc66c; --deleted: #e07fb0;
+  --shadow: 0 1px 2px rgb(0 0 0 / .3), 0 8px 24px rgb(0 0 0 / .35);
+  --shadow-lg: 0 2px 6px rgb(0 0 0 / .4), 0 24px 64px rgb(0 0 0 / .55);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161618; --panel: #1e1e21; --panel-2: #232327; --hover: #2a2a2f; --selected: #213530;
+    --border: #2c2c31; --border-strong: #3a3a40;
+    --text: #ececef; --muted: #a0a0a9; --faint: #8b8b95;
+    --accent: #5fb89f; --accent-text: #0f1f1a; --accent-soft: #1f3a33;
+    --danger: #ff7b72; --danger-soft: #3a1f1f; --warning: #f0a050;
+    --modified: #6ea8ff; --untracked: #f0a050; --added: #6cc66c; --deleted: #e07fb0;
+    --shadow: 0 1px 2px rgb(0 0 0 / .3), 0 8px 24px rgb(0 0 0 / .35);
+    --shadow-lg: 0 2px 6px rgb(0 0 0 / .4), 0 24px 64px rgb(0 0 0 / .55);
+  }
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); overflow: hidden; }
+button, input, textarea, select { font: inherit; color: inherit; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- botones e inputs ---------- */
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r-sm);
+  border: 1px solid var(--border-strong); background: var(--panel); cursor: pointer; white-space: nowrap; }
+.btn:hover { background: var(--hover); }
+.btn.ghost { border-color: transparent; background: transparent; }
+.btn.ghost:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 500; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 500; }
+.btn.icon { width: 28px; padding: 0; justify-content: center; }
+.btn.lg { height: 34px; padding: 0 16px; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > span { font-size: 12px; color: var(--muted); font-weight: 500; }
+.input { height: 32px; padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--border-strong); background: var(--panel); outline: none; }
+textarea.input { height: auto; padding: 8px 10px; resize: vertical; }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { accent-color: var(--accent); margin: 0; }
+.hint { font-size: 12px; color: var(--faint); margin: 0; }
+.row { display: flex; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r-sm); overflow: hidden; }
+.seg label { padding: 5px 12px; cursor: pointer; }
+.seg input { display: none; }
+.seg input:checked + span { color: var(--accent); font-weight: 600; }
+.seg label:has(input:checked) { background: var(--accent-soft); }
+
+/* ---------- barra de pestañas ---------- */
+.tabbar { height: 42px; display: flex; align-items: flex-end; gap: 2px; padding: 0 8px; background: var(--bg); flex: none; position: relative; z-index: 2; }
+.project { align-self: center; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: var(--r-sm); border: 0; background: transparent; cursor: pointer; font-weight: 600; margin-right: 6px; }
+.project:hover { background: var(--hover); }
+.project .folder { color: var(--muted); }
+.tab { position: relative; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-radius: 9px 9px 0 0; cursor: pointer; color: var(--muted); border: 1px solid transparent; border-bottom: 0; margin-bottom: -1px; }
+.tab:hover { color: var(--text); background: var(--hover); }
+.tab.active { background: var(--panel); color: var(--text); border-color: var(--border); font-weight: 500; }
+.tab .branch { font-size: 11px; color: var(--faint); font-weight: 400; }
+.tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--modified); }
+.tab .dot.warn { background: var(--warning); }
+.addtab { align-self: center; margin-left: 4px; }
+.tab .x { width: 18px; height: 18px; border: 0; background: transparent; border-radius: 5px; display: grid; place-items: center; color: var(--faint); cursor: pointer; padding: 0; visibility: hidden; }
+.tab:hover .x, .tab.active .x { visibility: visible; }
+.tab .x:hover { background: var(--hover); color: var(--text); }
+.reposel { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px 0 10px; border-radius: var(--r-sm); border: 1px solid var(--border-strong); background: var(--panel); cursor: pointer; font-weight: 600; margin-right: 4px; }
+.reposel:hover { background: var(--hover); }
+.reposel .found { font-size: 11px; font-weight: 600; color: var(--accent-text); background: var(--accent); border-radius: 99px; padding: 0 6px; }
+.viewhead .crumb { color: var(--faint); margin-right: 4px; }
+.menu .mrow { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 10px; height: 34px; }
+.menu .mrow span { flex: 1; }
+.menu .mrow .btn { width: auto; height: 24px; padding: 0 8px; font-size: 12px; }
+.menu .mrow span { white-space: nowrap; }
+.menu button.cur { color: var(--accent); font-weight: 600; }
+.welcome { flex: 1; display: grid; place-items: center; background: var(--panel); border-top: 1px solid var(--border); }
+.welcome .box { width: 560px; display: flex; flex-direction: column; gap: 22px; }
+.welcome h1 { margin: 0; font-size: 20px; }
+.welcome .acts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.welcome .act { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: var(--r); background: var(--panel-2); cursor: pointer; text-align: left; }
+.welcome .act:hover { border-color: var(--accent); }
+.welcome .act small { color: var(--muted); }
+.welcome .recent button { display: flex; width: 100%; gap: 10px; align-items: center; height: 34px; padding: 0 10px; border: 0; background: transparent; border-radius: var(--r-sm); cursor: pointer; text-align: left; }
+.welcome .recent button:hover { background: var(--hover); }
+.welcome .recent small { color: var(--faint); margin-left: auto; }
+
+/* ---------- cuerpo ---------- */
+.body { flex: 1; display: flex; min-height: 0; }
+.rail { width: 52px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; background: var(--bg); }
+.rail .spacer { flex: 1; }
+.rail button { width: 36px; height: 36px; border-radius: 9px; border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; position: relative; }
+.rail button:hover { background: var(--hover); color: var(--text); }
+.rail button.on { background: var(--panel); color: var(--accent); box-shadow: var(--shadow); }
+.rail button svg.i { width: 18px; height: 18px; }
+.rail button[data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 44px; top: 50%; transform: translateY(-50%); background: var(--text); color: var(--bg); padding: 4px 8px; border-radius: 6px; white-space: nowrap; font-size: 12px; z-index: 50; }
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border); border-top: 1px solid var(--border); border-top-left-radius: var(--r); }
+.viewhead { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex: none; }
+.viewhead h1 { font-size: 15px; margin: 0 auto 0 0; font-weight: 600; }
+.viewhead .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+.content { flex: 1; display: flex; min-height: 0; gap: 0; }
+.changes { flex: 1; overflow: auto; padding: 8px 6px; }
+.commit { width: 320px; flex: none; border-left: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 10px; background: var(--panel-2); }
+.commit h2 { margin: 0; font-size: 13px; font-weight: 600; }
+
+.group { margin-bottom: 6px; }
+.ghead { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; border-radius: var(--r-sm); font-weight: 600; }
+.ghead:hover { background: var(--hover); }
+.ghead .chev { color: var(--faint); }
+.ghead .badge { font-size: 11px; font-weight: 500; color: var(--accent); background: var(--accent-soft); padding: 1px 7px; border-radius: 99px; }
+.ghead .count { margin-left: auto; color: var(--faint); font-weight: 500; font-size: 12px; }
+.ghead .gact { display: none; }
+.ghead:hover .gact { display: inline-flex; }
+.ghead:hover .count { margin-left: 0; }
+.ghead .gact:first-of-type { margin-left: auto; }
+.file { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 30px; border-radius: var(--r-sm); cursor: default; }
+.file:hover { background: var(--hover); }
+.file.sel { background: var(--selected); }
+.file .st { width: 14px; font-size: 11px; font-weight: 700; text-align: center; }
+.file .path { color: var(--faint); font-size: 12px; }
+.st.M { color: var(--modified); } .st.U { color: var(--untracked); } .st.A { color: var(--added); } .st.D { color: var(--deleted); }
+
+.status { height: 28px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 14px; font-size: 12px; color: var(--muted); background: var(--bg); border-top: 1px solid var(--border); }
+.status b { color: var(--text); font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+
+/* ---------- menús ---------- */
+.menu { position: fixed; z-index: 60; min-width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow-lg); padding: 5px; }
+.menu button { display: flex; align-items: center; gap: 10px; width: 100%; height: 30px; padding: 0 10px; border: 0; background: transparent; border-radius: 6px; cursor: pointer; text-align: left; }
+.menu button:hover { background: var(--hover); }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 5px 2px; }
+.menu .label { font-size: 11px; color: var(--faint); padding: 6px 10px 2px; text-transform: uppercase; letter-spacing: .04em; }
+.menu .sub { color: var(--faint); margin-left: auto; font-size: 12px; }
+
+/* ---------- formularios: cuerpo común ---------- */
+.form { display: flex; flex-direction: column; gap: 14px; }
+.form h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.form .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.filelist { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 4px; max-height: 160px; overflow: auto; }
+.filelist .check { height: 26px; padding: 0 6px; border-radius: 5px; }
+.filelist .check:hover { background: var(--hover); }
+
+/* Variante A: en línea */
+.inline { border-bottom: 1px solid var(--border); background: var(--panel-2); padding: 16px 18px; animation: drop .16s ease-out; }
+.inline .form { max-width: 560px; }
+.inline-top { border-bottom: 1px solid var(--border); background: var(--panel); padding: 16px 18px 16px 70px; animation: drop .16s ease-out; }
+.inline-top .form { max-width: 560px; }
+@keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
+
+/* Variante B: modal */
+.backdrop { position: fixed; inset: 0; z-index: 70; background: rgb(10 10 12 / .38); display: grid; place-items: center; animation: fade .14s ease-out; backdrop-filter: blur(1.5px); }
+.dialog { width: min(480px, calc(100vw - 40px)); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); animation: pop .16s ease-out; }
+.dialog .dhead { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.dialog .dhead h3 { margin: 0 auto 0 0; font-size: 14px; }
+.dialog .dbody { padding: 18px; }
+.dialog .form h3 { display: none; }
+@keyframes fade { from { opacity: 0; } }
+@keyframes pop { from { opacity: 0; transform: scale(.97) translateY(4px); } }
+
+/* Variante C: anclado */
+.pop { position: fixed; z-index: 65; width: 380px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 16px; animation: pop .14s ease-out; }
+.pop::before { content: ""; position: absolute; top: -6px; left: var(--arrow, 24px); width: 10px; height: 10px; background: var(--panel); border-left: 1px solid var(--border); border-top: 1px solid var(--border); transform: rotate(45deg); }
+
+/* Vista Settings (igual en todas las variantes) */
+.settings { flex: 1; overflow: auto; padding: 24px 32px; }
+.settings section { max-width: 640px; margin-bottom: 26px; }
+.settings h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); margin: 0 0 10px; }
+.card { border: 1px solid var(--border); border-radius: var(--r); padding: 4px 16px; background: var(--panel); }
+.card .item { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.card .item:last-child { border-bottom: 0; }
+.card .item div { flex: 1; }
+.card .item small { display: block; color: var(--faint); margin-top: 2px; }
+
+/* ---------- conmutador del prototipo (no forma parte del diseño) ---------- */
+.proto { position: fixed; z-index: 100; left: 50%; bottom: 40px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 99px;
+  background: #ff3d7f; color: #fff; box-shadow: 0 6px 20px rgb(0 0 0 / .25); font-size: 12px; font-weight: 600; }
+.proto button { border: 0; background: rgb(255 255 255 / .18); color: #fff; height: 26px; min-width: 26px; padding: 0 9px; border-radius: 99px; cursor: pointer; font-weight: 600; }
+.proto button:hover { background: rgb(255 255 255 / .3); }
+.proto .lbl { padding: 0 10px; min-width: 210px; text-align: center; }
+.proto .sep { width: 1px; height: 16px; background: rgb(255 255 255 / .4); margin: 0 4px; }
+</style>
+</head>
+<body>
+<header class="tabbar" id="tabbar"></header>
+<div id="topslot"></div>
+<div class="body" id="body">
+  <nav class="rail">
+    <button class="on" data-view="changes" data-tip="Changes"><svg class="i"><use href="#i-changes"/></svg></button>
+    <button data-view="log" data-tip="Log"><svg class="i"><use href="#i-log"/></svg></button>
+    <button data-view="stashes" data-tip="Stashes"><svg class="i"><use href="#i-stash"/></svg></button>
+    <div class="spacer"></div>
+    <button data-view="oplog" data-tip="Operation Log"><svg class="i"><use href="#i-terminal"/></svg></button>
+    <button data-view="settings" data-tip="Settings"><svg class="i"><use href="#i-settings"/></svg></button>
+  </nav>
+  <main class="main" id="main"></main>
+</div>
+<footer class="status" id="status"></footer>
+
+<div class="proto" id="proto">
+  <button id="prev" title="Variante anterior (←)">←</button>
+  <span class="lbl" id="plbl"></span>
+  <button id="next" title="Variante siguiente (→)">→</button>
+  <span class="sep"></span>
+  <button id="theme" title="Tema"></button>
+</div>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="i-changes" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.4 3.6a2 2 0 1 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="9" r="3"/><path d="M6 9v6"/><path d="M18 12c0 3-3 4-9 4.5"/></symbol>
+  <symbol id="i-stash" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-15-6.7L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 15 6.7L21 16"/><path d="M16 16h5v5"/></symbol>
+  <symbol id="i-fetch" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+  <symbol id="i-pull" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
+  <symbol id="i-push" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></symbol>
+  <symbol id="i-list-plus" viewBox="0 0 24 24"><path d="M11 12H3M16 6H3M16 18H3M18 9v6M21 12h-6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M6 8.5v7M18 8.5c0 5-6 4-11 7.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-new" viewBox="0 0 24 24"><path d="M12 10v6M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+</svg>
+
+<script>
+const VARIANTS = [
+  { key: "A", name: "En línea (dentro de la vista)" },
+  { key: "B", name: "Modal centrado" },
+  { key: "C", name: "Anclado al botón (popover)" },
+];
+const params = new URLSearchParams(location.search);
+let variant = VARIANTS.find(v => v.key === params.get("variant"))?.key ?? "B";
+let tabs = [
+  { name: "acme-web", repos: ["acme-web"], found: [], mark: null, view: "changes",
+    status: '<b>BRANCH main</b><span>↓1 ↑2</span><span>origin/main</span>' },
+  { name: "gikli", repos: ["gikli"], found: [], mark: "dot", view: "changes",
+    status: '<b>BRANCH redesign-ui</b><span>↑3</span><span>origin/redesign-ui</span>' },
+  { name: "workspace", repos: ["api", "mobile-app", "shared-ui"], found: ["docs-site", "infra"], mark: "warn", view: "changes", repo: "api",
+    status: '<b>BRANCH main</b><span style="color:var(--warning);font-weight:600">Merging feature/login</span><span>No upstream</span>' },
+];
+let active = 0;
+let view = "changes";
+const tab = () => tabs[active];
+let theme = params.get("theme") ?? "system";
+let open = null; // { kind, anchor }
+
+const ico = (id, s = 16) => `<svg class="i" style="width:${s}px;height:${s}px"><use href="#i-${id}"/></svg>`;
+const files = {
+  changes: [
+    { st: "M", name: "README.md", path: "" },
+    { st: "M", name: "cart.ts", path: "src/checkout" },
+    { st: "A", name: "summary.ts", path: "src/checkout" },
+    { st: "D", name: "legacy-prices.ts", path: "src/lib" },
+  ],
+  unversioned: [{ st: "U", name: ".env.example", path: "" }],
+};
+
+/* ---------- cuerpos de los formularios: idénticos en las tres variantes ---------- */
+const FORMS = {
+  newChangelist: {
+    title: "New Changelist",
+    body: () => `
+      <label class="field"><span>Name</span><input class="input" autofocus value="" placeholder="p. ej. checkout-refactor"></label>
+      <label class="field"><span>Comment</span><textarea class="input" rows="3" placeholder="Opcional"></textarea></label>
+      <label class="check"><input type="checkbox" checked> Set active</label>`,
+    ok: "Create", okClass: "primary",
+  },
+  rollback: {
+    title: "Rollback Changes",
+    body: () => `
+      <p class="hint" style="margin:0;color:var(--muted)">Se descartarán los cambios sin commit de estos archivos:</p>
+      <div class="filelist">${files.changes.map((f, i) => `<label class="check"><input type="checkbox" ${i < 2 ? "checked" : ""}><span class="st ${f.st}" style="width:14px;font-weight:700;font-size:11px">${f.st}</span>${f.name}<span class="path" style="color:var(--faint);font-size:12px">${f.path}</span></label>`).join("")}</div>
+      <label class="check"><input type="checkbox"> Delete local copies of added files</label>`,
+    ok: "Rollback", okClass: "danger",
+  },
+  move: {
+    title: "Move to Another Changelist",
+    body: () => `
+      <label class="field"><span>Changelist</span><select class="input"><option>Changes (active)</option><option>checkout-refactor</option><option>New Changelist…</option></select></label>
+      <label class="check"><input type="checkbox"> Set active</label>`,
+    ok: "Move", okClass: "primary",
+  },
+  clone: {
+    title: "Clone Repository",
+    body: () => `
+      <label class="field"><span>URL</span><input class="input" autofocus value="https://github.com/acme/acme-web.git" spellcheck="false"></label>
+      <div class="field"><span>URL form</span><div class="seg"><label><input type="radio" name="uf" checked><span>HTTPS</span></label><label><input type="radio" name="uf"><span>SSH</span></label></div></div>
+      <label class="field"><span>Directory</span><div class="row"><input class="input" style="flex:1" value="L:\\dev\\acme-web" spellcheck="false"><button class="btn" type="button">Browse…</button></div></label>
+      <p class="hint">La carpeta tiene que estar vacía o no existir.</p>`,
+    ok: "Clone", okClass: "primary",
+  },
+};
+
+function formHTML(kind, withTitle) {
+  const f = FORMS[kind];
+  return `<form class="form" onsubmit="event.preventDefault(); closeForm()">
+    ${withTitle ? `<h3>${f.title}</h3>` : ""}
+    ${f.body()}
+    <div class="actions"><button type="button" class="btn" onclick="closeForm()">Cancel</button><button type="submit" class="btn ${f.okClass}">${f.ok}</button></div>
+  </form>`;
+}
+
+/* ---------- vistas ---------- */
+function changesView() {
+  const fileRow = (f, i) => `<div class="file ${i === 0 ? "sel" : ""}" data-file="${f.name}"><span class="st ${f.st}">${f.st}</span>${f.name}<span class="path">${f.path}</span></div>`;
+  return `
+    <div class="viewhead">
+      ${repoSel()}<h1>Changes</h1>
+      <button class="btn ghost" title="Refresh">${ico("refresh")}</button>
+      <button class="btn ghost">${ico("fetch")}Fetch</button>
+      <button class="btn ghost">${ico("pull")}Pull…</button>
+      <button class="btn ghost">${ico("push")}Push…<span style="color:var(--faint)">2</span></button>
+      <span class="sep"></span>
+      <button class="btn" data-open="newChangelist">${ico("list-plus")}New Changelist…</button>
+      <button class="btn ghost icon" data-menu="more" title="Más">${ico("more")}</button>
+    </div>
+    <div id="viewslot"></div>
+    <div class="content">
+      <div class="changes">
+        <div class="group">
+          <div class="ghead">${ico("down", 14).replace('class="i"', 'class="i chev"')}Changes<span class="badge">active</span>
+            <button class="btn ghost icon gact" data-open="rollback" title="Rollback…">${ico("undo", 15)}</button>
+            <span class="count">${files.changes.length}</span></div>
+          ${files.changes.map(fileRow).join("")}
+        </div>
+        <div class="group">
+          <div class="ghead">${ico("down", 14).replace('class="i"', 'class="i chev"')}Unversioned Files<span class="count">1</span></div>
+          ${files.unversioned.map(f => fileRow(f, 1)).join("")}
+        </div>
+        <p class="hint" style="padding:10px 10px">Prueba: botón <b>New Changelist…</b>, el icono ↶ al pasar sobre «Changes», clic derecho en un archivo, o <b>+ → Clone…</b>. En la pestaña <b>workspace</b> está el selector de Repository. Cierra todas las pestañas para ver la bienvenida.</p>
+      </div>
+      <aside class="commit">
+        <h2>Commit</h2>
+        <label class="check"><input type="checkbox" checked> Changes <span style="color:var(--faint)">4 files</span></label>
+        <label class="check"><input type="checkbox"> Unversioned Files</label>
+        <label class="check"><input type="checkbox"> Amend last commit</label>
+        <textarea class="input" rows="6" placeholder="Commit message"></textarea>
+        <div class="row"><button class="btn primary lg" style="flex:1;justify-content:center">Commit</button><button class="btn lg">Commit and Push…</button></div>
+      </aside>
+    </div>`;
+}
+function repoSel() {
+  const t = tab();
+  if (t.repos.length < 2 && t.found.length === 0) return "";
+  return `<button class="reposel" data-menu="repos" title="Repository del Project">${ico("folder", 14)}${t.repo ?? t.repos[0]}${t.found.length ? `<span class="found" title="Encontrados sin añadir">${t.found.length}</span>` : ""}${ico("down", 14)}</button><span class="crumb">/</span>`;
+}
+function renderTabs() {
+  document.getElementById("tabbar").innerHTML = tabs.map((t, i) => `
+    <div class="tab ${i === active ? "active" : ""}" data-tab="${i}" title="${t.repos.length > 1 ? t.repos.length + " Repositories" : t.name}">
+      <span>${t.name}</span>
+      ${t.mark ? `<span class="dot ${t.mark === "warn" ? "warn" : ""}" title="${t.mark === "warn" ? "Operation in progress" : "Cambios sin commit"}"></span>` : ""}
+      <button class="x" data-close="${i}" title="Cerrar">${ico("x", 13)}</button>
+    </div>`).join("") +
+    `<button class="btn ghost icon addtab" id="addtab" title="Abrir, clonar o crear">${ico("plus")}</button>`;
+  document.getElementById("status").innerHTML = tabs.length ? tab().status.replace("BRANCH", ico("branch", 14)) : "";
+}
+function welcomeHTML() {
+  return `<div class="welcome"><div class="box">
+    <h1>gikli</h1>
+    <div class="acts">
+      <button class="act">${ico("folder", 20)}<b>Open Folder…</b><small>Un repositorio que ya tienes</small></button>
+      <button class="act" data-open="clone">${ico("download", 20)}<b>Clone…</b><small>Desde una URL</small></button>
+      <button class="act">${ico("new", 20)}<b>New Repository…</b><small>git init en una carpeta</small></button>
+    </div>
+    <div class="recent"><div class="hint" style="margin:0 0 6px 10px">Recientes</div>
+      <button data-reopen>${ico("folder")}acme-web<small>L:\\dev\\acme-web</small></button>
+      <button data-reopen>${ico("folder")}gikli<small>L:\\dev\\gikli</small></button>
+      <button data-reopen>${ico("folder")}workspace<small>L:\\dev\\workspace</small></button>
+    </div>
+  </div></div>`;
+}
+function settingsView() {
+  const item = (t, s, ctl) => `<div class="item"><div>${t}${s ? `<small>${s}</small>` : ""}</div>${ctl}</div>`;
+  const tog = c => `<input type="checkbox" ${c ? "checked" : ""} style="accent-color:var(--accent);width:16px;height:16px">`;
+  return `
+    <div class="viewhead"><h1>Settings</h1></div>
+    <div class="settings">
+      <section><h2>Git</h2><div class="card">
+        ${item("Path to git", "Vacío: el git del PATH.", `<div class="row"><input class="input" style="width:260px" value="C:\\Program Files\\Git\\cmd\\git.exe"><button class="btn">Test</button></div>`)}
+        ${item("Use git's credential helper", "Las contraseñas las guarda git, no gikli.", tog(true))}
+        ${item("Clone submodules recursively", "", tog(false))}
+      </div></section>
+      <section><h2>Commit</h2><div class="card">
+        ${item("Warn on unusual commit state", "", tog(true))}
+        ${item("Clear commit message after commit", "", tog(true))}
+      </div></section>
+      <section><h2>Push</h2><div class="card">
+        ${item("Show Push dialog for Commit and Push", "", tog(true))}
+        ${item("Only for protected branches", "", tog(false))}
+        ${item("Update automatically if push is rejected", "", tog(false))}
+      </div></section>
+    </div>`;
+}
+function placeholderView(t) {
+  return `<div class="viewhead"><h1>${t}</h1></div><div style="flex:1;display:grid;place-items:center;color:var(--faint)">Fuera del alcance de este prototipo</div>`;
+}
+
+/* ---------- abrir y cerrar formularios según la variante ---------- */
+function openForm(kind, anchor) {
+  closeMenus();
+  open = { kind, anchor };
+  renderForm();
+}
+function closeForm() { open = null; renderForm(); }
+window.closeForm = closeForm;
+
+function renderForm() {
+  document.querySelectorAll(".backdrop,.pop").forEach(n => n.remove());
+  document.getElementById("topslot").innerHTML = "";
+  const vs = document.getElementById("viewslot"); if (vs) vs.innerHTML = "";
+  if (!open) return;
+  const { kind, anchor } = open;
+  if (variant === "A") {
+    if (kind === "clone") {
+      document.getElementById("topslot").innerHTML = `<div class="inline-top">${formHTML(kind, true)}</div>`;
+    } else if (vs) {
+      vs.innerHTML = `<div class="inline">${formHTML(kind, true)}</div>`;
+    }
+  } else if (variant === "B") {
+    const b = document.createElement("div");
+    b.className = "backdrop";
+    b.innerHTML = `<div class="dialog" role="dialog"><div class="dhead"><h3>${FORMS[kind].title}</h3><button class="btn ghost icon" onclick="closeForm()">${ico("x")}</button></div><div class="dbody">${formHTML(kind, false)}</div></div>`;
+    b.addEventListener("mousedown", e => { if (e.target === b) closeForm(); });
+    document.body.append(b);
+  } else {
+    const p = document.createElement("div");
+    p.className = "pop";
+    p.innerHTML = formHTML(kind, true);
+    document.body.append(p);
+    const r = anchor?.getBoundingClientRect?.() ?? { left: 80, bottom: 60, width: 0 };
+    const w = 380;
+    let left = Math.min(Math.max(8, r.left + r.width / 2 - 28), innerWidth - w - 8);
+    p.style.left = left + "px";
+    p.style.top = (r.bottom + 10) + "px";
+    p.style.setProperty("--arrow", Math.max(12, r.left + r.width / 2 - left - 5) + "px");
+  }
+  document.querySelector(".backdrop [autofocus], .pop [autofocus], #topslot [autofocus], #viewslot [autofocus]")?.focus();
+}
+
+/* ---------- menús ---------- */
+function closeMenus() { document.querySelectorAll(".menu").forEach(n => n.remove()); }
+function showMenu(html, x, y) {
+  closeMenus();
+  const m = document.createElement("div");
+  m.className = "menu"; m.innerHTML = html;
+  document.body.append(m);
+  m.style.left = Math.min(x, innerWidth - m.offsetWidth - 8) + "px";
+  m.style.top = Math.min(y, innerHeight - m.offsetHeight - 8) + "px";
+  return m;
+}
+const mi = (icon, label, attrs = "", sub = "") => `<button ${attrs}>${ico(icon)}${label}${sub ? `<span class="sub">${sub}</span>` : ""}</button>`;
+
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-open],[data-menu],[data-close],[data-reopen],[data-repo-pick],#addtab,.rail button,.tab");
+  if (!t) { if (!e.target.closest(".menu,.pop,.inline,.inline-top")) closeMenus(); return; }
+  if (t.dataset.close !== undefined) {
+    e.stopPropagation(); tabs.splice(+t.dataset.close, 1); active = Math.max(0, Math.min(active, tabs.length - 1)); open = null;
+    if (tabs.length) view = tab().view; render(); return;
+  }
+  if (t.dataset.reopen !== undefined) { location.reload(); return; }
+  if (t.dataset.repoPick) { tab().repo = t.dataset.repoPick; closeMenus(); render(); return; }
+  if (t.matches(".tab")) { active = +t.dataset.tab; view = tab().view; open = null; render(); return; }
+  if (t.matches(".rail button")) { view = t.dataset.view; tab().view = view; open = null; render(); return; }
+  const r = t.getBoundingClientRect();
+  if (t.id === "addtab") {
+    const m = showMenu(`${mi("folder", "Open Folder…", "", "Ctrl+O")}${mi("download", "Clone…", 'data-open="clone"')}${mi("new", "New Repository…")}
+      <hr><div class="label">Recientes</div>${mi("folder", "conflict-demo", "", "L:\\dev")}${mi("folder", "dotfiles", "", "C:\\Users")}`, r.left, r.bottom + 4);
+    m.querySelector('[data-open="clone"]').dataset.anchor = "addtab";
+    return;
+  }
+  if (t.dataset.menu === "repos") {
+    const cur = tab().repo ?? tab().repos[0];
+    showMenu(`<div class="label">Repositories de ${tab().name}</div>
+      ${tab().repos.map(x => mi("folder", x, `data-repo-pick="${x}" class="${x === cur ? "cur" : ""}"`, x === cur ? "✓" : "")).join("")}
+      ${tab().found.length ? `<hr><div class="label">Encontrados en la carpeta, sin añadir</div>
+      ${tab().found.map(x => `<div class="mrow">${ico("folder")}<span>${x}</span><button class="btn">Add</button><button class="btn ghost">Ignore</button></div>`).join("")}` : ""}`, r.left, r.bottom + 4);
+    return;
+  }
+  if (t.dataset.menu === "more") {
+    showMenu(`${mi("stash", "Stash…")}${mi("refresh", "Refresh")}<hr>${mi("undo", "Rollback…", 'data-open="rollback"')}`, r.right - 220, r.bottom + 4);
+    return;
+  }
+  if (t.dataset.open) {
+    let anchor = t;
+    if (t.closest(".menu")) anchor = t.dataset.anchor === "addtab" ? document.getElementById("addtab") : document.querySelector('[data-menu="more"]') ?? t;
+    openForm(t.dataset.open, anchor);
+  }
+});
+document.addEventListener("contextmenu", e => {
+  const f = e.target.closest(".file");
+  if (!f) return;
+  e.preventDefault();
+  document.querySelectorAll(".file").forEach(x => x.classList.toggle("sel", x === f));
+  const m = showMenu(`${mi("changes", "Show Diff")}<hr>${mi("move", "Move to Another Changelist…", 'data-open="move"')}${mi("undo", "Rollback…", 'data-open="rollback"')}`, e.clientX, e.clientY);
+  m.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", ev => { ev.stopPropagation(); openForm(b.dataset.open, f); }));
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { closeMenus(); closeForm(); return; }
+  if (e.target.closest("input,textarea,select,[contenteditable]")) return;
+  if (e.key === "ArrowLeft") cycle(-1);
+  if (e.key === "ArrowRight") cycle(1);
+});
+
+/* ---------- conmutador ---------- */
+function cycle(d) {
+  const i = VARIANTS.findIndex(v => v.key === variant);
+  variant = VARIANTS[(i + d + VARIANTS.length) % VARIANTS.length].key;
+  syncUrl(); renderSwitcher(); renderForm();
+}
+function syncUrl() {
+  const p = new URLSearchParams(location.search);
+  p.set("variant", variant); p.set("theme", theme);
+  history.replaceState(null, "", "?" + p);
+}
+function renderSwitcher() {
+  const v = VARIANTS.find(v => v.key === variant);
+  document.getElementById("plbl").textContent = `${v.key} · ${v.name}`;
+  document.getElementById("theme").textContent = { system: "Tema: sistema", light: "Tema: claro", dark: "Tema: oscuro" }[theme];
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.dataset.theme = theme;
+}
+document.getElementById("prev").onclick = () => cycle(-1);
+document.getElementById("next").onclick = () => cycle(1);
+document.getElementById("theme").onclick = () => {
+  theme = { system: "light", light: "dark", dark: "system" }[theme];
+  syncUrl(); renderSwitcher();
+};
+
+function render() {
+  renderTabs();
+  const body = document.getElementById("body");
+  body.querySelector(".welcome")?.remove();
+  const has = tabs.length > 0;
+  body.querySelector(".rail").style.display = has ? "" : "none";
+  document.getElementById("main").style.display = has ? "flex" : "none";
+  if (!has) { body.insertAdjacentHTML("beforeend", welcomeHTML()); renderForm(); return; }
+  document.querySelectorAll(".rail button").forEach(b => b.classList.toggle("on", b.dataset.view === view));
+  const main = document.getElementById("main");
+  main.innerHTML = view === "changes" ? changesView()
+    : view === "settings" ? settingsView()
+    : placeholderView({ log: "Log", stashes: "Stashes", oplog: "Operation Log" }[view]);
+  renderForm();
+}
+syncUrl(); renderSwitcher(); render();
+</script>
+</body>
+</html>
