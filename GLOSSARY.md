@@ -24,6 +24,10 @@ _Avoid_: Root, repo (in UI text)
 The column of icons at the left of the window that switches between the views: those of the Repository in view, and the Operation Log and Settings.
 _Avoid_: Sidebar, app menu, left menu
 
+**Recent Projects**:
+The Projects the user opened last, up to 10, newest first, offered to open again. The user can take a Project out of them, and opening it again brings it back. A Project is opened whenever it opens in a tab, however the user started it, and switching to its tab does not open it. A clone opens its Project when it ends. A Project open in a tab is not among them.
+_Avoid_: Recently opened, history, recent folders
+
 ## Organizing changes
 
 **Changelist**:
