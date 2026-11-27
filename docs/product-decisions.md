@@ -12,7 +12,7 @@ Decisions that complete or settle the [product reference](reference/jetbrains-gi
 - gikli looks for git in this order: the path in the settings, then PATH, then on Windows the git inside WSL. A path in the settings is used as is: when there is no git there, or it is too old or unreadable, gikli says so and does not fall back to another git.
 - A folder under `\\wsl$` or `\\wsl.localhost` always uses the git of its WSL distribution, whatever git gikli found for other folders.
 - Light and dark themes that follow the operating system. gikli's own design and keyboard shortcuts, following each platform's conventions (Ctrl on Windows and Linux, Cmd on macOS), without copying the JetBrains layout beyond what a feature needs.
-- One window per Project, with several windows open at once.
+- One window, with every open Project in a tab of its own ([ADR-0011](adr/0011-each-open-project-is-a-tab.md)).
 - No telemetry and no automatic error reports. The user exports a report by hand.
 - License: Apache-2.0.
 - Distribution through GitHub Releases: `.msi`/`.exe` on Windows, `.dmg` on macOS, AppImage and `.deb` on Linux, with the Tauri updater. Code signing on Windows and macOS before the first public release; development builds are unsigned.
