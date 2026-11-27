@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-11-27T13:02:09.566Z",
+        "reason": "user confirmed: Inter elegida en el grilling del rediseño (Q7), provisional y a iterar"
+      }
+    ]
+  }
+}
