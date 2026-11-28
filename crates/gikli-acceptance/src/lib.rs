@@ -501,8 +501,9 @@ pub struct HeldTransfers {
 
 impl HeldTransfers {
     /// Runs `run`, which starts a long operation of `gikli` that asks a remote for objects, on a
-    /// thread of its own. Once the transfer holds, cancels that operation, the only one running,
-    /// which must offer it, and returns what `run` returned, which must come by itself.
+    /// thread of its own. Once the transfer holds, checks that this operation is the only one
+    /// running and that it can be cancelled, cancels it, and returns what `run` returned, which
+    /// must come within [`DEADLINE`].
     pub fn cancel_once_held<T: Send>(&self, gikli: &Gikli, run: impl FnOnce() -> T + Send) -> T {
         std::thread::scope(|scope| {
             let running = scope.spawn(run);

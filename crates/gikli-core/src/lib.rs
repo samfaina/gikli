@@ -2561,17 +2561,23 @@ impl Gikli {
         if let Some(failed) = shallow::track_every_branch(&runner, repository, &remote)? {
             return Err(failure_of(&runner, root, &failed, fallback));
         }
-        let lock = shallow::cut_lock(&runner, repository).map_err(git_failed_to_start)?;
-        let locked_before = lock.exists();
+        // A lock already there, or one gikli cannot find, is not this fetch's to remove.
+        let unlocked = shallow::cut_lock(&runner, repository)
+            .ok()
+            .filter(|lock| !lock.exists());
         let args = shallow::fetch_rest_args(&remote);
         let invocation = self.run_operation(&runner, operation, root, &args)?;
         if invocation.success {
             return Ok(());
         }
-        if invocation.cancelled && !locked_before {
-            // Only the git that was cancelled can have taken the lock, as none can while it is
-            // there. Should it stay, the next fetch of the rest fails on it, as a failure of its own.
-            let _ = std::fs::remove_file(&lock);
+        if invocation.cancelled
+            && let Some(lock) = &unlocked
+        {
+            // No other git can take the lock while the cancelled one holds it, or after, while
+            // it stays. A git that took it first makes this fetch fail at once, before a cancel
+            // can reach it. A lock that cannot be removed fails the next fetch of the rest, which
+            // explains its failure as any other.
+            let _ = std::fs::remove_file(lock);
         }
         Err(failure_of_contacting_remotes(
             &runner,
@@ -4182,12 +4188,9 @@ impl Gikli {
         options: UnstashOptions,
     ) -> Result<Unstashed, Failure> {
         let runner = self.runner(&repository.root)?;
-        let mut args = Vec::new();
+        let mut args = vec!["stash", "apply", "--quiet"];
         if options.restore_index {
-            args.extend(stash::RESTORING_THE_INDEX);
-        }
-        args.extend(["stash", "apply", "--quiet"]);
-        if options.restore_index {
+            args.splice(0..0, stash::RESTORING_THE_INDEX);
             args.push("--index");
         }
         args.push(hash);

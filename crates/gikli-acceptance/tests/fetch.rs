@@ -134,8 +134,9 @@ fn fetching_every_remote_fetches_each_of_them() {
     );
 }
 
-/// `git fetch --all --prune --prune-tags` deletes the tags of the user's own, which no remote holds,
-/// and, as git 2.43 does, a tag that only one of two remotes holds.
+/// gikli prunes remote branches and no tag. With `--prune-tags`, `git fetch --all --prune` would
+/// delete the user's own tags, which no remote holds, and, as git 2.43 does, a tag that only one of
+/// two remotes holds.
 #[test]
 fn fetching_every_remote_keeps_a_tag_only_one_remote_holds_and_the_users_own() {
     let sandbox = Sandbox::new();
