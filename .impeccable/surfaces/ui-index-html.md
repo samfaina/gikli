@@ -11,7 +11,7 @@ related_targets: []
 - **Audience and job:** developers reviewing local changes, sorting them into Changelists, committing, pulling and pushing, reading the Log, handling branches, Conflicts and Operations in progress. Long sessions, all day, beside an IDE.
 - **Constraints:** the [visual] decisions of `docs/design/BRIEF.md`; no new features; every `data-testid` stays; WCAG AA in both themes.
 - **Chosen direction:** Line Map, locked by the maintainer on 2026-11-27 after three rounds (the first roll, a Line Map follow-up in light and dark, and a bolder re-roll that kept Line Map on the table).
-- **Maintainer decisions taken during the rounds:** the Navigation bar follows `docs/design/refs/nav-rail-ref.png`: icon groups in rounded capsules on the window ground, the main group (Changes, Log, Stashes) centred vertically, Operation Log and Settings in a capsule at the foot. This departs from the brief's "at the top".
+- **Maintainer decisions taken during the rounds:** the Navigation bar follows `docs/design/refs/nav-rail-ref.png`: icon groups in rounded capsules on the window ground, the main group (Changes, Log, Stashes) centred vertically, Operation Log and Settings in a capsule at the foot. The brief records it.
 - **Memorable moment:** the Log reads as a transit map, and the same line language carries the current branch and the Changelists.
 - **Unresolved:** exact contrast of every token pair, to be measured in #202; diff and merge colours inside CodeMirror, settled with the Diff view.
 

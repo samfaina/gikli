@@ -305,7 +305,7 @@ Seven line colours, used in order by the log graph, the Branches pane dots, ref 
 The window, from the top:
 1. **Native title bar.**
 2. **Project tabs** (44 px strip on the ground), starting after the Navigation bar column; the + ends the row.
-3. **Navigation bar** (52 px column on the ground, about 48 px as the brief asks): the main capsule (Changes, Log, Stashes) is centred vertically in the column; the foot capsule (Operation Log, Settings) sits 36 px above the bottom edge. This centring is the maintainer's decision from the reference `docs/design/refs/nav-rail-ref.png` and departs from the brief's "at the top".
+3. **Navigation bar** (52 px column on the ground, about 48 px as the brief asks): the main capsule (Changes, Log, Stashes) is centred vertically in the column; the foot capsule (Operation Log, Settings) sits 36 px above the bottom edge. This centring is the maintainer's decision from the reference `docs/design/refs/nav-rail-ref.png`, recorded in the brief.
 4. **View header** (44 px, on the ground): the view title, then the view's actions beside it; the Repository selector, when shown, sits left of the title.
 5. **Banners** under the view header, when there are any.
 6. **The view's cards**, 8 px apart, with 8 px between the last card and the window's right edge.
