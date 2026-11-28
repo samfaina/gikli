@@ -1,5 +1,6 @@
 //! The failure explainer: it classifies a failed git invocation and returns a plain message, a
-//! next step and the actions to offer. git's raw output goes to the operation log only.
+//! next step and the actions to offer. git's raw output goes to the operation log, and outside it
+//! only what a failed hook or a failed signing program leaves the user to read.
 //!
 //! Classification never reads git's translated sentences. It relies on what stays the same in
 //! every language: what git records in its trace of the run, the file names and the commands it
@@ -31,9 +32,13 @@ pub struct Explanation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ExplainedMessage {
-    /// A hook of the user's stopped the operation. `output` is what the hook wrote, the one part
-    /// of a run shown outside the operation log.
+    /// A hook of the user's stopped the operation. `output` is what the hook wrote, one of the two
+    /// parts of a run shown outside the operation log.
     HookFailed { hook: String, output: String },
+    /// The program that signs commits, as the user configured it, could not sign one. `output` is
+    /// what the run wrote, which holds what that program said, without gpg's status lines: the
+    /// other part of a run shown outside the operation log.
+    SigningFailed { output: String },
     /// git refuses the repository at `folder`, as it belongs to someone else. `folder` is written
     /// as git writes it, which is how git compares it with what the user trusts.
     DubiousOwnership { folder: String },
@@ -74,6 +79,9 @@ pub enum NextStep {
     /// Fix what the hook reports. gikli runs hooks without a terminal, so one that asks for input
     /// has to work without one.
     FixHook,
+    /// Check the signing key, `user.signingKey`, the gpg or ssh agent and the signing program the
+    /// configuration names, then try again. gikli changes none of the user's signing configuration.
+    CheckSigning,
     /// Trust the folder, if the user knows where it comes from: a repository can run commands of
     /// its owner's choosing, which is why git asks.
     TrustFolder,
@@ -136,6 +144,16 @@ pub(crate) fn explain(
             next_step: NextStep::FixHook,
             actions: vec![],
         });
+    }
+    // Before the credentials: a passphrase the user declined to give the signing program is no
+    // credential of a remote's.
+    if invocation.signing_failed {
+        return Some(explained(
+            ExplainedMessage::SigningFailed {
+                output: without_gpg_status_lines(&invocation.stderr),
+            },
+            NextStep::CheckSigning,
+        ));
     }
     let stderr = &invocation.stderr;
     let repository = Repository {
@@ -465,6 +483,18 @@ fn explained(message: ExplainedMessage, next_step: NextStep) -> Explanation {
         actions: vec![],
     }
 }
+
+/// `stderr` without the status lines gpg writes for git, as git gives it the error output to write
+/// them to. They are in a fixed format meant for programs, and the user has gpg's own sentences.
+fn without_gpg_status_lines(stderr: &str) -> String {
+    stderr
+        .split_inclusive('\n')
+        .filter(|line| !line.starts_with(GPG_STATUS_PREFIX))
+        .collect()
+}
+
+/// How each status line of gpg starts.
+const GPG_STATUS_PREFIX: &str = "[GNUPG:] ";
 
 /// Whether a line of `stderr` is what `reports` looks for. What it looks for ends a line, unlike a
 /// file name that looks like it, which git quotes inside a sentence.

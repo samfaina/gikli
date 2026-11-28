@@ -151,6 +151,30 @@ impl Sandbox {
         fs::write(path, config).expect("write sandbox git configuration");
     }
 
+    /// Creates an SSH key in the file `key` with `passphrase`, which may be empty, using the real
+    /// `ssh-keygen`, found as git finds it to sign.
+    pub fn create_ssh_key(&self, key: &Path, passphrase: &str) {
+        let alias = format!(
+            "alias.create-key=!ssh-keygen -q -t ed25519 -N '{passphrase}' -C signing -f '{}'",
+            as_git_writes_it(key)
+        );
+        let created = git_output(
+            &self.root,
+            &self.git_environment(),
+            ["-c", &alias, "create-key"],
+        );
+        assert!(created.status.success(), "create the key: {created:?}");
+    }
+
+    /// Makes every commit signed in the SSH format with the key in the file `key`, as a user would
+    /// in `~/.gitconfig`. git signs with the real `ssh-keygen`.
+    pub fn sign_commits_with_ssh_key(&self, key: &Path) {
+        self.configure(&format!(
+            "[commit]\n\tgpgSign = true\n[gpg]\n\tformat = ssh\n[user]\n\tsigningKey = {}\n",
+            as_git_writes_it(key)
+        ));
+    }
+
     /// Whether this git has the setting that forbids asking for credentials, added in git 2.46.
     pub fn git_knows_credential_interactive(&self) -> bool {
         self.git_is_at_least(2, 46)

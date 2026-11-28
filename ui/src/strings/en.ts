@@ -412,6 +412,7 @@ export const en = {
     "The clone was cancelled, and gikli could not remove what it created in {folder}: {message} Delete it before you clone again.",
   failureExplained: "{message} {nextStep}",
   failureHookFailed: "The {hook} hook failed and stopped the operation. This is what it wrote:",
+  failureSigningFailed: "git could not sign a commit, which stopped the operation. This is what git and the signing program wrote:",
   failureDubiousOwnership: "git refuses to work in {folder} because the folder belongs to another user.",
   failureIndexLocked:
     "The git index of this Repository is locked by {lock}. Another git operation is using it, or one stopped without cleaning up.",
@@ -422,6 +423,8 @@ export const en = {
     "This server answers with a different host key from the one SSH knows. It may have been reinstalled, or someone may be intercepting the connection.",
   nextStepFixHook:
     "Fix what the hook reports, then try again. gikli runs hooks without a terminal, so a hook that asks for input has to work without one. A clone stopped here leaves its folder behind: delete it before you clone again.",
+  nextStepCheckSigning:
+    "Check your signing key (user.signingKey), that your gpg or ssh agent is running, and the signing program your git configuration names, then try again. gikli leaves your signing configuration to you.",
   nextStepTrustFolder: "If you know where this folder comes from, you can trust it.",
   nextStepRemoveIndexLock: "No other git operation is running here, so the lock is stale. You can remove it, then try again.",
   nextStepWaitForOtherGitOperation:
