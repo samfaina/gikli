@@ -47,7 +47,7 @@ Settled while grilling this brief. Terms as in `GLOSSARY.md`; lines marked [visu
 - The + at the end of the tabs offers Open Folder…, Clone… and New Repository…, and each opens its Project in a new tab.
 - With no tab open, the window shows those same three actions as its welcome screen.
 - A Project tab shows the name of the Project's folder, and a marker when its Project has uncommitted changes, an Operation in progress or a notification.
-- The Navigation bar holds Changes, Log and Stashes at the top, and Operation Log and Settings at the foot. It only switches views.
+- The Navigation bar holds Changes, Log and Stashes centred vertically, and Operation Log and Settings at the foot. It only switches views.
 - The actions of a view (Refresh, Fetch, Pull…, Push…, New Changelist…) sit in the header of the view, beside its title.
 - In the Log, the Branches pane sits beside the Navigation bar, at the left of the graph.
 - Each Project tab remembers its view and its selection while gikli runs. Nothing of it is saved to disk.
