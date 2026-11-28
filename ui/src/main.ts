@@ -2057,10 +2057,11 @@ function explanationView(explanation: Explanation, retry?: () => void): HTMLElem
   const message = document.createElement("p");
   message.textContent = describeExplainedMessage(explanation.message);
   view.append(message);
-  if (explanation.message.kind === "hookFailed") {
+  const shown = shownOutput(explanation.message);
+  if (shown !== null) {
     const output = document.createElement("pre");
-    output.dataset.testid = "hook-output";
-    output.textContent = explanation.message.output;
+    output.dataset.testid = shown.testid;
+    output.textContent = shown.output;
     view.append(output);
   }
   const nextStep = document.createElement("p");
@@ -2096,10 +2097,27 @@ function explanationView(explanation: Explanation, retry?: () => void): HTMLElem
   return view;
 }
 
+/**
+ * The part of a run an explained failure shows below its message, the one part of git's output
+ * shown outside the operation log: what a hook wrote, or what git and the signing program wrote.
+ */
+function shownOutput(message: ExplainedMessage): { testid: string; output: string } | null {
+  switch (message.kind) {
+    case "hookFailed":
+      return { testid: "hook-output", output: message.output };
+    case "signingFailed":
+      return { testid: "signing-output", output: message.output };
+    default:
+      return null;
+  }
+}
+
 function describeExplainedMessage(message: ExplainedMessage): string {
   switch (message.kind) {
     case "hookFailed":
       return t("failureHookFailed", { hook: message.hook });
+    case "signingFailed":
+      return t("failureSigningFailed");
     case "dubiousOwnership":
       return t("failureDubiousOwnership", { folder: message.folder });
     case "indexLocked":
@@ -2136,6 +2154,7 @@ const LOCAL_CHANGES_NOT_SAVABLE_LABELS: Record<StashUnavailable, StringKey> = {
 
 const NEXT_STEPS: Record<NextStep, StringKey> = {
   fixHook: "nextStepFixHook",
+  checkSigning: "nextStepCheckSigning",
   trustFolder: "nextStepTrustFolder",
   removeIndexLock: "nextStepRemoveIndexLock",
   waitForOtherGitOperation: "nextStepWaitForOtherGitOperation",

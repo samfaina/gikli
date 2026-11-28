@@ -1,10 +1,11 @@
 //! git's trace of one run, read as git writes it and kept in memory.
 //!
-//! The trace is the only place that tells which hook runs or failed, in every language, and which
+//! The trace is the only place that tells which hook runs or failed, in every language, which
 //! fetch failed when git fetches in gits of its own: each remote, as `git fetch --all` does, or
-//! each submodule. git also writes every command line to it, which can hold a password in a URL that git does not hide
-//! (an older git hides none, and no git hides one that reads as a port). So no file ever holds
-//! the trace, and git writes it to something that keeps no data.
+//! each submodule, and whether the program that signs a commit failed. git also writes every
+//! command line to it, which can hold a password in a URL that git does not hide (an older git
+//! hides none, and no git hides one that reads as a port). So no file ever holds the trace, and git
+//! writes it to something that keeps no data.
 //!
 //! A git that a hook starts inherits the target, and git keeps quiet when it cannot reach its
 //! target: it runs without a trace, with its own output untouched and no file created. On macOS and
@@ -45,9 +46,9 @@ pub(crate) fn new_run_name() -> String {
 }
 
 /// The hooks the git gikli started has run so far, and the gits it started to fetch, from one
-/// remote each, as `git fetch --all` does, or into a submodule. Of the trace, gikli keeps only
-/// this: the names of the hooks and of the remotes, and how each run ended. The rest holds command
-/// lines.
+/// remote each, as `git fetch --all` does, or into a submodule, and the programs it started to sign
+/// a commit. Of the trace, gikli keeps only this: the names of the hooks and of the remotes, and
+/// how each run ended. The rest holds command lines.
 #[derive(Default)]
 pub(crate) struct ChildRuns(Vec<ChildRun>);
 
@@ -66,6 +67,8 @@ enum ChildKind {
     Fetch(String),
     /// Fetches into a submodule.
     SubmoduleFetch,
+    /// Signs a commit: the program the user's configuration names for the format they sign in.
+    Signing,
 }
 
 impl ChildRun {
@@ -159,14 +162,21 @@ impl ChildRuns {
             .iter()
             .any(|child| matches!(child.kind, ChildKind::SubmoduleFetch) && child.failed())
     }
+
+    /// Whether the program that signs a commit ended with an error.
+    pub fn signing_failed(&self) -> bool {
+        self.0
+            .iter()
+            .any(|child| matches!(child.kind, ChildKind::Signing) && child.failed())
+    }
 }
 
 /// What the child that `event` starts does, when gikli keeps track of it: a hook, which the trace
-/// names, or a git that fetches. One that `git fetch --all` started appends to what the others
-/// fetched, and gets the remote last, as in `git -c fetch.bundleURI= fetch --append --no-auto-gc
-/// origin`. One that fetches into a submodule gets the submodule's folder, with
-/// `--submodule-prefix`. The git inside WSL forwards only the remote, as `fetched`, or that it is
-/// a submodule's, as `submodule`.
+/// names, a git that fetches, or the program that signs a commit. One that `git fetch --all`
+/// started appends to what the others fetched, and gets the remote last, as in `git -c
+/// fetch.bundleURI= fetch --append --no-auto-gc origin`. One that fetches into a submodule gets the
+/// submodule's folder, with `--submodule-prefix`. The git inside WSL forwards only the remote, as
+/// `fetched`, that it is a submodule's, as `submodule`, or that it signs, as `signing`.
 fn kind_of_child(event: &serde_json::Value) -> Option<ChildKind> {
     if let Some(hook) = event["hook_name"].as_str() {
         return Some(ChildKind::Hook(hook.to_owned()));
@@ -177,11 +187,17 @@ fn kind_of_child(event: &serde_json::Value) -> Option<ChildKind> {
     if event["submodule"].as_bool() == Some(true) {
         return Some(ChildKind::SubmoduleFetch);
     }
+    if event["signing"].as_bool() == Some(true) {
+        return Some(ChildKind::Signing);
+    }
     let argv: Vec<&str> = event["argv"]
         .as_array()?
         .iter()
         .map(|argument| argument.as_str())
         .collect::<Option<_>>()?;
+    if signs(&argv) {
+        return Some(ChildKind::Signing);
+    }
     if argv.first() != Some(&"git") || !argv.contains(&"fetch") {
         return None;
     }
@@ -193,6 +209,25 @@ fn kind_of_child(event: &serde_json::Value) -> Option<ChildKind> {
     }
     let remote = argv.last().filter(|_| argv.contains(&"--append"))?;
     Some(ChildKind::Fetch((*remote).to_owned()))
+}
+
+/// What git gives the program that signs in the OpenPGP and X.509 formats after its name, before
+/// the key: `gpg.program` or `gpg.x509.program`, `gpg` and `gpgsm` unless the user names another.
+const OPENPGP_SIGNING_ARGUMENTS: [&str; 2] = ["--status-fd=2", "-bsau"];
+
+/// What git gives the program that signs in the SSH format after its name, before the key and the
+/// file to sign: `gpg.ssh.program`, `ssh-keygen` unless the user names another.
+const SSH_SIGNING_ARGUMENTS: [&str; 5] = ["-Y", "sign", "-n", "git", "-f"];
+
+/// Whether `argv`, a command line git built, starts a program that signs. The program can be any
+/// the user configured, so only the arguments git gives it tell, and those are the same in every
+/// language.
+fn signs(argv: &[&str]) -> bool {
+    let Some((_, arguments)) = argv.split_first() else {
+        return false;
+    };
+    arguments.starts_with(&OPENPGP_SIGNING_ARGUMENTS)
+        || arguments.starts_with(&SSH_SIGNING_ARGUMENTS)
 }
 
 /// Reads the trace of a git on this machine, on a thread of its own, into [`ChildRuns`].
@@ -268,10 +303,13 @@ const CHUNK_SIZE: usize = 16 * 1024;
 
 /// Runs inside WSL in front of git, as `sh -c <this> sh <marker> git <arguments>`, as nothing
 /// inside WSL can reach a pipe of Windows, and the error output is what reaches gikli. It forwards
-/// there only what names a hook of the git gikli started, or what a git it started fetches from,
-/// each with the marker in front, and never a command line: the remote of a git that fetches from
-/// one remote goes as `fetched`, its last argument, and a git that fetches into a submodule goes as
-/// `submodule`. It runs git without a trace when it cannot make the FIFO.
+/// there only what names a hook of the git gikli started, what a git it started fetches from, or
+/// that a program it started signs, each with the marker in front, and never a command line: the
+/// remote of a git that fetches from one remote goes as `fetched`, its last argument, a git that
+/// fetches into a submodule goes as `submodule`, and a program that signs, known by the arguments
+/// [`signs`] looks for, goes as `signing`. A pattern cannot tell where the program's name ends, so
+/// it finds those arguments anywhere after the name, which only the program that signs gets from
+/// git. It runs git without a trace when it cannot make the FIFO.
 ///
 /// The folder goes as soon as git has connected, which it does before it starts anything, so a git
 /// a hook starts can neither connect nor create a file there. It moves first, as removing it leaves
@@ -304,6 +342,10 @@ dir=$(mktemp -d 2>/dev/null) && mkfifo "$dir/trace" 2>/dev/null && exec 3<>"$dir
         event=${line%%,\"argv\":*}
         remote=${line##*,\"}
         printf '%s%s,"fetched":"%s}\n' "$marker" "$event" "${remote%]\}}" >&2 ;;
+      '{"event":"child_start"'*'"argv":["'*'","--status-fd=2","-bsau",'*|\
+      '{"event":"child_start"'*'"argv":["'*'","-Y","sign","-n","git","-f",'*)
+        event=${line%%,\"argv\":*}
+        printf '%s%s,"signing":true}\n' "$marker" "$event" >&2 ;;
       '{"event":"child_exit"'*)
         printf '%s%s\n' "$marker" "$line" >&2 ;;
     esac

@@ -944,36 +944,37 @@ fn a_program_without_the_token_cannot_ask_the_user_anything() {
     assert_eq!(prompts, []);
 }
 
-/// gikli has no commit command yet, so a hook signs the commit as git will when gikli commits. It
-/// signs with the real `ssh-keygen`, the program git uses to sign with an SSH key.
+/// A repository with a change to commit, where every commit is signed in the SSH format with a key
+/// that has [`PASSPHRASE`], by the real `ssh-keygen`, the program git uses to sign with an SSH key.
+fn repository_signing_with_a_passphrase(sandbox: &Sandbox) -> TestRepository {
+    let repository = sandbox.repository("app");
+    repository.write("notes.txt", "draft\n");
+    repository.commit_all("First commit");
+    repository.write("notes.txt", "signed\n");
+    let key = sandbox.root().join("signing-key");
+    sandbox.create_ssh_key(&key, PASSPHRASE);
+    sandbox.sign_commits_with_ssh_key(&key);
+    repository
+}
+
 #[test]
 fn a_signing_prompt_reaches_the_user_and_signs_with_the_answer() {
     let sandbox = Sandbox::new();
-    let remote = remote_with_a_commit(&sandbox);
-    let key = as_git_writes_it(&sandbox.root().join("signing-key"));
-    sandbox.hook(
-        "post-checkout",
-        &format!(
-            "ssh-keygen -q -t ed25519 -N '{PASSPHRASE}' -C signing -f '{key}' || exit 1\n\
-             git -c gpg.format=ssh -c user.signingKey='{key}' commit --quiet --allow-empty -S -m Signed"
-        ),
-    );
-    let target = sandbox.root().join("clone");
+    let repository = repository_signing_with_a_passphrase(&sandbox);
     let gikli = sandbox.gikli_with_prompts(askpass!());
+    let root = gikli_acceptance::opened(&gikli, &repository);
 
     let (result, prompts, events) = answering_prompts(
         &gikli,
         |_| Some(PASSPHRASE.to_owned()),
-        || gikli.clone_repository(&gikli_acceptance::file_url(remote.root()), &target),
+        || gikli.commit_files(&root, &["notes.txt".to_owned()], "Signed"),
     );
 
-    result.expect("clone, and sign in the hook");
+    result.expect("commit, signed");
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     // Only the kind: newer OpenSSH names the key in this prompt, and older OpenSSH does not.
     assert_eq!(prompts[0].kind, PromptKind::Passphrase);
-    let signed = sandbox
-        .existing_repository(&target)
-        .git(&["cat-file", "commit", "HEAD"]);
+    let signed = repository.git(&["cat-file", "commit", "HEAD"]);
     assert!(signed.contains("BEGIN SSH SIGNATURE"), "{signed}");
     let kept = format!(
         "{}{:?}{events:?}",
@@ -981,6 +982,32 @@ fn a_signing_prompt_reaches_the_user_and_signs_with_the_answer() {
         gikli.operation_log(),
     );
     assert!(!kept.contains(PASSPHRASE), "{kept}");
+}
+
+/// The passphrase of a signing key is no credential of a remote's.
+#[test]
+fn declining_the_signing_prompt_is_a_signing_failure_not_an_authentication_failure() {
+    let sandbox = Sandbox::new();
+    let repository = repository_signing_with_a_passphrase(&sandbox);
+    let gikli = sandbox.gikli_with_prompts(askpass!());
+    let root = gikli_acceptance::opened(&gikli, &repository);
+
+    let (result, prompts, _) = answering_prompts(
+        &gikli,
+        |_| None,
+        || gikli.commit_files(&root, &["notes.txt".to_owned()], "Signed"),
+    );
+
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    let Err(Failure::Explained { explanation }) = result else {
+        panic!("the signing failure is explained: {result:?}");
+    };
+    assert!(
+        matches!(explanation.message, ExplainedMessage::SigningFailed { .. }),
+        "{explanation:?}"
+    );
+    assert_eq!(explanation.next_step, NextStep::CheckSigning);
+    assert_eq!(repository.commit_count(), "1\n");
 }
 
 /// git inside WSL reaches gikli's askpass program, a Windows program, through WSL's interop. A clean

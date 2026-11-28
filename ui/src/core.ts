@@ -266,6 +266,8 @@ export interface FileDiff {
 export type ExplainedMessage =
   /** `output` is what the hook wrote. */
   | { kind: "hookFailed"; hook: string; output: string }
+  /** `output` is what the run wrote, which holds what the signing program said. */
+  | { kind: "signingFailed"; output: string }
   /** `folder` is written as git writes it. */
   | { kind: "dubiousOwnership"; folder: string }
   | { kind: "indexLocked"; lock: string }
@@ -283,6 +285,7 @@ export type ExplainedMessage =
 /** What the user can do next, in a failure the core explains. */
 export type NextStep =
   | "fixHook"
+  | "checkSigning"
   | "trustFolder"
   | "removeIndexLock"
   | "waitForOtherGitOperation"
