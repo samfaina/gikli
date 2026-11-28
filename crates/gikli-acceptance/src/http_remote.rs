@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -136,7 +136,7 @@ impl Server {
 
     /// The answer of `git http-backend`, a CGI program, turned into an HTTP response.
     fn run_backend(&self, request: &Request) -> std::io::Result<Vec<u8>> {
-        let mut backend = Command::new("git");
+        let mut backend = crate::plain_git();
         backend
             .arg("http-backend")
             .envs(self.env.iter().map(|(name, value)| (name, value)))

@@ -32,6 +32,20 @@ use http_remote::Refusal;
 /// Makes git take every repository for someone else's.
 const OWNED_BY_SOMEONE_ELSE: &str = "GIT_TEST_ASSUME_DIFFERENT_OWNER";
 
+/// The variables through which the shell that runs the tests passes configuration to git, such as
+/// one that forbids asking for credentials. That configuration is the developer's, so neither
+/// gikli nor a plain git of the harness sees it.
+const SHELL_GIT_CONFIGURATION: [&str; 2] = ["GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"];
+
+/// A plain git command that sees none of the [`SHELL_GIT_CONFIGURATION`].
+pub(crate) fn plain_git() -> Command {
+    let mut git = Command::new("git");
+    for name in SHELL_GIT_CONFIGURATION {
+        git.env_remove(name);
+    }
+    git
+}
+
 /// Two Changelists as gikli stored them in version 1 of the format: Changes, which is active, and
 /// Feature, with no files. This pins that format, which every later gikli must still read.
 pub const TWO_CHANGELISTS: &str = r#"{
@@ -106,10 +120,9 @@ impl Sandbox {
     /// the sandbox's and repository discovery stopped at the sandbox folder.
     pub fn host_environment(&self) -> HostEnvironment {
         let mut host = HostEnvironment::current();
-        // Configuration the shell that runs the tests passes to git, such as one that forbids
-        // asking for credentials, is the developer's too.
-        host.remove("GIT_CONFIG_COUNT");
-        host.remove("GIT_CONFIG_PARAMETERS");
+        for name in SHELL_GIT_CONFIGURATION {
+            host.remove(name);
+        }
         for (name, value) in self.git_environment() {
             host.set(name, value);
         }
@@ -758,25 +771,21 @@ impl TestRepository {
     /// A plain git running in the repository until the result is dropped, as a git the user
     /// started in a terminal. It waits for input it never gets.
     pub fn running_git(&self) -> RunningGit {
-        self.spawn_waiting_git(Command::new("git").current_dir(&self.root))
+        self.spawn_waiting_git(plain_git().current_dir(&self.root))
     }
 
     /// A plain git that works on this repository from the unrelated `folder`, until the result is
     /// dropped, sent here by the option `--git-dir=<path>`.
     pub fn running_git_with_option_from(&self, folder: &Path) -> RunningGit {
         let option = format!("--git-dir={}", self.root.join(".git").display());
-        self.spawn_waiting_git(Command::new("git").arg(option).current_dir(folder))
+        self.spawn_waiting_git(plain_git().arg(option).current_dir(folder))
     }
 
     /// A plain git that works on this repository from the unrelated `folder`, until the result is
     /// dropped, sent here by the variable `GIT_DIR`.
     pub fn running_git_with_variable_from(&self, folder: &Path) -> RunningGit {
         let git_dir = self.root.join(".git");
-        self.spawn_waiting_git(
-            Command::new("git")
-                .env("GIT_DIR", git_dir)
-                .current_dir(folder),
-        )
+        self.spawn_waiting_git(plain_git().env("GIT_DIR", git_dir).current_dir(folder))
     }
 
     /// Starts `git` waiting for input it never gets.
@@ -984,7 +993,7 @@ impl TestRepository {
     /// Writes `history` with `git fast-import`, which writes many commits far faster than one
     /// `git commit` at a time. Panics if git fails.
     pub fn fast_import(&self, history: &ImportedHistory) {
-        let mut git = Command::new("git")
+        let mut git = plain_git()
             .args(["fast-import", "--quiet"])
             .current_dir(&self.root)
             .envs(self.env.iter().map(|(name, value)| (name, value)))
@@ -1044,7 +1053,7 @@ fn git_output(
     env: &[(OsString, OsString)],
     args: impl IntoIterator<Item = impl AsRef<OsStr>>,
 ) -> Output {
-    Command::new("git")
+    plain_git()
         .args(args)
         .current_dir(cwd)
         .envs(env.iter().map(|(name, value)| (name, value)))
