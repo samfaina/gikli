@@ -150,7 +150,7 @@ The log has four panes: branches, commit list with graph, changed files of the s
 | Columns | Author, date, hash, GPG signature, CI checks (GitHub); root column in multi-repository | `git log --format=%G?`; GitHub CI status | 2 (CI: 4) |
 | Text search | Searches message, author and hash, matching any of them; search history; regex and match-case options | `git log --grep=… [-E] [-i]`; `--author` | 1 |
 | Filters | Branch (list, favorites, all, or a range `a..b`), user (several, "me"), date (presets or a specific date), paths (folders) and roots; open another log tab with the current filters | `git log <revs> --author --since --until -- <paths>` | 1 (branch, text), 2 (rest) |
-| Graph options | Sort by commit date (default) or topologically; first parent only; no merges; collapse and expand linear branches (all or one) [doc] | `--date-order` / `--topo-order`, `--first-parent`, `--no-merges` | 2 |
+| Graph options | Sort by commit date (default) or topologically; first parent only; no merges; collapse and expand linear branches (all or one) [doc]. gikli collapses a merge commit instead, hiding the commits it brought in, one merge or all, as Fork does, so the user can follow the main line (gikli) | `--date-order` / `--topo-order`, `--first-parent`, `--no-merges` | 2 |
 | Presentation options | Compact references, show tag names, long edges (off by default), commit timestamp instead of author time, references on the left, show root names [doc] | none (presentation) | 2 |
 | Highlights | My commits, merge commits dimmed, current branch, commits not cherry-picked | `git log --cherry-mark --right-only <current>...<other>` | 2 (not picked: 3) |
 | Go to hash, branch or tag | Jump with autocomplete | `git rev-parse --verify <ref>` | 1 |

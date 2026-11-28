@@ -102,6 +102,10 @@ _Avoid_: Recently used, history
 The list of local and remote branches beside the log, where the user filters the log by a branch, goes to its latest commit, and renames and deletes branches.
 _Avoid_: Branch tree, sidebar
 
+**Collapsed merge**:
+A merge commit whose branch the log hides: the commits it brought in leave the graph, so the user follows the line of its first parent. A commit stays shown while it can be reached other than through the merge, as from a branch, a tag or a merge that is not collapsed, so a commit with a branch or tag is never hidden.
+_Avoid_: Collapsed branch, folded merge
+
 **Operation in progress**:
 A merge, rebase, revert or cherry-pick that git stopped half done in a worktree, on a conflict or at a commit to edit, whoever started it. It stays until the user continues, finishes or aborts it.
 _Avoid_: Pending operation, unfinished state
