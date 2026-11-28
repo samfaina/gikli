@@ -343,6 +343,76 @@ fn a_branch_from_a_stash_starts_where_it_was_made_with_its_changes_and_drops_it(
     assert_eq!(work.status_by_git(), vec!["A  added.txt", "M  notes.txt"]);
 }
 
+/// A repository whose user has `apply.whitespace=error`, with a stash `Spaces` of `notes.txt`
+/// that staged a line ending in spaces and changed another after it, and the stash's hash.
+fn with_a_stash_staging_trailing_spaces(
+    sandbox: &Sandbox,
+    gikli: &Gikli,
+) -> (TestRepository, Repository, String) {
+    sandbox.configure("[apply]\n\twhitespace = error\n");
+    let work = sandbox.repository("work");
+    work.write("notes.txt", "one\n");
+    work.commit_all("Add notes");
+    let root = opened(gikli, &work);
+    work.write("notes.txt", "one\ntwo   \n");
+    work.git(&["add", "notes.txt"]);
+    work.write("notes.txt", "one\ntwo   \nthree  \n");
+    let stashes = gikli
+        .stash(
+            &root,
+            &StashOptions {
+                message: "Spaces".to_owned(),
+                keep_index: false,
+                include_untracked: false,
+            },
+        )
+        .expect("stash the changes");
+    let hash = stashes.entries[0].hash.clone();
+    (work, root, hash)
+}
+
+/// git restores what a stash staged through `git apply --cached`, which `apply.whitespace=error`
+/// stops on a line ending in spaces. That setting is for the patches the user applies.
+#[test]
+fn what_was_staged_comes_back_whatever_the_user_set_apply_whitespace_to() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root, hash) = with_a_stash_staging_trailing_spaces(&sandbox, &gikli);
+
+    gikli
+        .apply_stash(
+            work.root(),
+            &root,
+            &hash,
+            UnstashOptions {
+                restore_index: true,
+                ..POP
+            },
+        )
+        .expect("pop the stash with its index");
+
+    assert_eq!(work.status_by_git(), vec!["MM notes.txt"]);
+    assert_eq!(work.git(&["show", ":notes.txt"]), "one\ntwo   \n");
+    assert_eq!(work.read("notes.txt"), "one\ntwo   \nthree  \n");
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
+}
+
+#[test]
+fn a_branch_from_a_stash_comes_whatever_the_user_set_apply_whitespace_to() {
+    let sandbox = Sandbox::new();
+    let gikli = sandbox.gikli();
+    let (work, root, hash) = with_a_stash_staging_trailing_spaces(&sandbox, &gikli);
+
+    gikli
+        .stash_branch(work.root(), &root, &hash, "from-stash")
+        .expect("create a branch from the stash");
+
+    assert_eq!(work.git(&["branch", "--show-current"]), "from-stash\n");
+    assert_eq!(work.status_by_git(), vec!["MM notes.txt"]);
+    assert_eq!(work.git(&["show", ":notes.txt"]), "one\ntwo   \n");
+    assert_eq!(work.stashes_by_git(), Vec::<String>::new());
+}
+
 #[test]
 fn a_branch_from_a_stash_takes_a_name_as_a_new_branch_does() {
     let sandbox = Sandbox::new();

@@ -148,6 +148,32 @@ impl Sandbox {
         (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (2, 46)
     }
 
+    /// Makes every transfer of objects out of the sandbox's remotes hold until it is let through:
+    /// what a clone or a fetch asks a remote for, before any hook of theirs runs. A remote sends
+    /// objects only when it has some the asking repository lacks.
+    pub fn hold_transfers(&self) -> HeldTransfers {
+        let held = HeldTransfers {
+            holding: self.root.join("transfer-is-held"),
+            through: self.root.join("transfers-go-through"),
+        };
+        let script = self.root.join("hold-transfers.sh");
+        fs::write(
+            &script,
+            format!(
+                "if [ -e '{}' ]; then exec \"$@\"; fi\n: > '{}'\nwhile :; do sleep 1; done\n",
+                as_git_writes_it(&held.through),
+                as_git_writes_it(&held.holding),
+            ),
+        )
+        .expect("write the script");
+        // Read by git's upload-pack only from protected configuration, such as the global one.
+        self.configure(&format!(
+            "[uploadpack]\n\tpackObjectsHook = sh '{}'\n",
+            as_git_writes_it(&script)
+        ));
+        held
+    }
+
     /// Lets git clone submodules from `file://` URLs, which it refuses unless the user allows it.
     pub fn allow_local_submodules(&self) {
         self.configure("[protocol \"file\"]\n\tallow = always\n");
@@ -462,6 +488,38 @@ impl Drop for Sandbox {
         {
             eprintln!("sandbox kept at {}", dir.keep().display());
         }
+    }
+}
+
+/// The transfers of objects out of the sandbox's remotes, held by [`Sandbox::hold_transfers`].
+pub struct HeldTransfers {
+    /// Exists once a transfer holds.
+    holding: PathBuf,
+    /// Once it exists, transfers go through.
+    through: PathBuf,
+}
+
+impl HeldTransfers {
+    /// Runs `run`, which starts a long operation of `gikli` that asks a remote for objects, on a
+    /// thread of its own. Once the transfer holds, checks that this operation is the only one
+    /// running and that it can be cancelled, cancels it, and returns what `run` returned, which
+    /// must come within [`DEADLINE`].
+    pub fn cancel_once_held<T: Send>(&self, gikli: &Gikli, run: impl FnOnce() -> T + Send) -> T {
+        std::thread::scope(|scope| {
+            let running = scope.spawn(run);
+            wait_until("a transfer to hold", || self.holding.exists());
+            let operations = gikli.running_operations();
+            assert_eq!(operations.len(), 1, "{operations:?}");
+            assert!(operations[0].cancellable, "{operations:?}");
+            gikli.cancel_operation(operations[0].id);
+            wait_until("the cancelled run to end", || running.is_finished());
+            running.join().expect("the run does not panic")
+        })
+    }
+
+    /// Lets every transfer from now on go through, as if nothing held them.
+    pub fn let_through(&self) {
+        fs::write(&self.through, "").expect("let the transfers through");
     }
 }
 

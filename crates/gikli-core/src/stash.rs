@@ -124,6 +124,12 @@ pub struct UnstashPlan {
     pub untracked_in_the_way: Vec<PathBuf>,
 }
 
+/// The options that go before `stash` in a run of git that restores what a stash staged. git
+/// restores it as a patch, through `git apply --cached`, which the user's `apply.whitespace=error`
+/// would stop on a staged line that ends in spaces: that setting is meant for the patches the user
+/// applies. Those runs apply theirs without a word about whitespace.
+pub(crate) const RESTORING_THE_INDEX: [&str; 2] = ["-c", "apply.whitespace=nowarn"];
+
 /// What git prints of each stash, a field per NUL. Its name comes from its place in the list, the
 /// order of the reflog of `refs/stash`, as `%gd` names it by date under some date options.
 const LIST_FORMAT: &str = "--format=%H%x00%ct%x00%gs";

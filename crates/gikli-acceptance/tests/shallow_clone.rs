@@ -273,6 +273,54 @@ fn when_the_remote_holds_no_repository_any_more_the_history_stays_cut() {
 }
 
 #[test]
+fn a_cancelled_fetch_of_the_rest_leaves_the_history_cut_with_every_branch_tracked_and_fetching_again_brings_it()
+ {
+    let sandbox = Sandbox::new();
+    let remote = remote_with_history(&sandbox);
+    let clone = shallow_clone(&sandbox, &remote, "1", &[]);
+    let held = sandbox.hold_transfers();
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &clone);
+
+    let fetched = held.cancel_once_held(&gikli, || gikli.fetch_rest_of_history(&root));
+
+    assert_eq!(
+        fetched,
+        Err(Failure::OperationCancelled { left_behind: None })
+    );
+    assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+    let cancelled = gikli.read_log(&root, None, 50).expect("read the log");
+    assert!(cancelled.history_cut);
+    assert_eq!(remote_branches(&cancelled.rows), ["origin/main"]);
+    assert_eq!(
+        clone.git(&["rev-parse", "--is-shallow-repository"]),
+        "true\n",
+        "git agrees the history is still cut"
+    );
+    assert_eq!(
+        clone.git(&["config", "--get-all", "remote.origin.fetch"]),
+        "+refs/heads/*:refs/remotes/origin/*\n",
+        "the remote tracks every branch already"
+    );
+    assert!(
+        gikli
+            .operation_log()
+            .iter()
+            .any(|entry| entry.cancelled && entry.args.contains(&"--unshallow".to_owned()))
+    );
+
+    held.let_through();
+    gikli
+        .fetch_rest_of_history(&root)
+        .expect("fetch the rest of the history again");
+
+    let after = gikli.read_log(&root, None, 50).expect("read the log again");
+    assert!(!after.history_cut);
+    assert_eq!(after.rows.last().expect("a commit").subject, "First");
+    assert_eq!(remote_branches(&after.rows), ["origin/main", "origin/side"]);
+}
+
+#[test]
 fn a_page_read_before_the_rest_was_fetched_finds_the_history_changed() {
     let sandbox = Sandbox::new();
     let remote = remote_with_history(&sandbox);

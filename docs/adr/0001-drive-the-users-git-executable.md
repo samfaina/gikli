@@ -6,3 +6,4 @@ Every git operation runs through the `git` executable that gikli detects or the 
 
 - Reads that turn out too slow for large logs may later use a library, but only for reads. Writes always go through the CLI.
 - gikli parses git output, so every invocation must pin the output format (porcelain formats, `-z`, explicit `--format`) and must not depend on the user's presentation settings such as `log.initialDecorationSet` or `diff.noprefix`.
+- A setting meant for what the user runs can also reach a step git takes on its own inside a command gikli runs. Only then, and only for that command, gikli pins it: `git stash apply --index` restores the index through `git apply --cached`, which `apply.whitespace=error` would stop, so it runs with `-c apply.whitespace=nowarn`.

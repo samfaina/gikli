@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::io;
+use std::path::PathBuf;
 
 use crate::git::{GitRunner, Invocation};
 use crate::{Failure, Repository, git_failed_to_start};
@@ -22,6 +23,16 @@ pub(crate) fn cut_commits(
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeSet::new()),
         Err(error) => Err(error),
     }
+}
+
+/// The lock git takes on the `shallow` file of `repository` while it changes where the history is
+/// cut, as a fetch of the rest does from its start. A git killed while it holds it, as a cancelled
+/// fetch is, leaves it behind, and every later fetch of the rest fails on it.
+pub(crate) fn cut_lock(runner: &GitRunner, repository: &Repository) -> io::Result<PathBuf> {
+    let path = runner
+        .relative_git_path(&repository.root, "shallow.lock")?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git names no git directory"))?;
+    Ok(repository.root.join(path))
 }
 
 /// The arguments of the git that fetches the rest of the history of a Repository from `remote`,

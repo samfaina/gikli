@@ -2561,10 +2561,23 @@ impl Gikli {
         if let Some(failed) = shallow::track_every_branch(&runner, repository, &remote)? {
             return Err(failure_of(&runner, root, &failed, fallback));
         }
+        // A lock already there, or one gikli cannot find, is not this fetch's to remove.
+        let unlocked = shallow::cut_lock(&runner, repository)
+            .ok()
+            .filter(|lock| !lock.exists());
         let args = shallow::fetch_rest_args(&remote);
         let invocation = self.run_operation(&runner, operation, root, &args)?;
         if invocation.success {
             return Ok(());
+        }
+        if invocation.cancelled
+            && let Some(lock) = &unlocked
+        {
+            // No other git can take the lock while the cancelled one holds it, or after, while
+            // it stays. A git that took it first makes this fetch fail at once, before a cancel
+            // can reach it. A lock that cannot be removed fails the next fetch of the rest, which
+            // explains its failure as any other.
+            let _ = std::fs::remove_file(lock);
         }
         Err(failure_of_contacting_remotes(
             &runner,
@@ -4177,6 +4190,7 @@ impl Gikli {
         let runner = self.runner(&repository.root)?;
         let mut args = vec!["stash", "apply", "--quiet"];
         if options.restore_index {
+            args.splice(0..0, stash::RESTORING_THE_INDEX);
             args.push("--index");
         }
         args.push(hash);
@@ -4198,7 +4212,8 @@ impl Gikli {
         let runner = self.runner(&repository.root)?;
         new_branch::check_name(&runner, repository, name)?;
         // Given the stash's commit and not its place in the list, git drops nothing itself.
-        let args = ["stash", "branch", name, hash];
+        let [option, setting] = stash::RESTORING_THE_INDEX;
+        let args = [option, setting, "stash", "branch", name, hash];
         self.bring_back(&runner, project, repository, hash, &args, true)
     }
 
