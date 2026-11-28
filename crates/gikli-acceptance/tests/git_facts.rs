@@ -17,6 +17,10 @@ fn merges_by_git(repository: &TestRepository) -> String {
 ///
 /// The same fetch, once no worktree has the branch, fast-forwards it: the worktree is what makes
 /// git refuse, and nothing else in the setup.
+///
+/// The fact holds from git 2.35 on. Before, git checked only the branch of the worktree it ran in,
+/// and fetched into a branch a linked worktree has checked out, leaving that worktree out of step
+/// with its branch: on the minimum git, the feature cannot count on git to refuse.
 #[test]
 fn a_fetch_into_a_branch_checked_out_in_a_linked_worktree_fails_until_the_worktree_goes() {
     let sandbox = Sandbox::new();
@@ -27,6 +31,7 @@ fn a_fetch_into_a_branch_checked_out_in_a_linked_worktree_fails_until_the_worktr
     work.git(&["push", "--quiet", "origin", "main", "main:side"]);
     let mine = sandbox.clone_of(&remote, "mine");
     let linked = mine.linked_worktree("side");
+    // As the feature finds a branch to update: it has an upstream.
     mine.git(&[
         "branch",
         "--quiet",
@@ -40,6 +45,11 @@ fn a_fetch_into_a_branch_checked_out_in_a_linked_worktree_fails_until_the_worktr
 
     let while_checked_out = mine.git_succeeds(&["fetch", "--quiet", "origin", "side:side"]);
 
+    if !sandbox.git_is_at_least(2, 35) {
+        assert!(while_checked_out, "git before 2.35 fetches into side");
+        assert_eq!(mine.commit_of("side"), remote.commit_of("side"));
+        return;
+    }
     assert!(!while_checked_out, "git refuses to fetch into side");
     assert_eq!(mine.commit_of("side"), before, "side stays where it was");
 
@@ -49,11 +59,10 @@ fn a_fetch_into_a_branch_checked_out_in_a_linked_worktree_fails_until_the_worktr
     let once_free = mine.git_succeeds(&["fetch", "--quiet", "origin", "side:side"]);
 
     assert!(once_free, "git fetches into side");
-    assert_eq!(mine.commit_of("side"), remote.commit_of("side"));
     assert_eq!(
-        mine.git(&["rev-list", "--count", &format!("{before}..side")]),
-        "1\n",
-        "side moved one commit ahead of where it was"
+        mine.commit_of("side"),
+        remote.commit_of("side"),
+        "side fast-forwarded to the remote's"
     );
 }
 
@@ -100,7 +109,8 @@ fn dropped_with(sandbox: &Sandbox, name: &str, options: &[&str]) -> TestReposito
     repository
 }
 
-/// The subjects of the commits HEAD holds, sorted, as the order of a flattened history is git's.
+/// The subjects of the commits HEAD holds, sorted, since the order git gives a flattened history is
+/// not part of the fact.
 fn sorted_subjects(repository: &TestRepository) -> Vec<String> {
     let mut subjects = repository.subjects();
     subjects.sort();

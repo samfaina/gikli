@@ -1,10 +1,11 @@
 //! Test harness for gikli.
 //!
 //! Every test drives gikli through its application interface ([`gikli_core::Gikli`]) and checks the
-//! outcome a second way with plain git. The helpers here build that world: a [`Sandbox`] holds
-//! throwaway repositories created with the real git executable in a temporary folder, local bare
-//! repositories that act as remotes, and an isolated git configuration so the developer's own
-//! settings never leak into a test.
+//! outcome a second way with plain git, except those of `tests/git_facts.rs`, which pin with plain
+//! git alone what git does for features not built yet. The helpers here build that world: a
+//! [`Sandbox`] holds throwaway repositories created with the real git executable in a temporary
+//! folder, local bare repositories that act as remotes, and an isolated git configuration so the
+//! developer's own settings never leak into a test.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -139,13 +140,18 @@ impl Sandbox {
 
     /// Whether this git has the setting that forbids asking for credentials, added in git 2.46.
     pub fn git_knows_credential_interactive(&self) -> bool {
+        self.git_is_at_least(2, 46)
+    }
+
+    /// Whether the git under test is version `major.minor` or later, as `git --version` reports.
+    pub fn git_is_at_least(&self, major: u32, minor: u32) -> bool {
         let version = git_output(&self.root, &self.git_environment(), ["--version"]);
         let version = String::from_utf8_lossy(&version.stdout).into_owned();
         let mut numbers = version
             .trim_start_matches("git version ")
             .split('.')
             .map_while(|number| number.trim().parse::<u32>().ok());
-        (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (2, 46)
+        (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0)) >= (major, minor)
     }
 
     /// Makes every transfer of objects out of the sandbox's remotes hold until it is let through:
