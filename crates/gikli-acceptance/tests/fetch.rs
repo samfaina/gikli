@@ -3,8 +3,8 @@
 
 use gikli_acceptance::{Sandbox, TestRepository, opened, upstream};
 use gikli_core::{
-    CurrentBranch, Event, ExplainedMessage, Explanation, Failure, LocalBranch, LongOperation,
-    NextStep, Progress, RefKind, RefLabel, Upstream,
+    CurrentBranch, Event, ExplainedMessage, Explanation, Failure, Gikli, LocalBranch,
+    LongOperation, NextStep, Progress, RefKind, RefLabel, Upstream,
 };
 
 /// A bare remote whose `main` holds First, pushed from the returned `work`, where others commit.
@@ -134,6 +134,28 @@ fn fetching_every_remote_fetches_each_of_them() {
     );
 }
 
+/// `git fetch --all --prune --prune-tags` deletes the tags of the user's own, which no remote holds,
+/// and, as git 2.43 does, a tag that only one of two remotes holds.
+#[test]
+fn fetching_every_remote_keeps_a_tag_only_one_remote_holds_and_the_users_own() {
+    let sandbox = Sandbox::new();
+    let (remote, work) = remote_with_work(&sandbox);
+    let other = sandbox.bare_remote("other.git");
+    work.add_remote("other", &other);
+    work.git(&["tag", "only-on-other"]);
+    work.git(&["push", "--quiet", "other", "main", "only-on-other"]);
+    let mine = sandbox.clone_of(&remote, "mine");
+    mine.add_remote("other", &other);
+    mine.git(&["fetch", "--quiet", "--tags", "other"]);
+    mine.git(&["tag", "mine-alone"]);
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+
+    gikli.fetch_all(&root).expect("fetch every remote");
+
+    assert_eq!(mine.git(&["tag", "--list"]), "mine-alone\nonly-on-other\n");
+}
+
 #[test]
 fn a_branch_with_commits_of_its_own_and_of_its_upstream_counts_both() {
     let sandbox = Sandbox::new();
@@ -187,6 +209,87 @@ fn both_branches_moved_on(sandbox: &Sandbox) -> (TestRepository, TestRepository)
     work.commit_at(3, "On side");
     work.git(&["push", "--quiet", "origin", "side"]);
     (mine, work)
+}
+
+/// Whether gikli logged a cancelled run of `git fetch`.
+fn logged_a_cancelled_fetch(gikli: &Gikli) -> bool {
+    gikli
+        .operation_log()
+        .iter()
+        .any(|entry| entry.cancelled && entry.args.contains(&"fetch".to_owned()))
+}
+
+#[test]
+fn a_cancelled_fetch_of_every_remote_leaves_the_remote_branches_where_they_were() {
+    let sandbox = Sandbox::new();
+    let (remote, work) = remote_with_work(&sandbox);
+    let mine = sandbox.clone_of(&remote, "mine");
+    work.commit_at(2, "Second");
+    work.git(&["push", "--quiet"]);
+    let before = remote_branches_by_git(&mine);
+    let held = sandbox.hold_transfers();
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+
+    let fetched = held.cancel_once_held(&gikli, || gikli.fetch_all(&root));
+
+    assert_eq!(
+        fetched,
+        Err(Failure::OperationCancelled { left_behind: None })
+    );
+    assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+    assert_eq!(remote_branches_by_git(&mine), before);
+    assert_eq!(
+        gikli.current_branch(&root),
+        Ok(CurrentBranch::Branch {
+            name: "main".to_owned(),
+            upstream: upstream("origin/main", 0, 0),
+        })
+    );
+    assert!(logged_a_cancelled_fetch(&gikli));
+
+    held.let_through();
+    gikli.fetch_all(&root).expect("fetch every remote again");
+
+    assert_eq!(
+        mine.git(&["rev-parse", "origin/main"]),
+        work.git(&["rev-parse", "HEAD"]),
+        "git agrees the next fetch brought what the cancelled one did not"
+    );
+}
+
+#[test]
+fn a_cancelled_fetch_of_a_branch_leaves_the_remote_branches_where_they_were() {
+    let sandbox = Sandbox::new();
+    let (mine, work) = both_branches_moved_on(&sandbox);
+    let before = remote_branches_by_git(&mine);
+    let held = sandbox.hold_transfers();
+    let gikli = sandbox.gikli();
+    let root = opened(&gikli, &mine);
+    let side = label("side", RefKind::Local);
+
+    let fetched = held.cancel_once_held(&gikli, || gikli.fetch_branch(&root, &side));
+
+    assert_eq!(
+        fetched,
+        Err(Failure::OperationCancelled { left_behind: None })
+    );
+    assert_eq!(sandbox.processes_still_running(), Vec::<String>::new());
+    assert_eq!(remote_branches_by_git(&mine), before);
+    let branches = gikli.local_branches(&root).expect("read the branches");
+    assert_eq!(branches[1].upstream, upstream("origin/side", 0, 0));
+    assert!(logged_a_cancelled_fetch(&gikli));
+
+    held.let_through();
+    gikli
+        .fetch_branch(&root, &side)
+        .expect("fetch the branch again");
+
+    assert_eq!(
+        mine.git(&["rev-parse", "origin/side"]),
+        work.git(&["rev-parse", "side"]),
+        "git agrees the next fetch brought what the cancelled one did not"
+    );
 }
 
 fn label(name: &str, kind: RefKind) -> RefLabel {

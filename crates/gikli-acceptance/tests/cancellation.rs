@@ -93,20 +93,6 @@ fn result_of<T>(thread: ScopedJoinHandle<'_, T>) -> T {
     thread.join().expect("the run does not panic")
 }
 
-/// Makes every clone from the sandbox's remotes hold on the transfer of its objects, before any
-/// hook runs, and create the returned file once it holds.
-fn hold_clones_before_any_hook(sandbox: &Sandbox) -> PathBuf {
-    let holding = sandbox.root().join("clone-is-held");
-    let script = sandbox.root().join("hold-clone.sh");
-    fs::write(&script, holds_after_creating(&holding)).expect("write the script");
-    // Read by git's upload-pack only from protected configuration, such as the global one.
-    sandbox.configure(&format!(
-        "[uploadpack]\n\tpackObjectsHook = sh '{}'\n",
-        as_git_writes_it(&script)
-    ));
-    holding
-}
-
 #[test]
 fn a_clone_waiting_on_a_hook_can_be_cancelled_and_stays_a_repository_that_opens() {
     let sandbox = Sandbox::new();
@@ -189,14 +175,9 @@ fn cancel_a_held_clone(
     target: &Path,
 ) -> Result<Project, Failure> {
     let remote = remote_with_a_commit(sandbox);
-    let holding = hold_clones_before_any_hook(sandbox);
+    let held = sandbox.hold_transfers();
     let url = file_url(remote.root());
-    std::thread::scope(|scope| {
-        let clone = scope.spawn(|| gikli.clone_repository(&url, target));
-        wait_for_file(&holding);
-        gikli.cancel_operation(the_running_operation(gikli).id);
-        result_of(clone)
-    })
+    held.cancel_once_held(gikli, || gikli.clone_repository(&url, target))
 }
 
 #[test]

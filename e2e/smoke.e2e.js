@@ -60,9 +60,9 @@ async function expectRepositoryRoot(folder) {
   assert.ok((await root.getText()).includes(folder), `expected ${folder} on screen`);
 }
 
-/** Fills the open clone form to clone the smoke test's remote into `target`, and starts the clone. */
-async function startClone(target) {
-  await $('[data-testid="clone-url"]').setValue(pathToFileURL(process.env.GIKLI_E2E_REMOTE).href);
+/** Fills the open clone form to clone `remote`, the smoke test's remote by default, into `target`, and starts the clone. */
+async function startClone(target, remote = process.env.GIKLI_E2E_REMOTE) {
+  await $('[data-testid="clone-url"]').setValue(pathToFileURL(remote).href);
   await $('[data-testid="clone-folder"]').setValue(target);
   await $('[data-testid="start-clone"]').click();
 }
@@ -345,6 +345,46 @@ describe("gikli", () => {
       const notification = await $('[data-testid="notification"][data-kind="hookNotFinished"]');
       await notification.waitForDisplayed({ timeout: 30000 });
       assert.match(await notification.getText(), /post-checkout/);
+    });
+  });
+
+  it("shows in the log where the history of a shallow Repository is cut, and fetches the rest", async () => {
+    const sandbox = process.env.GIKLI_E2E_SANDBOX;
+    const gitconfig = sandboxGitconfig(sandbox);
+    const remote = path.join(sandbox, "history remote.git");
+    const work = path.join(sandbox, "history work");
+    fs.mkdirSync(remote);
+    fs.mkdirSync(work);
+    runGit(remote, gitconfig, "init", "--quiet", "--bare");
+    runGit(work, gitconfig, "init", "--quiet");
+    for (const subject of ["Older", "Newer"]) {
+      fs.writeFileSync(path.join(work, "history.txt"), `${subject}\n`);
+      runGit(work, gitconfig, "add", "--all");
+      commitStaged(work, gitconfig, subject);
+    }
+    runGit(work, gitconfig, "push", "--quiet", remote, "main");
+    const target = path.join(sandbox, "shallow clone");
+    const windowsBefore = await browser.getWindowHandles();
+    await $('[data-testid="toggle-clone"]').click();
+    await startClone(target, remote);
+    await $('[data-testid="clone"]').waitForDisplayed({ timeout: 30000, reverse: true });
+    // gikli clones the whole history, which plain git cuts after the newest commit, as `git clone --depth 1` does.
+    runGit(target, gitconfig, "fetch", "--quiet", "--depth", "1", "origin");
+
+    await inNewWindow(windowsBefore, async () => {
+      await expectRepositoryRoot(target);
+      await $('[data-testid="open-log"]').click();
+      const notice = $('[data-testid="log-history-cut"]');
+      await notice.waitForDisplayed({ timeout: 30000 });
+      await $('[data-testid="log-history-cut-mark"]').waitForExist({ timeout: 30000 });
+
+      await $('[data-testid="log-fetch-rest"]').click();
+
+      await notice.waitForDisplayed({ timeout: 30000, reverse: true });
+      await browser.waitUntil(async () => (await $$('[data-testid="log-row"]')).length === 2, {
+        timeout: 30000,
+        timeoutMsg: "the older commit did not come",
+      });
     });
   });
 

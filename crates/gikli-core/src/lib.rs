@@ -2561,10 +2561,17 @@ impl Gikli {
         if let Some(failed) = shallow::track_every_branch(&runner, repository, &remote)? {
             return Err(failure_of(&runner, root, &failed, fallback));
         }
+        let lock = shallow::cut_lock(&runner, repository).map_err(git_failed_to_start)?;
+        let locked_before = lock.exists();
         let args = shallow::fetch_rest_args(&remote);
         let invocation = self.run_operation(&runner, operation, root, &args)?;
         if invocation.success {
             return Ok(());
+        }
+        if invocation.cancelled && !locked_before {
+            // Only the git that was cancelled can have taken the lock, as none can while it is
+            // there. Should it stay, the next fetch of the rest fails on it, as a failure of its own.
+            let _ = std::fs::remove_file(&lock);
         }
         Err(failure_of_contacting_remotes(
             &runner,
@@ -4175,7 +4182,11 @@ impl Gikli {
         options: UnstashOptions,
     ) -> Result<Unstashed, Failure> {
         let runner = self.runner(&repository.root)?;
-        let mut args = vec!["stash", "apply", "--quiet"];
+        let mut args = Vec::new();
+        if options.restore_index {
+            args.extend(stash::RESTORING_THE_INDEX);
+        }
+        args.extend(["stash", "apply", "--quiet"]);
         if options.restore_index {
             args.push("--index");
         }
@@ -4198,7 +4209,8 @@ impl Gikli {
         let runner = self.runner(&repository.root)?;
         new_branch::check_name(&runner, repository, name)?;
         // Given the stash's commit and not its place in the list, git drops nothing itself.
-        let args = ["stash", "branch", name, hash];
+        let [option, setting] = stash::RESTORING_THE_INDEX;
+        let args = [option, setting, "stash", "branch", name, hash];
         self.bring_back(&runner, project, repository, hash, &args, true)
     }
 
